@@ -1,4 +1,7 @@
-import { createHmac } from "crypto";
+import {
+  deltaIndiaDefaultBaseUrl,
+  signDeltaIndiaRequest,
+} from "./delta-india-sign";
 
 export type DeltaWalletTestResult =
   | { ok: true; message: string }
@@ -9,25 +12,6 @@ export type DeltaWalletTestResult =
       httpStatus?: number;
     };
 
-function defaultBaseUrl(): string {
-  return (
-    process.env.DELTA_INDIA_API_BASE_URL?.trim() ||
-    "https://api.india.delta.exchange"
-  ).replace(/\/$/, "");
-}
-
-function signMessage(
-  apiSecret: string,
-  method: string,
-  timestamp: string,
-  requestPath: string,
-  queryString: string,
-  body: string,
-): string {
-  const prehash = method + timestamp + requestPath + queryString + body;
-  return createHmac("sha256", apiSecret).update(prehash).digest("hex");
-}
-
 /**
  * Authenticated GET to `/v2/wallet/balances` — read-only connectivity check.
  * @see https://docs.delta.exchange/ — signing: method + timestamp + path + query + body (hex HMAC-SHA256)
@@ -36,13 +20,13 @@ export async function testDeltaIndiaWalletAccess(params: {
   apiKey: string;
   apiSecret: string;
 }): Promise<DeltaWalletTestResult> {
-  const base = defaultBaseUrl();
+  const base = deltaIndiaDefaultBaseUrl();
   const method = "GET";
   const path = "/v2/wallet/balances";
   const queryString = "";
   const body = "";
   const timestamp = String(Math.floor(Date.now() / 1000));
-  const signature = signMessage(
+  const signature = signDeltaIndiaRequest(
     params.apiSecret,
     method,
     timestamp,

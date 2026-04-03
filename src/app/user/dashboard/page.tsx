@@ -1,35 +1,56 @@
+import Link from "next/link";
+
 import { GlassPanel } from "@/components/ui/GlassPanel";
+import { UserDashboardClient } from "@/components/user/dashboard/UserDashboardClient";
+import { requireUserIdForPage } from "@/server/auth/require-user";
+import { getUserDashboardData } from "@/server/queries/user-dashboard";
+
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Dashboard",
 };
 
-/**
- * Dashboard shell: PnL, today profit, transactions, revenue dues — data wiring comes later.
- */
-export default function UserDashboardPage() {
-  return (
-    <div className="space-y-6">
-      <div>
+export default async function UserDashboardPage() {
+  const userId = await requireUserIdForPage("/user/dashboard");
+
+  if (!userId) {
+    return (
+      <div className="space-y-6">
+        <GlassPanel className="!p-6">
+          <h1 className="font-[family-name:var(--font-display)] text-xl font-bold text-[var(--text-primary)]">
+            Dashboard
+          </h1>
+          <p className="mt-2 text-sm text-[var(--text-muted)]">
+            Sign in to view your trading overview.
+          </p>
+          <Link
+            href="/login?next=%2Fuser%2Fdashboard"
+            className="mt-4 inline-block text-sm text-[var(--accent)] hover:underline"
+          >
+            Go to sign in
+          </Link>
+        </GlassPanel>
+      </div>
+    );
+  }
+
+  const initial = await getUserDashboardData(userId);
+
+  if (!initial) {
+    return (
+      <div className="space-y-6">
         <h1 className="font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
           Dashboard
         </h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Bot PnL, today&apos;s profit, and revenue sharing will appear here.
-        </p>
+        <GlassPanel className="!p-6">
+          <p className="text-[var(--text-muted)]">
+            Dashboard data is unavailable (database not configured or query failed).
+          </p>
+        </GlassPanel>
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {["Total PnL", "Today", "Revenue due"].map((label) => (
-          <GlassPanel key={label} className="!p-5">
-            <p className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
-              {label}
-            </p>
-            <p className="mt-2 font-[family-name:var(--font-display)] text-2xl font-semibold text-[var(--text-primary)]">
-              —
-            </p>
-          </GlassPanel>
-        ))}
-      </div>
-    </div>
-  );
+    );
+  }
+
+  return <UserDashboardClient initial={initial} />;
 }

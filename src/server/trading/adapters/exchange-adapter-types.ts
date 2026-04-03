@@ -22,12 +22,18 @@ export type PlaceOrderFailure = {
 
 export type PlaceOrderResult = PlaceOrderSuccess | PlaceOrderFailure;
 
+export type OrderSyncSuccess = {
+  ok: true;
+  status: "open" | "filled" | "partial" | "cancelled" | "rejected" | "unknown";
+  raw: Record<string, unknown>;
+  /** Delta `state` when available. */
+  venueOrderState?: string | null;
+  fillPrice?: string | null;
+  filledQty?: string | null;
+};
+
 export type OrderSyncResult =
-  | {
-      ok: true;
-      status: "open" | "filled" | "partial" | "cancelled" | "rejected" | "unknown";
-      raw: Record<string, unknown>;
-    }
+  | OrderSyncSuccess
   | { ok: false; error: string };
 
 /**

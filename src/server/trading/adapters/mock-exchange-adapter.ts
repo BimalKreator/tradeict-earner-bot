@@ -29,9 +29,19 @@ export class MockExchangeAdapter implements ExchangeTradingAdapter {
   }
 
   async syncOrderStatus(externalOrderId: string): Promise<OrderSyncResult> {
+    if (externalOrderId.startsWith("mock-ord-")) {
+      return {
+        ok: true,
+        status: "filled",
+        venueOrderState: "closed",
+        fillPrice: "1",
+        filledQty: "1",
+        raw: { mock: true, externalOrderId },
+      };
+    }
     return {
       ok: true,
-      status: externalOrderId.startsWith("mock-ord-") ? "filled" : "unknown",
+      status: "unknown",
       raw: { mock: true, externalOrderId },
     };
   }

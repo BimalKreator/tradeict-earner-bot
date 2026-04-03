@@ -71,6 +71,20 @@
       "when": 1775290000000,
       "tag": "0009_phase16_trading_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1775300000000,
+      "tag": "0010_phase17_delta_execution",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1775310000000,
+      "tag": "0011_phase18_bot_order_pnl",
+      "breakpoints": true
     }
   ]
 }

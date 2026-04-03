@@ -3,14 +3,22 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/server/db";
 import { botOrders, exchangeConnections } from "@/server/db/schema";
 
+import type {
+  ExchangeTradingAdapter,
+  PlaceOrderResult,
+} from "./adapters/exchange-adapter-types";
 import { resolveExchangeTradingAdapter } from "./adapters/resolve-exchange-adapter";
 import {
   finalizeBotOrderFromPlaceResult,
   insertBotOrderDraft,
   markBotOrderSubmitting,
+  recordBotExecutionLog,
   updateBotOrderFromSync,
 } from "./bot-order-service";
-import { assertRunStillEligibleForExecution } from "./eligibility";
+import {
+  assertRunStillEligibleForExecution,
+  type EligibleStrategyRunRow,
+} from "./eligibility";
 import {
   claimNextTradingJob,
   completeTradingJob,
@@ -18,6 +26,8 @@ import {
 } from "./execution-queue";
 import { bumpBotPositionNetQuantity } from "./position-service";
 import { tradingLog } from "./trading-log";
+
+import type { TradingExecutionJobPayload } from "@/server/db/schema";
 
 function mapSyncStatus(
   s: "open" | "filled" | "partial" | "cancelled" | "rejected" | "unknown",
@@ -31,6 +41,48 @@ function mapSyncStatus(
   if (s === "partial") return "partial_fill";
   if (s === "unknown") return "open";
   return s;
+}
+
+async function runPostSubmitSync(
+  adapter: ExchangeTradingAdapter,
+  botOrderId: string,
+  externalOrderId: string,
+  p: TradingExecutionJobPayload,
+  eligRow: EligibleStrategyRunRow,
+): Promise<void> {
+  const sync = await adapter.syncOrderStatus(externalOrderId);
+  if (sync.ok) {
+    const st = mapSyncStatus(sync.status);
+    await updateBotOrderFromSync({
+      botOrderId,
+      status: st,
+      rawSyncResponse: sync.raw,
+      venueOrderState: sync.venueOrderState ?? null,
+      fillPrice: sync.fillPrice ?? null,
+      filledQty: sync.filledQty ?? null,
+    });
+    if (sync.status === "filled") {
+      const signed =
+        p.side === "buy" ? p.quantity : `-${p.quantity}`;
+      await bumpBotPositionNetQuantity({
+        userId: eligRow.userId,
+        subscriptionId: eligRow.subscriptionId,
+        strategyId: eligRow.strategyId,
+        symbol: p.symbol,
+        deltaQty: signed,
+      });
+    }
+  } else {
+    tradingLog("warn", "bot_order_sync_failed", {
+      botOrderId,
+      error: sync.error,
+    });
+    await recordBotExecutionLog({
+      botOrderId,
+      level: "warn",
+      message: `sync_failed: ${sync.error}`,
+    });
+  }
 }
 
 /**
@@ -104,9 +156,19 @@ export async function processOneTradingJob(
     return { processed: true };
   }
 
+  let botOrderId: string | undefined;
+  let internalClientOrderId: string | undefined;
+
   if (p.correlationId) {
-    const [existing] = await db
-      .select({ id: botOrders.id })
+    const [ex] = await db
+      .select({
+        id: botOrders.id,
+        internalClientOrderId: botOrders.internalClientOrderId,
+        externalOrderId: botOrders.externalOrderId,
+        externalClientOrderId: botOrders.externalClientOrderId,
+        status: botOrders.status,
+        rawSubmitResponse: botOrders.rawSubmitResponse,
+      })
       .from(botOrders)
       .where(
         and(
@@ -115,53 +177,110 @@ export async function processOneTradingJob(
         ),
       )
       .limit(1);
-    if (existing) {
-      tradingLog("info", "job_idempotent_skip", {
+
+    if (ex?.externalOrderId) {
+      await runPostSubmitSync(
+        adapterRes.adapter,
+        ex.id,
+        ex.externalOrderId,
+        p,
+        row,
+      );
+      await completeTradingJob(job.id);
+      tradingLog("info", "job_completed_reconcile_external", {
         jobId: job.id,
-        botOrderId: existing.id,
+        botOrderId: ex.id,
         correlationId: p.correlationId,
       });
+      return { processed: true };
+    }
+
+    if (ex && (ex.status === "failed" || ex.status === "rejected")) {
       await completeTradingJob(job.id);
       return { processed: true };
     }
+
+    if (ex) {
+      botOrderId = ex.id;
+      internalClientOrderId = ex.internalClientOrderId;
+    }
   }
 
-  const draft = await insertBotOrderDraft({
-    userId: row.userId,
-    subscriptionId: row.subscriptionId,
-    strategyId: row.strategyId,
-    runId: row.runId,
-    exchangeConnectionId: row.exchangeConnectionId,
-    correlationId: p.correlationId,
-    symbol: p.symbol,
-    side: p.side,
-    orderType: p.orderType,
-    quantity: p.quantity,
-    limitPrice: p.limitPrice ?? null,
-  });
+  if (!botOrderId || !internalClientOrderId) {
+    const draft = await insertBotOrderDraft({
+      userId: row.userId,
+      subscriptionId: row.subscriptionId,
+      strategyId: row.strategyId,
+      runId: row.runId,
+      exchangeConnectionId: row.exchangeConnectionId,
+      correlationId: p.correlationId,
+      symbol: p.symbol,
+      side: p.side,
+      orderType: p.orderType,
+      quantity: p.quantity,
+      limitPrice: p.limitPrice ?? null,
+    });
 
-  if (!draft) {
-    await failTradingJobRetryOrDead(
-      job.id,
-      job.attempts,
-      job.maxAttempts,
-      "bot_order_insert_failed",
-    );
-    return { processed: true };
+    if (!draft) {
+      await failTradingJobRetryOrDead(
+        job.id,
+        job.attempts,
+        job.maxAttempts,
+        "bot_order_insert_failed",
+      );
+      return { processed: true };
+    }
+    botOrderId = draft.id;
+    internalClientOrderId = draft.internalClientOrderId;
   }
 
-  await markBotOrderSubmitting(draft.id);
+  await markBotOrderSubmitting(botOrderId);
 
-  const place = await adapterRes.adapter.placeOrder({
-    internalClientOrderId: draft.internalClientOrderId,
-    symbol: p.symbol,
-    side: p.side,
-    orderType: p.orderType,
-    quantity: p.quantity,
-    limitPrice: p.limitPrice ?? null,
-  });
+  const [fresh] = await db
+    .select({
+      externalOrderId: botOrders.externalOrderId,
+      externalClientOrderId: botOrders.externalClientOrderId,
+      rawSubmitResponse: botOrders.rawSubmitResponse,
+    })
+    .from(botOrders)
+    .where(eq(botOrders.id, botOrderId))
+    .limit(1);
 
-  await finalizeBotOrderFromPlaceResult(draft.id, place);
+  let place: PlaceOrderResult;
+
+  if (fresh?.externalOrderId) {
+    place = {
+      ok: true,
+      externalOrderId: fresh.externalOrderId,
+      externalClientOrderId: fresh.externalClientOrderId ?? null,
+      raw:
+        (fresh.rawSubmitResponse as Record<string, unknown> | null) ?? {},
+    };
+  } else {
+    try {
+      place = await adapterRes.adapter.placeOrder({
+        internalClientOrderId,
+        symbol: p.symbol,
+        side: p.side,
+        orderType: p.orderType,
+        quantity: p.quantity,
+        limitPrice: p.limitPrice ?? null,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await recordBotExecutionLog({
+        botOrderId,
+        level: "error",
+        message: `placeOrder_exception: ${msg}`,
+        rawPayload:
+          e instanceof Error
+            ? { name: e.name, stack: e.stack }
+            : { thrown: String(e) },
+      });
+      place = { ok: false, error: msg };
+    }
+    await finalizeBotOrderFromPlaceResult(botOrderId, place);
+  }
 
   if (!place.ok) {
     await failTradingJobRetryOrDead(
@@ -173,36 +292,18 @@ export async function processOneTradingJob(
     return { processed: true };
   }
 
-  const sync = await adapterRes.adapter.syncOrderStatus(place.externalOrderId);
-  if (sync.ok) {
-    const st = mapSyncStatus(sync.status);
-    await updateBotOrderFromSync({
-      botOrderId: draft.id,
-      status: st,
-      rawSyncResponse: sync.raw,
-    });
-    if (sync.status === "filled") {
-      const signed =
-        p.side === "buy" ? p.quantity : `-${p.quantity}`;
-      await bumpBotPositionNetQuantity({
-        userId: row.userId,
-        subscriptionId: row.subscriptionId,
-        strategyId: row.strategyId,
-        symbol: p.symbol,
-        deltaQty: signed,
-      });
-    }
-  } else {
-    tradingLog("warn", "bot_order_sync_failed", {
-      botOrderId: draft.id,
-      error: sync.error,
-    });
-  }
+  await runPostSubmitSync(
+    adapterRes.adapter,
+    botOrderId,
+    place.externalOrderId,
+    p,
+    row,
+  );
 
   await completeTradingJob(job.id);
   tradingLog("info", "job_completed", {
     jobId: job.id,
-    botOrderId: draft.id,
+    botOrderId,
     correlationId: p.correlationId,
   });
   return { processed: true };

@@ -13,6 +13,7 @@ import {
 
 import {
   botOrderStatusEnum,
+  botTradeSourceEnum,
   tradeSideEnum,
   tradingJobStatusEnum,
 } from "./enums";
@@ -61,6 +62,13 @@ export const botOrders = pgTable(
     > | null>(),
     errorMessage: text("error_message"),
     retryCount: integer("retry_count").notNull().default(0),
+    tradeSource: botTradeSourceEnum("trade_source").notNull().default("bot"),
+    /** Last known Delta `state` (open, pending, closed, cancelled). */
+    venueOrderState: text("venue_order_state"),
+    fillPrice: numeric("fill_price", { precision: 24, scale: 8 }),
+    filledQty: numeric("filled_qty", { precision: 24, scale: 8 }),
+    /** Set when fill/PnL is known (e.g. from exchange); dashboard sums this for bot PnL. */
+    realizedPnlInr: numeric("realized_pnl_inr", { precision: 14, scale: 2 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -72,9 +80,29 @@ export const botOrders = pgTable(
     index("bot_orders_user_created_idx").on(t.userId, t.createdAt),
     index("bot_orders_subscription_idx").on(t.subscriptionId),
     index("bot_orders_correlation_idx").on(t.correlationId),
+    index("bot_orders_user_pnl_day_idx").on(t.userId, t.lastSyncedAt),
     uniqueIndex("bot_orders_correlation_subscription_uidx")
       .on(t.correlationId, t.subscriptionId)
       .where(sql`${t.correlationId} IS NOT NULL`),
+  ],
+);
+
+export const botExecutionLogs = pgTable(
+  "bot_execution_logs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    botOrderId: uuid("bot_order_id")
+      .notNull()
+      .references(() => botOrders.id, { onDelete: "cascade" }),
+    level: text("level").notNull().default("info"),
+    message: text("message").notNull(),
+    rawPayload: jsonb("raw_payload").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("bot_execution_logs_order_created_idx").on(t.botOrderId, t.createdAt),
   ],
 );
 

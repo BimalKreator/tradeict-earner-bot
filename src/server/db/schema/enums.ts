@@ -164,3 +164,6 @@ export const tradingJobStatusEnum = pgEnum("trading_job_status", [
   "failed",
   "dead",
 ]);
+
+/** Origin of an exchange order row (bot vs manual mirror in future). */
+export const botTradeSourceEnum = pgEnum("bot_trade_source", ["bot", "manual"]);

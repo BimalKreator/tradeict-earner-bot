@@ -1,11 +1,26 @@
 import { eq } from "drizzle-orm";
 
 import { db } from "@/server/db";
-import { botOrders } from "@/server/db/schema";
+import { botExecutionLogs, botOrders } from "@/server/db/schema";
 
 import type { PlaceOrderResult } from "./adapters/exchange-adapter-types";
 import { generateInternalClientOrderId } from "./ids";
 import { tradingLog } from "./trading-log";
+
+export async function recordBotExecutionLog(params: {
+  botOrderId: string;
+  level: "info" | "warn" | "error";
+  message: string;
+  rawPayload?: Record<string, unknown> | null;
+}): Promise<void> {
+  if (!db) return;
+  await db.insert(botExecutionLogs).values({
+    botOrderId: params.botOrderId,
+    level: params.level,
+    message: params.message.slice(0, 8000),
+    rawPayload: params.rawPayload ?? null,
+  });
+}
 
 export async function insertBotOrderDraft(params: {
   userId: string;
@@ -66,6 +81,18 @@ export async function finalizeBotOrderFromPlaceResult(
   result: PlaceOrderResult,
 ): Promise<void> {
   if (!db) return;
+  const [existing] = await db
+    .select({ externalOrderId: botOrders.externalOrderId })
+    .from(botOrders)
+    .where(eq(botOrders.id, botOrderId))
+    .limit(1);
+  if (result.ok && existing?.externalOrderId) {
+    tradingLog("info", "bot_order_finalize_skip_has_external", {
+      botOrderId,
+      externalOrderId: existing.externalOrderId,
+    });
+    return;
+  }
   const now = new Date();
   if (result.ok) {
     await db
@@ -95,6 +122,12 @@ export async function finalizeBotOrderFromPlaceResult(
       updatedAt: now,
     })
     .where(eq(botOrders.id, botOrderId));
+  await recordBotExecutionLog({
+    botOrderId,
+    level: "error",
+    message: result.error.slice(0, 2000),
+    rawPayload: result.raw ?? { note: "no_raw_body" },
+  });
   tradingLog("warn", "bot_order_submit_failed", {
     botOrderId,
     error: result.error,
@@ -105,6 +138,9 @@ export async function updateBotOrderFromSync(params: {
   botOrderId: string;
   status: "open" | "filled" | "partial_fill" | "cancelled" | "rejected" | "failed";
   rawSyncResponse: Record<string, unknown>;
+  venueOrderState?: string | null;
+  fillPrice?: string | null;
+  filledQty?: string | null;
 }): Promise<void> {
   if (!db) return;
   const now = new Date();
@@ -115,6 +151,9 @@ export async function updateBotOrderFromSync(params: {
       rawSyncResponse: params.rawSyncResponse,
       lastSyncedAt: now,
       updatedAt: now,
+      venueOrderState: params.venueOrderState ?? null,
+      fillPrice: params.fillPrice ?? null,
+      filledQty: params.filledQty ?? null,
     })
     .where(eq(botOrders.id, params.botOrderId));
 }
