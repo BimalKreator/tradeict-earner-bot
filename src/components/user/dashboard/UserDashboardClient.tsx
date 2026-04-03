@@ -6,6 +6,7 @@ import type { UserDashboardData } from "@/lib/user-dashboard-types";
 
 import { DashboardTradeTable } from "./DashboardTradeTable";
 import { ExchangeStatusBadge } from "./ExchangeStatusBadge";
+import { FundsSummaryWidget } from "./FundsSummaryWidget";
 import { PnLMiniChart } from "./PnLMiniChart";
 import { StatCard } from "./StatCard";
 
@@ -82,6 +83,8 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
           {pollError}
         </div>
       ) : null}
+
+      <FundsSummaryWidget revenueDueWeekInr={data.revenueDueWeekInr} />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard

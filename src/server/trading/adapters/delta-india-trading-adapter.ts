@@ -2,6 +2,13 @@ import {
   deltaIndiaDefaultBaseUrl,
   signDeltaIndiaRequest,
 } from "@/server/exchange/delta-india-sign";
+import type {
+  DeltaWalletBalanceError,
+  DeltaWalletBalanceSnapshot,
+  DeltaWalletMovement,
+  DeltaWalletTransactionsError,
+  DeltaWalletTransactionsSnapshot,
+} from "@/server/exchange/delta-india-wallet-types";
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
@@ -117,7 +124,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     private readonly apiSecret: string,
   ) {}
 
-  private async signedFetch(
+  protected async signedFetch(
     method: string,
     path: string,
     queryString: string,
@@ -237,6 +244,141 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return { ok: false, error: `Delta placeOrder error: ${msg}` };
+    }
+  }
+
+  /**
+   * `GET /v2/wallet/balances` — portfolio equity and per-asset balances (read-only).
+   */
+  async fetchWalletBalances(): Promise<
+    DeltaWalletBalanceSnapshot | DeltaWalletBalanceError
+  > {
+    const path = "/v2/wallet/balances";
+    try {
+      const r = await this.signedFetch("GET", path, "", "");
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: `Delta wallet HTTP ${r.status}: ${r.text.slice(0, 200)}`,
+          httpStatus: r.status,
+        };
+      }
+      if (r.json.success !== true) {
+        return {
+          ok: false,
+          error: "Delta wallet response not successful.",
+          httpStatus: r.status,
+        };
+      }
+      const meta = r.json.meta;
+      const metaObj =
+        meta && typeof meta === "object"
+          ? (meta as Record<string, unknown>)
+          : null;
+      const netEquity =
+        metaObj && typeof metaObj.net_equity === "string"
+          ? metaObj.net_equity
+          : null;
+
+      const result = r.json.result;
+      const rows: DeltaWalletBalanceSnapshot["assetRows"] = [];
+      let availSum = 0;
+      let hasAvail = false;
+      if (Array.isArray(result)) {
+        for (const item of result) {
+          if (!item || typeof item !== "object") continue;
+          const o = item as Record<string, unknown>;
+          const sym =
+            typeof o.asset_symbol === "string"
+              ? o.asset_symbol
+              : String(o.asset_symbol ?? "");
+          const bal = o.balance != null ? String(o.balance) : null;
+          const av = o.available_balance != null ? String(o.available_balance) : null;
+          rows.push({ assetSymbol: sym, balance: bal, availableBalance: av });
+          const n = Number(av);
+          if (av != null && Number.isFinite(n)) {
+            availSum += n;
+            hasAvail = true;
+          }
+        }
+      }
+
+      const firstBal = rows[0]?.balance ?? null;
+      const liveBalanceDisplay = netEquity ?? firstBal;
+
+      return {
+        ok: true,
+        netEquity,
+        availableMarginTotal: hasAvail ? String(availSum) : null,
+        liveBalanceDisplay,
+        assetRows: rows,
+        rawMeta: metaObj,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: msg };
+    }
+  }
+
+  /**
+   * `GET /v2/wallet/transactions` — latest wallet movements (deposits, withdrawals, etc.).
+   */
+  async fetchWalletTransactions(opts?: {
+    pageSize?: number;
+  }): Promise<
+    DeltaWalletTransactionsSnapshot | DeltaWalletTransactionsError
+  > {
+    const pageSize = Math.min(Math.max(opts?.pageSize ?? 10, 1), 50);
+    const path = "/v2/wallet/transactions";
+    const queryString = `?page_size=${pageSize}`;
+    try {
+      const r = await this.signedFetch("GET", path, queryString, "");
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: `Delta transactions HTTP ${r.status}: ${r.text.slice(0, 200)}`,
+          httpStatus: r.status,
+        };
+      }
+      if (r.json.success !== true) {
+        return {
+          ok: false,
+          error: "Delta transactions response not successful.",
+          httpStatus: r.status,
+        };
+      }
+      const result = r.json.result;
+      const movements: DeltaWalletMovement[] = [];
+      if (Array.isArray(result)) {
+        for (const item of result) {
+          if (!item || typeof item !== "object") continue;
+          const o = item as Record<string, unknown>;
+          const id = o.id != null ? String(o.id) : "";
+          const amount = o.amount != null ? String(o.amount) : "0";
+          const bal = o.balance != null ? String(o.balance) : null;
+          const tt =
+            typeof o.transaction_type === "string"
+              ? o.transaction_type
+              : String(o.transaction_type ?? "");
+          const asym =
+            typeof o.asset_symbol === "string"
+              ? o.asset_symbol
+              : String(o.asset_symbol ?? "");
+          const ca = o.created_at != null ? String(o.created_at) : null;
+          if (id) movements.push({
+            id,
+            amount,
+            balanceAfter: bal,
+            transactionType: tt,
+            assetSymbol: asym,
+            createdAt: ca,
+          });
+        }
+      }
+      return { ok: true, movements };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: msg };
     }
   }
 
