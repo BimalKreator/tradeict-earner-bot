@@ -26,6 +26,8 @@ export type UserDashboardData = {
     lastTestStatus: string | null;
   };
   revenueDueWeekInr: string;
+  /** True when any strategy run is in `blocked_revenue_due` (new entries paused; exits still allowed). */
+  botEntriesPausedRevenueShare: boolean;
   chartBot: { date: string; pnlInr: string }[];
   chartAll: { date: string; pnlInr: string }[];
   botTrades: UserDashboardTradeRow[];

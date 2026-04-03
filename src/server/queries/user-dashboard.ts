@@ -199,7 +199,9 @@ export async function getUserDashboardData(
   let runsActive = 0;
   let runsPaused = 0;
   let runsInactive = 0;
+  let botEntriesPausedRevenueShare = false;
   for (const r of runRows) {
+    if (r.status === "blocked_revenue_due") botEntriesPausedRevenueShare = true;
     if (r.status === "active") runsActive += 1;
     else if (PAUSED_RUN_STATUSES.has(r.status)) runsPaused += 1;
     else if (INACTIVE_RUN_STATUSES.has(r.status)) runsInactive += 1;
@@ -283,6 +285,7 @@ export async function getUserDashboardData(
     runsInactive,
     exchange: exchangeBadge(ec),
     revenueDueWeekInr: revRow?.total ?? "0",
+    botEntriesPausedRevenueShare,
     chartBot,
     chartAll,
     botTrades: botTradesRaw.map((t) => ({

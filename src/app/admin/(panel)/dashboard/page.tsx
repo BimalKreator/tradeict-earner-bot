@@ -44,6 +44,11 @@ export default async function AdminDashboardPage() {
       sublabel: "user_strategy_runs.status = active",
     },
     {
+      label: "Revenue block (runs)",
+      value: formatIntCount(m.blockedRevenueDueRuns),
+      sublabel: "Entries paused — overdue weekly ledger",
+    },
+    {
       label: "Global capital allocated",
       value: formatInrAmount(m.globalCapitalAllocatedInr),
       sublabel: "Sum of capital_to_use_inr on active runs",

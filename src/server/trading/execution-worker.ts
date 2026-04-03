@@ -102,7 +102,10 @@ export async function processOneTradingJob(
     return { processed: true };
   }
 
-  const elig = await assertRunStillEligibleForExecution(p.runId);
+  const signalAction = p.signalAction ?? "entry";
+  const elig = await assertRunStillEligibleForExecution(p.runId, {
+    signalAction,
+  });
   if (!elig.ok) {
     tradingLog("warn", "job_skipped_ineligible", {
       jobId: job.id,

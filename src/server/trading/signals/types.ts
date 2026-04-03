@@ -13,6 +13,11 @@ export type StrategyExecutionSignal = {
   /** Base sizing unit; per-user risk still capped by run settings downstream. */
   quantity: string;
   limitPrice?: string | null;
+  /**
+   * `entry` = open / add; `exit` = close / reduce. Omitted → treated as `entry`
+   * in the execution layer (see `normalizeStrategySignalAction`).
+   */
+  actionType?: "entry" | "exit";
   /** Optional filter — omit to broadcast to all eligible subscribers. */
   targetUserIds?: string[];
   metadata?: Record<string, unknown>;

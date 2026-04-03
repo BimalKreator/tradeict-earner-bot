@@ -26,16 +26,23 @@ const hasKeysExpr = sql`(
 
 /**
  * Runs that may execute trades for a strategy: approved user, active subscription,
- * run `active`, strategy `active`, latest Delta connection on + tested + keys,
- * capital/leverage set.
+ * strategy `active`, latest Delta connection on + tested + keys, capital/leverage set.
+ *
+ * Run status:
+ * - `signalAction === "entry"` (default): only `active` runs.
+ * - `signalAction === "exit"`: `active` or `blocked_revenue_due` (close positions while billing block is on).
  */
 export async function findEligibleRunsForStrategyExecution(
   strategyId: string,
-  options?: { targetUserIds?: string[] },
+  options?: {
+    targetUserIds?: string[];
+    signalAction?: "entry" | "exit";
+  },
 ): Promise<EligibleStrategyRunRow[]> {
   if (!db) return [];
 
   const now = new Date();
+  const action = options?.signalAction ?? "entry";
 
   const latestDeltaEc = db
     .selectDistinctOn([exchangeConnections.userId], {
@@ -58,9 +65,14 @@ export async function findEligibleRunsForStrategyExecution(
     )
     .as("latest_delta_ec");
 
+  const runStatusFilter =
+    action === "exit"
+      ? inArray(userStrategyRuns.status, ["active", "blocked_revenue_due"])
+      : eq(userStrategyRuns.status, "active");
+
   const filters = [
     eq(strategies.id, strategyId),
-    eq(userStrategyRuns.status, "active"),
+    runStatusFilter,
     eq(userStrategySubscriptions.status, "active"),
     gt(userStrategySubscriptions.accessValidUntil, now),
     isNull(userStrategySubscriptions.deletedAt),
@@ -124,6 +136,7 @@ export type ExecutionEligibilityFailure =
   | "strategy_inactive"
   | "run_not_active"
   | "revenue_or_pause_block"
+  | "blocked_revenue_entry"
   | "exchange_not_ready"
   | "settings_incomplete";
 
@@ -132,6 +145,7 @@ export type ExecutionEligibilityFailure =
  */
 export async function assertRunStillEligibleForExecution(
   runId: string,
+  opts?: { signalAction?: "entry" | "exit" },
 ): Promise<{ ok: true; row: EligibleStrategyRunRow } | { ok: false; reason: ExecutionEligibilityFailure }> {
   if (!db) return { ok: false, reason: "run_not_found" };
 
@@ -166,6 +180,8 @@ export async function assertRunStillEligibleForExecution(
     .where(eq(userStrategyRuns.id, runId))
     .limit(1);
 
+  const signalAction = opts?.signalAction ?? "entry";
+
   if (!r) return { ok: false, reason: "run_not_found" };
   if (r.approval !== "approved") return { ok: false, reason: "user_not_approved" };
   if (r.subDeleted != null) return { ok: false, reason: "subscription_inactive" };
@@ -175,9 +191,15 @@ export async function assertRunStillEligibleForExecution(
   if (r.stratDeleted != null || r.stratStatus !== "active") {
     return { ok: false, reason: "strategy_inactive" };
   }
-  if (r.runStatus !== "active") {
+
+  if (r.runStatus === "blocked_revenue_due") {
+    if (signalAction === "exit") {
+      /* fall through — exits are allowed to flatten risk */
+    } else {
+      return { ok: false, reason: "blocked_revenue_entry" };
+    }
+  } else if (r.runStatus !== "active") {
     if (
-      r.runStatus === "blocked_revenue_due" ||
       r.runStatus === "paused_revenue_due" ||
       r.runStatus === "paused_admin"
     ) {

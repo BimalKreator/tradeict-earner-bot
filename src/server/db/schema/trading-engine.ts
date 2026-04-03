@@ -158,6 +158,8 @@ export type TradingExecutionJobPayload = {
   targetUserId: string;
   subscriptionId: string;
   runId: string;
+  /** Mirrors intake signal; omitted in legacy jobs → worker defaults to `entry`. */
+  signalAction?: "entry" | "exit";
   signalMetadata?: Record<string, unknown>;
 };
 

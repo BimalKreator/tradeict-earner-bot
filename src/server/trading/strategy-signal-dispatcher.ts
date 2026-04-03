@@ -1,5 +1,6 @@
 import { findEligibleRunsForStrategyExecution } from "./eligibility";
 import { enqueueStrategySignalJobs } from "./execution-queue";
+import { normalizeStrategySignalAction } from "./signal-action";
 import type {
   StrategyExecutionSignal,
   StrategySignalIntakeResponse,
@@ -21,8 +22,11 @@ export async function dispatchStrategyExecutionSignal(
     return { ok: false, error: "quantity is required." };
   }
 
+  const signalAction = normalizeStrategySignalAction(signal);
+
   const runs = await findEligibleRunsForStrategyExecution(signal.strategyId, {
     targetUserIds: signal.targetUserIds,
+    signalAction,
   });
 
   if (runs.length === 0) {
@@ -45,6 +49,7 @@ export async function dispatchStrategyExecutionSignal(
     targetUserId: r.userId,
     subscriptionId: r.subscriptionId,
     runId: r.runId,
+    signalAction,
     signalMetadata: signal.metadata,
   }));
 

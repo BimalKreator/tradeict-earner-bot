@@ -132,6 +132,10 @@ export default async function UserMyStrategiesPage() {
   const now = new Date();
   const vms = rows.map((r) => toViewModel(r, now));
 
+  const hasRevenueShareBlock = rows.some(
+    (r) => r.runStatus === "blocked_revenue_due",
+  );
+
   const active = vms.filter((r) => !r.isSubscriptionExpired && r.runStatus === "active");
   const paused = vms.filter(
     (r) => !r.isSubscriptionExpired && r.runStatus !== "active",
@@ -149,6 +153,24 @@ export default async function UserMyStrategiesPage() {
           Delta India connection under Exchange.
         </p>
       </div>
+
+      {hasRevenueShareBlock ? (
+        <div className="rounded-2xl border border-red-500/35 bg-gradient-to-r from-red-950/45 to-amber-950/25 px-4 py-3 text-sm text-red-100/95 backdrop-blur-sm">
+          <p className="font-semibold text-amber-100">
+            Action required: bot entries are paused due to pending revenue share.
+          </p>
+          <p className="mt-1 text-xs text-red-100/80">
+            Your strategy may still receive exit orders to close existing
+            positions. Settle revenue share to restore new entries.
+          </p>
+          <Link
+            href="/user/funds"
+            className="mt-2 inline-block text-xs font-semibold text-[var(--accent)] hover:underline"
+          >
+            Funds & billing →
+          </Link>
+        </div>
+      ) : null}
 
       {vms.length === 0 ? (
         <GlassPanel>

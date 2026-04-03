@@ -34,8 +34,9 @@ export function AdminAttentionPanel({
           Action required
         </h2>
         <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-          Paused runs (exchange / admin / revenue block), pending user approvals,
-          and profile change requests.
+          Paused runs (exchange / admin /{" "}
+          <span className="text-red-300/90">revenue block</span>), pending user
+          approvals, and profile change requests.
         </p>
       </div>
 
@@ -51,7 +52,11 @@ export function AdminAttentionPanel({
               {runs.map((r) => (
                 <li
                   key={r.runId}
-                  className="rounded-xl border border-[var(--border-glass)]/50 bg-black/25 px-3 py-2 text-sm"
+                  className={`rounded-xl border px-3 py-2 text-sm ${
+                    r.status === "blocked_revenue_due"
+                      ? "border-red-500/40 bg-red-950/25 ring-1 ring-red-500/20"
+                      : "border-[var(--border-glass)]/50 bg-black/25"
+                  }`}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <Link
@@ -60,7 +65,13 @@ export function AdminAttentionPanel({
                     >
                       {r.userEmail}
                     </Link>
-                    <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                    <span
+                      className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        r.status === "blocked_revenue_due"
+                          ? "bg-red-500/20 text-red-100"
+                          : "bg-amber-500/15 text-amber-200"
+                      }`}
+                    >
                       {r.status.replace(/_/g, " ")}
                     </span>
                   </div>

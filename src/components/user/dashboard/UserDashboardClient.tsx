@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import type { UserDashboardData } from "@/lib/user-dashboard-types";
@@ -81,6 +82,24 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
       {pollError ? (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
           {pollError}
+        </div>
+      ) : null}
+
+      {data.botEntriesPausedRevenueShare ? (
+        <div className="rounded-2xl border border-red-500/35 bg-gradient-to-r from-red-950/50 to-amber-950/30 px-4 py-3 text-sm text-red-100/95 shadow-[0_0_24px_-8px_rgba(239,68,68,0.45)] backdrop-blur-sm">
+          <p className="font-semibold text-amber-100">
+            Action required: bot entries are paused due to pending revenue share.
+          </p>
+          <p className="mt-1 text-xs text-red-100/75">
+            Exit signals can still close open positions. Pay your weekly revenue
+            balance to resume new entries.
+          </p>
+          <Link
+            href="/user/funds"
+            className="mt-2 inline-block text-xs font-semibold text-[var(--accent)] hover:underline"
+          >
+            Open funds & billing →
+          </Link>
         </div>
       ) : null}
 

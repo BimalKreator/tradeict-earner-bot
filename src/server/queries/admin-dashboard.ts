@@ -36,6 +36,8 @@ export type AdminDashboardMetrics = {
   totalCollectedRevenueInr: string;
   /** Count of `user_strategy_runs` with status `active`. */
   activeBotRuns: number;
+  /** Runs in `blocked_revenue_due` (weekly revenue overdue — entries paused). */
+  blockedRevenueDueRuns: number;
   /** Sum of `capital_to_use_inr` for active runs (nulls treated as 0 in SQL). */
   globalCapitalAllocatedInr: string;
 };
@@ -49,6 +51,7 @@ const zeroMetrics: AdminDashboardMetrics = {
   revenueSharePendingInr: "0",
   totalCollectedRevenueInr: "0",
   activeBotRuns: 0,
+  blockedRevenueDueRuns: 0,
   globalCapitalAllocatedInr: "0",
 };
 
@@ -129,6 +132,7 @@ export async function getAdminDashboardMetrics(): Promise<AdminDashboardMetrics>
     dueRow,
     revenueRow,
     activeRunsRow,
+    blockedRevRow,
     capitalRow,
   ] = await Promise.all([
     db
@@ -189,6 +193,10 @@ export async function getAdminDashboardMetrics(): Promise<AdminDashboardMetrics>
       .from(userStrategyRuns)
       .where(eq(userStrategyRuns.status, "active")),
     db
+      .select({ c: count() })
+      .from(userStrategyRuns)
+      .where(eq(userStrategyRuns.status, "blocked_revenue_due")),
+    db
       .select({
         v: sql<string>`coalesce(
           sum(cast(${userStrategyRuns.capitalToUseInr} as numeric)),
@@ -208,6 +216,7 @@ export async function getAdminDashboardMetrics(): Promise<AdminDashboardMetrics>
     revenueSharePendingInr: formatDecimal(dueRow[0]?.v),
     totalCollectedRevenueInr: formatDecimal(revenueRow[0]?.v),
     activeBotRuns: Number(activeRunsRow[0]?.c ?? 0),
+    blockedRevenueDueRuns: Number(blockedRevRow[0]?.c ?? 0),
     globalCapitalAllocatedInr: formatDecimal(capitalRow[0]?.v),
   };
 }
