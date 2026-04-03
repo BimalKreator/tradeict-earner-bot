@@ -7,6 +7,7 @@ const navItems = [
   { href: "/admin/user-strategies", label: "User strategies" },
   { href: "/admin/profile-requests", label: "Profile requests" },
   { href: "/admin/strategies", label: "Strategies" },
+  { href: "/admin/trades", label: "Trades" },
   { href: "/admin/revenue", label: "Revenue" },
   { href: "/admin/terms", label: "Terms" },
   { href: "/admin/audit-logs", label: "Audit logs" },
