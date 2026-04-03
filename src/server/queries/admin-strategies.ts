@@ -1,9 +1,10 @@
-import { and, count, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import {
   strategies,
   strategyPerformanceSnapshots,
+  userStrategyPricingOverrides,
   userStrategySubscriptions,
 } from "@/server/db/schema";
 
@@ -19,12 +20,17 @@ export type AdminStrategyListRow = {
   recommendedCapitalInr: string | null;
   maxLeverage: string | null;
   updatedAt: Date;
+  /** Any user has a live active override on this strategy. */
+  hasActiveUserPricingOverride: boolean;
 };
 
 export async function listStrategiesForAdmin(): Promise<AdminStrategyListRow[]> {
   if (!db) return [];
 
-  const rows = await db
+  const now = new Date();
+
+  const [rows, overrideFlags] = await Promise.all([
+    db
     .select({
       id: strategies.id,
       slug: strategies.slug,
@@ -38,8 +44,27 @@ export async function listStrategiesForAdmin(): Promise<AdminStrategyListRow[]> 
       maxLeverage: strategies.maxLeverage,
       updatedAt: strategies.updatedAt,
     })
-    .from(strategies)
-    .where(isNull(strategies.deletedAt));
+      .from(strategies)
+      .where(isNull(strategies.deletedAt)),
+    db
+      .select({
+        strategyId: userStrategyPricingOverrides.strategyId,
+      })
+      .from(userStrategyPricingOverrides)
+      .where(
+        and(
+          eq(userStrategyPricingOverrides.isActive, true),
+          lte(userStrategyPricingOverrides.effectiveFrom, now),
+          or(
+            isNull(userStrategyPricingOverrides.effectiveUntil),
+            gt(userStrategyPricingOverrides.effectiveUntil, now),
+          ),
+        ),
+      )
+      .groupBy(userStrategyPricingOverrides.strategyId),
+  ]);
+
+  const overrideSet = new Set(overrideFlags.map((o) => o.strategyId));
 
   return rows.map((r) => ({
     ...r,
@@ -49,6 +74,7 @@ export async function listStrategiesForAdmin(): Promise<AdminStrategyListRow[]> 
       ? String(r.recommendedCapitalInr)
       : null,
     maxLeverage: r.maxLeverage ? String(r.maxLeverage) : null,
+    hasActiveUserPricingOverride: overrideSet.has(r.id),
   }));
 }
 

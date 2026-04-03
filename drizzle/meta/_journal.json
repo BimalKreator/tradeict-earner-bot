@@ -99,6 +99,20 @@
       "when": 1775330000000,
       "tag": "0013_phase23_revenue_share_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1775340000000,
+      "tag": "0014_phase24_admin_revenue_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1775350000000,
+      "tag": "0015_phase25_pricing_override_admin",
+      "breakpoints": true
     }
   ]
 }

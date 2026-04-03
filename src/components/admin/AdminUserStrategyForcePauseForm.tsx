@@ -2,26 +2,21 @@
 
 import { useActionState, useId } from "react";
 
-import {
-  adminForcePauseRunInitialState,
-  adminForcePauseStrategyRunAction,
-} from "@/server/actions/adminStrategyRun";
+import { adminForcePauseRunFormAction } from "@/server/actions/adminUserStrategyControls";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 
 export function AdminUserStrategyForcePauseForm({
-  targetUserId,
-  subscriptionId,
+  runId,
   strategyName,
 }: {
-  targetUserId: string;
-  subscriptionId: string;
+  runId: string;
   strategyName: string;
 }) {
   const noteId = useId();
   const [state, formAction, pending] = useActionState(
-    adminForcePauseStrategyRunAction,
-    adminForcePauseRunInitialState,
+    adminForcePauseRunFormAction,
+    null,
   );
 
   return (
@@ -32,17 +27,16 @@ export function AdminUserStrategyForcePauseForm({
       <p className="mt-1 text-xs text-[var(--text-muted)]">
         Sets run status to <code className="text-amber-100">paused_admin</code> for{" "}
         <span className="text-[var(--text-primary)]">{strategyName}</span>. User
-        cannot activate until support clears this.
+        cannot self-activate until support resumes the run.
       </p>
       <form action={formAction} className="mt-3 space-y-2">
-        <input type="hidden" name="targetUserId" value={targetUserId} />
-        <input type="hidden" name="subscriptionId" value={subscriptionId} />
+        <input type="hidden" name="runId" value={runId} />
         <label htmlFor={noteId} className="sr-only">
           Internal note (required)
         </label>
         <textarea
           id={noteId}
-          name="adminNote"
+          name="adminNotes"
           required
           rows={2}
           disabled={pending}
@@ -56,7 +50,7 @@ export function AdminUserStrategyForcePauseForm({
         >
           {pending ? "Applying…" : "Force pause"}
         </button>
-        {state.message ? (
+        {state?.message ? (
           <p
             role="status"
             className={

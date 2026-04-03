@@ -208,6 +208,7 @@ export async function getUserTransactionsLedger(
         FROM user_strategy_pricing_overrides uspo
         WHERE uspo.user_id = bo.user_id
           AND uspo.strategy_id = bo.strategy_id
+          AND uspo.is_active = true
           AND uspo.effective_from <= COALESCE(bo.last_synced_at, bo.updated_at, bo.created_at)
           AND (
             uspo.effective_until IS NULL
@@ -258,6 +259,7 @@ export async function getUserTransactionsLedger(
         FROM user_strategy_pricing_overrides uspo
         WHERE uspo.user_id = t.user_id
           AND uspo.strategy_id = t.strategy_id
+          AND uspo.is_active = true
           AND uspo.effective_from <= t.executed_at
           AND (
             uspo.effective_until IS NULL

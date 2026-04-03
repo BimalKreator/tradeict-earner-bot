@@ -116,6 +116,7 @@ export async function listEffectivePricingOverridesForUser(
     .where(
       and(
         eq(userStrategyPricingOverrides.userId, userId),
+        eq(userStrategyPricingOverrides.isActive, true),
         inArray(userStrategyPricingOverrides.strategyId, strategyIds),
         lte(userStrategyPricingOverrides.effectiveFrom, now),
         or(

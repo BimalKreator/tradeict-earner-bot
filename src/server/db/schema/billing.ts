@@ -58,6 +58,8 @@ export const weeklyRevenueShareLedgers = pgTable(
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    /** Internal admin-only notes (not shown to end users). */
+    adminNotes: text("admin_notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -103,6 +105,7 @@ export const payments = pgTable(
     /** Access days purchased (default 30 per product rules) */
     accessDaysPurchased: integer("access_days_purchased").notNull().default(30),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    adminNotes: text("admin_notes"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

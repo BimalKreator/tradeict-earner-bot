@@ -71,12 +71,20 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
         </GlassPanel>
       ) : null}
       <div>
-        <Link
-          href="/admin/users"
-          className="text-sm text-[var(--accent)] hover:underline"
-        >
-          ← Users
-        </Link>
+        <div className="flex flex-wrap gap-3">
+          <Link
+            href="/admin/users"
+            className="text-sm text-[var(--accent)] hover:underline"
+          >
+            ← Users
+          </Link>
+          <Link
+            href={`/admin/users/${user.id}/pricing`}
+            className="text-sm font-medium text-[var(--accent)] hover:underline"
+          >
+            Pricing overrides
+          </Link>
+        </div>
         <h1 className="mt-2 font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
           {user.email}
         </h1>
@@ -187,6 +195,11 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
                   className="border-b border-[var(--border-glass)]/40 pb-3"
                 >
                   <span className="font-medium">{s.strategyName}</span>
+                  {s.hasCustomPricing ? (
+                    <span className="ml-2 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-200">
+                      Custom pricing
+                    </span>
+                  ) : null}
                   <span className="ml-2 text-xs text-[var(--text-muted)]">
                     run: {s.runStatus ?? "—"} · valid until{" "}
                     {new Intl.DateTimeFormat("en-IN", {
@@ -196,8 +209,7 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
                   </span>
                   {s.runId && adminCanForcePauseRunStatus(s.runStatus) ? (
                     <AdminUserStrategyForcePauseForm
-                      targetUserId={user.id}
-                      subscriptionId={s.subscriptionId}
+                      runId={s.runId}
                       strategyName={s.strategyName}
                     />
                   ) : null}
@@ -220,13 +232,17 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
                   className="border-b border-[var(--border-glass)]/40 pb-3"
                 >
                   <span className="font-medium">{s.strategyName}</span>
+                  {s.hasCustomPricing ? (
+                    <span className="ml-2 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-200">
+                      Custom pricing
+                    </span>
+                  ) : null}
                   <span className="ml-2 text-xs text-[var(--text-muted)]">
                     sub: {s.subscriptionStatus} · run: {s.runStatus ?? "—"}
                   </span>
                   {s.runId && adminCanForcePauseRunStatus(s.runStatus) ? (
                     <AdminUserStrategyForcePauseForm
-                      targetUserId={user.id}
-                      subscriptionId={s.subscriptionId}
+                      runId={s.runId}
                       strategyName={s.strategyName}
                     />
                   ) : null}
@@ -255,31 +271,16 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
           <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
             Pricing overrides
           </h2>
-          {profile.pricingOverrides.length === 0 ? (
-            <p className="text-sm text-[var(--text-muted)]">
-              No per-user strategy overrides.
-            </p>
-          ) : (
-            <ul className="space-y-2 text-xs text-[var(--text-muted)]">
-              {profile.pricingOverrides.map((o) => (
-                <li key={o.id} className="rounded-lg bg-black/20 p-2">
-                  <span className="font-medium text-[var(--text-primary)]">
-                    {o.strategyName}
-                  </span>
-                  <div className="mt-1">
-                    Fee override: {o.monthlyFeeInrOverride ?? "—"} · Rev % override:{" "}
-                    {o.revenueSharePercentOverride ?? "—"}
-                  </div>
-                  <div className="mt-0.5">
-                    Effective {o.effectiveFrom.toISOString().slice(0, 10)}
-                    {o.effectiveUntil
-                      ? ` → ${o.effectiveUntil.toISOString().slice(0, 10)}`
-                      : " (open)"}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <p className="text-sm text-[var(--text-muted)]">
+            Manage fixed fees and revenue-share % per strategy, with effective
+            windows and audit history.
+          </p>
+          <Link
+            href={`/admin/users/${user.id}/pricing`}
+            className="inline-flex rounded-xl border border-[var(--border-glass)] px-4 py-2 text-sm font-medium text-[var(--accent)] hover:bg-white/5"
+          >
+            Open pricing manager
+          </Link>
         </GlassPanel>
       </div>
 

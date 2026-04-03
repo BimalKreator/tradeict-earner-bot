@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   numeric,
   pgTable,
@@ -106,6 +107,10 @@ export const userStrategyPricingOverrides = pgTable(
       .defaultNow()
       .notNull(),
     effectiveUntil: timestamp("effective_until", { withTimezone: true }),
+    /** When false, row is ignored for checkout / revenue resolution. */
+    isActive: boolean("is_active").notNull().default(true),
+    /** Internal admin-only context (not shown to end users). */
+    adminNotes: text("admin_notes"),
     setByAdminId: uuid("set_by_admin_id").references(() => admins.id, {
       onDelete: "set null",
     }),
@@ -117,6 +122,12 @@ export const userStrategyPricingOverrides = pgTable(
     index("uspo_user_strategy_effective_idx").on(
       t.userId,
       t.strategyId,
+      t.effectiveFrom,
+    ),
+    index("uspo_user_strategy_active_from_idx").on(
+      t.userId,
+      t.strategyId,
+      t.isActive,
       t.effectiveFrom,
     ),
   ],

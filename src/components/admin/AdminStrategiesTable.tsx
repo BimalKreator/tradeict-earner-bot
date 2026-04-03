@@ -90,8 +90,15 @@ export function AdminStrategiesTable({ rows }: { rows: AdminStrategyListRow[] })
               <td className="py-3 pr-3 align-top text-xs text-[var(--text-muted)]">
                 {RISK_LABELS[r.riskLabel] ?? r.riskLabel}
               </td>
-              <td className="py-3 pr-3 align-top tabular-nums text-xs text-[var(--text-muted)]">
-                ₹{r.defaultMonthlyFeeInr} · {r.defaultRevenueSharePercent}%
+              <td className="py-3 pr-3 align-top text-xs text-[var(--text-muted)]">
+                <div className="tabular-nums">
+                  ₹{r.defaultMonthlyFeeInr} · {r.defaultRevenueSharePercent}%
+                </div>
+                {r.hasActiveUserPricingOverride ? (
+                  <span className="mt-1 inline-block rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-medium text-violet-200">
+                    Custom pricing
+                  </span>
+                ) : null}
               </td>
               <td className="py-3 align-top">
                 <div className="flex flex-col gap-2">

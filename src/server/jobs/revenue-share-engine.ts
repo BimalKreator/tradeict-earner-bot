@@ -82,6 +82,7 @@ async function effectiveRevenueSharePercent(
       and(
         eq(userStrategyPricingOverrides.userId, userId),
         eq(userStrategyPricingOverrides.strategyId, strategyId),
+        eq(userStrategyPricingOverrides.isActive, true),
         lte(userStrategyPricingOverrides.effectiveFrom, evaluatedAt),
         or(
           isNull(userStrategyPricingOverrides.effectiveUntil),

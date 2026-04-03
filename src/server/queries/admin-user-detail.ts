@@ -1,9 +1,11 @@
 import {
   and,
-  desc,
   eq,
+  gt,
   inArray,
   isNull,
+  lte,
+  or,
   sql,
   sum,
 } from "drizzle-orm";
@@ -40,16 +42,8 @@ export type AdminUserStrategyRow = {
   accessValidUntil: Date;
   runId: string | null;
   runStatus: string | null;
-};
-
-export type AdminUserPricingOverrideRow = {
-  id: string;
-  strategyName: string;
-  strategySlug: string;
-  monthlyFeeInrOverride: string | null;
-  revenueSharePercentOverride: string | null;
-  effectiveFrom: Date;
-  effectiveUntil: Date | null;
+  /** True when this user has a live (active + in-window) pricing override for this strategy. */
+  hasCustomPricing: boolean;
 };
 
 export type AdminUserProfileDetail = {
@@ -73,7 +67,6 @@ export type AdminUserProfileDetail = {
   inactiveStrategies: AdminUserStrategyRow[];
   revenueDueInr: string;
   paymentsSuccessTotalInr: string;
-  pricingOverrides: AdminUserPricingOverrideRow[];
 };
 
 export async function getAdminUserProfile(
@@ -110,7 +103,7 @@ export async function getAdminUserProfile(
     subRows,
     dueRow,
     payRow,
-    overrideRows,
+    liveOverrideStrategies,
   ] = await Promise.all([
     db
       .select({
@@ -184,24 +177,26 @@ export async function getAdminUserProfile(
       ),
     db
       .select({
-        id: userStrategyPricingOverrides.id,
-        strategyName: strategies.name,
-        strategySlug: strategies.slug,
-        monthlyFeeInrOverride: userStrategyPricingOverrides.monthlyFeeInrOverride,
-        revenueSharePercentOverride:
-          userStrategyPricingOverrides.revenueSharePercentOverride,
-        effectiveFrom: userStrategyPricingOverrides.effectiveFrom,
-        effectiveUntil: userStrategyPricingOverrides.effectiveUntil,
+        strategyId: userStrategyPricingOverrides.strategyId,
       })
       .from(userStrategyPricingOverrides)
-      .innerJoin(
-        strategies,
-        eq(strategies.id, userStrategyPricingOverrides.strategyId),
+      .where(
+        and(
+          eq(userStrategyPricingOverrides.userId, userId),
+          eq(userStrategyPricingOverrides.isActive, true),
+          lte(userStrategyPricingOverrides.effectiveFrom, now),
+          or(
+            isNull(userStrategyPricingOverrides.effectiveUntil),
+            gt(userStrategyPricingOverrides.effectiveUntil, now),
+          ),
+        ),
       )
-      .where(eq(userStrategyPricingOverrides.userId, userId))
-      .orderBy(desc(userStrategyPricingOverrides.effectiveFrom))
-      .limit(50),
+      .groupBy(userStrategyPricingOverrides.strategyId),
   ]);
+
+  const livePricingStrategyIds = new Set(
+    liveOverrideStrategies.map((r) => r.strategyId),
+  );
 
   const activeStrategies: AdminUserStrategyRow[] = [];
   const inactiveStrategies: AdminUserStrategyRow[] = [];
@@ -216,6 +211,7 @@ export async function getAdminUserProfile(
       accessValidUntil: r.accessValidUntil,
       runId: r.runId,
       runStatus: r.runStatus,
+      hasCustomPricing: livePricingStrategyIds.has(r.strategyId),
     };
     const entitled =
       r.subscriptionStatus === "active" && r.accessValidUntil > now;
@@ -237,18 +233,5 @@ export async function getAdminUserProfile(
     inactiveStrategies,
     revenueDueInr: dueRow[0]?.v ?? "0",
     paymentsSuccessTotalInr: payRow[0]?.v ?? "0",
-    pricingOverrides: overrideRows.map((o) => ({
-      id: o.id,
-      strategyName: o.strategyName,
-      strategySlug: o.strategySlug,
-      monthlyFeeInrOverride: o.monthlyFeeInrOverride
-        ? String(o.monthlyFeeInrOverride)
-        : null,
-      revenueSharePercentOverride: o.revenueSharePercentOverride
-        ? String(o.revenueSharePercentOverride)
-        : null,
-      effectiveFrom: o.effectiveFrom,
-      effectiveUntil: o.effectiveUntil,
-    })),
   };
 }
