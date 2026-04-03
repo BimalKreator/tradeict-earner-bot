@@ -109,6 +109,13 @@ export const weeklyRevenueShareLedgers = pgTable(
     amountPaidInr: numeric("amount_paid_inr", { precision: 14, scale: 2 })
       .notNull()
       .default("0"),
+    /** Snapshot of effective % at week close (override or strategy default); never infer from live joins later. */
+    revenueSharePercentApplied: numeric("revenue_share_percent_applied", {
+      precision: 5,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
     status: revenueLedgerStatusEnum("status").notNull().default("unpaid"),
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     paidAt: timestamp("paid_at", { withTimezone: true }),

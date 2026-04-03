@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/daily-pnl-snapshot",
+      "schedule": "30 18 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-revenue-share",
+      "schedule": "35 18 * * *"
+    }
+  ]
+}

@@ -85,6 +85,13 @@
       "when": 1775310000000,
       "tag": "0011_phase18_bot_order_pnl",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1775320000000,
+      "tag": "0012_phase21_ledger_rev_share_percent",
+      "breakpoints": true
     }
   ]
 }
