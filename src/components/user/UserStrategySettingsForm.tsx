@@ -1,0 +1,232 @@
+"use client";
+
+import { useActionState, useEffect, useMemo, useState } from "react";
+import type { ZodIssue } from "zod";
+
+import { formatInrAmount } from "@/lib/format-inr";
+import {
+  createUserStrategyRunSettingsSchema,
+  type UserStrategySettingsConstraints,
+} from "@/lib/user-strategy-settings-schema";
+import {
+  updateUserStrategySettingsAction,
+  userStrategySettingsActionInitialState,
+  type UserStrategySettingsActionState,
+} from "@/server/actions/userStrategyRunSettings";
+
+import { GlassPanel } from "@/components/ui/GlassPanel";
+
+function issuesToMap(issues: ZodIssue[]): Record<string, string> {
+  const m: Record<string, string> = {};
+  for (const i of issues) {
+    const k = i.path[0];
+    if (typeof k === "string" && m[k] == null) m[k] = i.message;
+  }
+  return m;
+}
+
+export function UserStrategySettingsForm({
+  strategySlug,
+  constraints,
+  initialCapitalToUseInr,
+  initialLeverage,
+  runStatus,
+  canEditSettings,
+}: {
+  strategySlug: string;
+  constraints: UserStrategySettingsConstraints;
+  initialCapitalToUseInr: string;
+  initialLeverage: string;
+  runStatus: string;
+  canEditSettings: boolean;
+}) {
+  const schema = useMemo(
+    () => createUserStrategyRunSettingsSchema(constraints),
+    [constraints],
+  );
+
+  const maxLevNum = useMemo(() => {
+    const s = constraints.maxLeverage;
+    if (s == null || String(s).trim() === "") return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }, [constraints.maxLeverage]);
+
+  const [capital, setCapital] = useState(initialCapitalToUseInr);
+  const [leverage, setLeverage] = useState(initialLeverage);
+  const [liveErrors, setLiveErrors] = useState<Record<string, string>>({});
+
+  const [state, formAction, pending] = useActionState<
+    UserStrategySettingsActionState,
+    FormData
+  >(updateUserStrategySettingsAction, userStrategySettingsActionInitialState);
+
+  useEffect(() => {
+    const r = schema.safeParse({ capitalToUseInr: capital, leverage });
+    if (!r.success) {
+      setLiveErrors(issuesToMap(r.error.issues));
+    } else {
+      setLiveErrors({});
+    }
+  }, [capital, leverage, schema]);
+
+  const capitalErr = liveErrors.capitalToUseInr ?? state.fieldErrors.capitalToUseInr;
+  const leverageErr = liveErrors.leverage ?? state.fieldErrors.leverage;
+
+  const sliderMin = 0.01;
+  const sliderMax = maxLevNum ?? 1;
+  const levNum = Number(leverage);
+  const sliderValue =
+    Number.isFinite(levNum) && levNum > 0
+      ? Math.min(Math.max(levNum, sliderMin), sliderMax)
+      : sliderMin;
+
+  function setLeverageFromSlider(v: number) {
+    setLeverage(String(Math.round(v * 100) / 100));
+  }
+
+  if (!canEditSettings) {
+    return (
+      <GlassPanel className="border border-amber-500/25 bg-amber-500/5">
+        <p className="text-sm text-amber-100">
+          Capital and leverage cannot be edited while the run is in the
+          &quot;{runStatus}&quot; state. Use My strategies to activate or resolve
+          blocks first.
+        </p>
+      </GlassPanel>
+    );
+  }
+
+  return (
+    <form action={formAction} className="space-y-6">
+      <input type="hidden" name="strategySlug" value={strategySlug} />
+
+      <GlassPanel className="border border-white/[0.08] bg-gradient-to-b from-white/[0.05] to-transparent">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          Strategy constraints
+        </h2>
+        <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+          <div className="rounded-xl border border-white/[0.06] bg-black/25 px-3 py-2">
+            <dt className="text-[var(--text-muted)]">Recommended capital (min)</dt>
+            <dd className="mt-1 font-medium text-[var(--text-primary)]">
+              {constraints.recommendedCapitalInr
+                ? formatInrAmount(constraints.recommendedCapitalInr)
+                : "Not set — any positive capital amount is allowed."}
+            </dd>
+          </div>
+          <div className="rounded-xl border border-white/[0.06] bg-black/25 px-3 py-2">
+            <dt className="text-[var(--text-muted)]">Max leverage</dt>
+            <dd className="mt-1 font-medium text-[var(--text-primary)]">
+              {maxLevNum != null ? `${maxLevNum}×` : "Not configured"}
+            </dd>
+          </div>
+        </dl>
+        {maxLevNum == null ? (
+          <p className="mt-3 text-sm text-amber-100/95">
+            Leverage cannot be saved until an admin sets max leverage for this
+            strategy. You can still update capital.
+          </p>
+        ) : null}
+      </GlassPanel>
+
+      {runStatus === "active" ? (
+        <p className="text-sm text-sky-200/90">
+          New settings will apply to future trades only.
+        </p>
+      ) : null}
+
+      <GlassPanel className="space-y-4 border border-white/[0.08]">
+        <div>
+          <label
+            htmlFor="capitalToUseInr"
+            className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+          >
+            Capital to use (INR)
+          </label>
+          <input
+            id="capitalToUseInr"
+            name="capitalToUseInr"
+            value={capital}
+            onChange={(e) => setCapital(e.target.value)}
+            disabled={pending}
+            inputMode="decimal"
+            autoComplete="off"
+            className="mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2.5 text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
+            placeholder={
+              constraints.recommendedCapitalInr
+                ? `e.g. ${constraints.recommendedCapitalInr}`
+                : "Amount in ₹"
+            }
+          />
+          {capitalErr ? (
+            <p className="mt-1 text-sm text-amber-200" role="alert">
+              {capitalErr}
+            </p>
+          ) : null}
+        </div>
+
+        <div className={maxLevNum == null ? "opacity-60" : ""}>
+          <label
+            htmlFor="leverage"
+            className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+          >
+            Leverage
+          </label>
+          <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <input
+              type="range"
+              min={sliderMin}
+              max={sliderMax}
+              step={0.01}
+              value={sliderValue}
+              disabled={pending || maxLevNum == null}
+              onChange={(e) =>
+                setLeverageFromSlider(Number.parseFloat(e.target.value))
+              }
+              className="h-2 w-full flex-1 cursor-pointer accent-[var(--accent)] disabled:cursor-not-allowed"
+              aria-label="Leverage slider"
+            />
+            <input
+              id="leverage"
+              name="leverage"
+              value={leverage}
+              onChange={(e) => setLeverage(e.target.value)}
+              disabled={pending || maxLevNum == null}
+              inputMode="decimal"
+              autoComplete="off"
+              className="w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2.5 text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50 sm:w-32"
+            />
+          </div>
+          {leverageErr ? (
+            <p className="mt-1 text-sm text-amber-200" role="alert">
+              {leverageErr}
+            </p>
+          ) : null}
+        </div>
+      </GlassPanel>
+
+      {state.message ? (
+        <p
+          role="status"
+          className={
+            state.ok === true
+              ? "text-sm text-emerald-200"
+              : state.ok === false
+                ? "text-sm text-amber-200"
+                : "text-sm text-[var(--text-muted)]"
+          }
+        >
+          {state.message}
+        </p>
+      ) : null}
+
+      <button
+        type="submit"
+        disabled={pending || Object.keys(liveErrors).length > 0}
+        className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
+      >
+        {pending ? "Saving…" : "Save settings"}
+      </button>
+    </form>
+  );
+}

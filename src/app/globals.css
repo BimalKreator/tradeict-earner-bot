@@ -1,0 +1,183 @@
+@import "tailwindcss";
+
+/*
+  Tradeict Earner — dark black + electric blue + glass surfaces.
+  All times in UI should eventually use Asia/Kolkata (IST); business logic uses server TZ.
+*/
+:root {
+  color-scheme: dark;
+  --bg-void: #030712;
+  --bg-deep: #0a0f1a;
+  --bg-elevated: #0f172a;
+  --accent: #38bdf8;
+  --accent-strong: #0ea5e9;
+  --accent-dim: rgba(56, 189, 248, 0.12);
+  --border-glass: rgba(56, 189, 248, 0.18);
+  --text-primary: #f1f5f9;
+  --text-muted: #94a3b8;
+  --danger: #f87171;
+  --sidebar-width: 16.5rem;
+}
+
+@theme inline {
+  --color-bg-void: var(--bg-void);
+  --color-bg-deep: var(--bg-deep);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --font-sans: var(--font-ui);
+  --font-display: var(--font-display);
+}
+
+html {
+  background-color: var(--bg-void);
+}
+
+body {
+  min-height: 100%;
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -20%, rgba(14, 165, 233, 0.18), transparent),
+    radial-gradient(ellipse 60% 50% at 100% 0%, rgba(56, 189, 248, 0.08), transparent),
+    var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-ui), system-ui, sans-serif;
+}
+
+/* Mesh noise overlay (subtle texture on large screens) */
+body::before {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  z-index: 0;
+}
+
+/* Glass card / panel — use with rounded-2xl + shadow */
+.glass-panel {
+  background: linear-gradient(
+    145deg,
+    rgba(15, 23, 42, 0.72) 0%,
+    rgba(15, 23, 42, 0.45) 100%
+  );
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border-glass);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35) inset,
+    0 25px 50px -12px rgba(0, 0, 0, 0.45);
+}
+
+.glass-sidebar {
+  background: linear-gradient(
+    180deg,
+    rgba(10, 15, 26, 0.92) 0%,
+    rgba(3, 7, 18, 0.88) 100%
+  );
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid var(--border-glass);
+}
+
+/* Markdown body for /terms (react-markdown) */
+.legal-markdown {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.legal-markdown h1,
+.legal-markdown h2,
+.legal-markdown h3 {
+  color: var(--text-primary);
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-weight: 600;
+  margin-top: 1.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.legal-markdown h1 {
+  font-size: 1.5rem;
+}
+.legal-markdown h2 {
+  font-size: 1.25rem;
+}
+.legal-markdown h3 {
+  font-size: 1.05rem;
+}
+
+.legal-markdown p {
+  margin-bottom: 1rem;
+}
+
+.legal-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.legal-markdown a:hover {
+  color: var(--accent-strong);
+}
+
+.legal-markdown ul,
+.legal-markdown ol {
+  margin: 0 0 1rem 1.25rem;
+  padding: 0;
+}
+
+.legal-markdown li {
+  margin-bottom: 0.35rem;
+}
+
+.legal-markdown code {
+  font-size: 0.85em;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-glass);
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  color: var(--accent);
+}
+
+.legal-markdown pre {
+  margin: 1rem 0;
+  padding: 1rem;
+  overflow-x: auto;
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border-glass);
+}
+
+.legal-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-primary);
+}
+
+.legal-markdown blockquote {
+  margin: 1rem 0;
+  padding-left: 1rem;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+}
+
+.legal-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.875rem;
+}
+
+.legal-markdown th,
+.legal-markdown td {
+  border: 1px solid var(--border-glass);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.legal-markdown th {
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--text-primary);
+}

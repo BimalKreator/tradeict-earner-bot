@@ -1,0 +1,69 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1775224119001,
+      "tag": "0000_phase1_connectivity",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1775225619611,
+      "tag": "0001_phase2_domain_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775227251903,
+      "tag": "0002_phase4_enum_rate",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775230000000,
+      "tag": "0003_phase6_admin_internal_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775240000000,
+      "tag": "0004_phase7_user_profile_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1775250000000,
+      "tag": "0005_phase8_exchange_test_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1775260000000,
+      "tag": "0006_phase9_strategy_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1775270000000,
+      "tag": "0007_phase11_cashfree_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1775280000000,
+      "tag": "0008_phase12_run_status",
+      "breakpoints": true
+    }
+  ]
+}
