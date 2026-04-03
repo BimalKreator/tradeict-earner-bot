@@ -5,6 +5,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   lte,
   sql,
 } from "drizzle-orm";
@@ -12,6 +13,7 @@ import {
 import { db } from "@/server/db";
 import {
   botOrders,
+  feeWaivers,
   payments,
   strategies,
   trades,
@@ -26,7 +28,7 @@ export type PlatformPaymentRow = {
   status: string;
   createdAt: string;
   strategyName: string | null;
-  kind: "subscription" | "other";
+  kind: "subscription" | "revenue_share" | "other";
 };
 
 export type UserFundsPlatformSnapshot = {
@@ -141,6 +143,7 @@ export async function getUserPlatformPayments(
 
   if (opts.payKind === "subscription") {
     conds.push(isNotNull(payments.strategyId));
+    conds.push(isNull(payments.revenueShareLedgerId));
   }
 
   if (assertYmd(opts.dateFrom)) {
@@ -162,6 +165,7 @@ export async function getUserPlatformPayments(
       createdAt: payments.createdAt,
       strategyName: strategies.name,
       strategyId: payments.strategyId,
+      revenueShareLedgerId: payments.revenueShareLedgerId,
     })
     .from(payments)
     .leftJoin(strategies, eq(payments.strategyId, strategies.id))
@@ -175,7 +179,11 @@ export async function getUserPlatformPayments(
     status: r.status,
     createdAt: r.createdAt.toISOString(),
     strategyName: r.strategyName,
-    kind: r.strategyId ? ("subscription" as const) : ("other" as const),
+    kind: r.revenueShareLedgerId
+      ? ("revenue_share" as const)
+      : r.strategyId
+        ? ("subscription" as const)
+        : ("other" as const),
   }));
 }
 
@@ -185,15 +193,44 @@ export type RevenueLedgerRow = {
   weekEnd: string;
   amountDueInr: string;
   amountPaidInr: string;
+  outstandingInr: string;
   status: string;
   dueAt: string;
+  strategyName: string;
+  revenueSharePercentApplied: string;
+  weeklyNetProfitInr: string | null;
+  waiverSummary: string;
+  /** Latest Cashfree payment row for this ledger (created / pending / failed / success / …). */
+  latestPaymentStatus: string | null;
 };
+
+function buildWaiverSummary(
+  ledgerId: string,
+  waiverRows: {
+    revenueLedgerId: string | null;
+    amountInr: string | null;
+    reason: string;
+  }[],
+): string {
+  const mine = waiverRows.filter((w) => w.revenueLedgerId === ledgerId);
+  if (mine.length === 0) return "—";
+  return mine
+    .map((w) => {
+      const amt = w.amountInr != null && String(w.amountInr).trim() !== ""
+        ? `₹${w.amountInr}`
+        : "Full waiver";
+      return `${amt}: ${w.reason}`;
+    })
+    .join(" · ");
+}
 
 export async function getUserRecentRevenueLedgers(
   userId: string,
   limit = 8,
 ): Promise<RevenueLedgerRow[]> {
   if (!db) return [];
+  const lim = Math.min(limit, 24);
+
   const rows = await db
     .select({
       id: weeklyRevenueShareLedgers.id,
@@ -203,19 +240,87 @@ export async function getUserRecentRevenueLedgers(
       amountPaidInr: weeklyRevenueShareLedgers.amountPaidInr,
       status: weeklyRevenueShareLedgers.status,
       dueAt: weeklyRevenueShareLedgers.dueAt,
+      strategyName: strategies.name,
+      revenueSharePercentApplied:
+        weeklyRevenueShareLedgers.revenueSharePercentApplied,
+      ledgerMetadata: weeklyRevenueShareLedgers.metadata,
     })
     .from(weeklyRevenueShareLedgers)
+    .innerJoin(
+      strategies,
+      eq(weeklyRevenueShareLedgers.strategyId, strategies.id),
+    )
     .where(eq(weeklyRevenueShareLedgers.userId, userId))
     .orderBy(desc(weeklyRevenueShareLedgers.dueAt))
-    .limit(Math.min(limit, 24));
+    .limit(lim);
 
-  return rows.map((r) => ({
-    id: r.id,
-    weekStart: String(r.weekStart),
-    weekEnd: String(r.weekEnd),
-    amountDueInr: String(r.amountDueInr),
-    amountPaidInr: String(r.amountPaidInr),
-    status: r.status,
-    dueAt: r.dueAt.toISOString(),
-  }));
+  const ids = rows.map((r) => r.id);
+  if (ids.length === 0) return [];
+
+  const waiverRows =
+    ids.length > 0
+      ? await db
+          .select({
+            revenueLedgerId: feeWaivers.revenueLedgerId,
+            amountInr: feeWaivers.amountInr,
+            reason: feeWaivers.reason,
+          })
+          .from(feeWaivers)
+          .where(inArray(feeWaivers.revenueLedgerId, ids))
+      : [];
+
+  const latestPayRows =
+    ids.length > 0
+      ? await db
+          .select({
+            ledgerId: payments.revenueShareLedgerId,
+            status: payments.status,
+            updatedAt: payments.updatedAt,
+          })
+          .from(payments)
+          .where(
+            and(
+              inArray(payments.revenueShareLedgerId, ids),
+              isNotNull(payments.revenueShareLedgerId),
+            ),
+          )
+          .orderBy(desc(payments.updatedAt))
+      : [];
+
+  const latestPayByLedger = new Map<string, string>();
+  for (const p of latestPayRows) {
+    if (p.ledgerId && !latestPayByLedger.has(p.ledgerId)) {
+      latestPayByLedger.set(p.ledgerId, p.status);
+    }
+  }
+
+  return rows.map((r) => {
+    const dueN = Number(r.amountDueInr);
+    const paidN = Number(r.amountPaidInr);
+    const out = Number.isFinite(dueN) && Number.isFinite(paidN)
+      ? Math.max(0, dueN - paidN)
+      : 0;
+    const meta = r.ledgerMetadata as Record<string, unknown> | null;
+    const wnp = meta?.weekly_net_profit_inr;
+    const weeklyNet =
+      typeof wnp === "string" || typeof wnp === "number"
+        ? String(wnp)
+        : null;
+
+    return {
+      id: r.id,
+      weekStart: String(r.weekStart),
+      weekEnd: String(r.weekEnd),
+      amountDueInr: String(r.amountDueInr),
+      amountPaidInr: String(r.amountPaidInr),
+      outstandingInr: out.toFixed(2),
+      status: r.status,
+      dueAt: r.dueAt.toISOString(),
+      strategyName: r.strategyName ?? "—",
+      revenueSharePercentApplied: String(r.revenueSharePercentApplied),
+      weeklyNetProfitInr: weeklyNet,
+      waiverSummary: buildWaiverSummary(r.id, waiverRows),
+      latestPaymentStatus: latestPayByLedger.get(r.id) ?? null,
+    };
+  });
 }

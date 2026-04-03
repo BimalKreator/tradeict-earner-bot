@@ -9,6 +9,11 @@ import {
   userStrategyRuns,
   userStrategySubscriptions,
 } from "@/server/db/schema";
+import type {
+  PaymentWebhookResult,
+  WebhookFulfillmentInput,
+} from "@/server/payments/cashfree/parse-webhook";
+import { fulfillRevenueSharePaymentFromWebhook } from "@/server/payments/fulfill-revenue-share-payment";
 
 type DbClient = PostgresJsDatabase<typeof schema>;
 
@@ -60,11 +65,7 @@ function invoiceNumberForPayment(paymentId: string): string {
   return `TE-${y}-${compact}`;
 }
 
-export type WebhookFulfillmentInput = {
-  orderId: string;
-  paymentStatus: "SUCCESS" | "FAILED" | "USER_DROPPED" | "EXPIRED" | "UNKNOWN";
-  externalPaymentId: string | null;
-};
+export type { PaymentWebhookResult } from "@/server/payments/cashfree/parse-webhook";
 
 /**
  * Idempotent subscription + invoice fulfillment under `SERIALIZABLE`-style safety:
@@ -73,7 +74,7 @@ export type WebhookFulfillmentInput = {
 export async function fulfillStrategyPaymentFromWebhook(
   tx: DbClient,
   input: WebhookFulfillmentInput,
-): Promise<{ handled: boolean; skippedReason?: string }> {
+): Promise<PaymentWebhookResult> {
   const { orderId, paymentStatus, externalPaymentId } = input;
 
   const [lockedPayment] = await tx
@@ -89,6 +90,10 @@ export async function fulfillStrategyPaymentFromWebhook(
 
   if (lockedPayment.status === "success") {
     return { handled: true, skippedReason: "already_success" };
+  }
+
+  if (lockedPayment.revenueShareLedgerId) {
+    return fulfillRevenueSharePaymentFromWebhook(tx, lockedPayment, input);
   }
 
   if (!lockedPayment.strategyId) {

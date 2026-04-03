@@ -92,6 +92,13 @@
       "when": 1775320000000,
       "tag": "0012_phase21_ledger_rev_share_percent",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1775330000000,
+      "tag": "0013_phase23_revenue_share_payments",
+      "breakpoints": true
     }
   ]
 }

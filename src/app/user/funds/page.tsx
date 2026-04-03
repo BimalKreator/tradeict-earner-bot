@@ -84,6 +84,13 @@ export default async function UserFundsPage({
   const pfrom = assertYmd(pfromRaw) ? pfromRaw : undefined;
   const pto = assertYmd(ptoRaw) ? ptoRaw : undefined;
 
+  const revPayRaw = first(sp.revPay);
+  const revenueReturnNotice =
+    typeof revPayRaw === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      revPayRaw,
+    );
+
   const [snapshot, payments, ledgers] = await Promise.all([
     getUserFundsPlatformSnapshot(userId),
     getUserPlatformPayments(userId, {
@@ -150,6 +157,7 @@ export default async function UserFundsPage({
           snapshot={snapshot}
           payments={payments}
           ledgers={ledgers}
+          revenueReturnNotice={revenueReturnNotice}
           defaultPfrom={pfrom ?? ""}
           defaultPto={pto ?? ""}
           defaultPayKind={payKind}

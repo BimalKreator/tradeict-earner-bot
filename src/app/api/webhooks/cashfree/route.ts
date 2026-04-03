@@ -2,6 +2,7 @@ import { requireDb } from "@/server/db/require-db";
 import { parseCashfreeWebhookForFulfillment } from "@/server/payments/cashfree/parse-webhook";
 import { verifyCashfreeWebhookSignature } from "@/server/payments/cashfree/verify-webhook";
 import { fulfillStrategyPaymentFromWebhook } from "@/server/payments/fulfill-strategy-payment";
+import { releaseRevenueBlock } from "@/server/revenue/revenue-due-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -44,14 +45,26 @@ export async function POST(request: Request): Promise<Response> {
 
   const db = requireDb();
 
+  let releaseUserId: string | undefined;
+
   try {
     await db.transaction(async (tx) => {
-      await fulfillStrategyPaymentFromWebhook(tx, fulfillment);
+      const r = await fulfillStrategyPaymentFromWebhook(tx, fulfillment);
+      releaseUserId = r.releaseRevenueBlockForUserId;
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[cashfree webhook] fulfillment error:", msg);
     return Response.json({ error: "fulfillment_failed" }, { status: 500 });
+  }
+
+  if (releaseUserId) {
+    try {
+      await releaseRevenueBlock(releaseUserId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[cashfree webhook] releaseRevenueBlock error:", msg);
+    }
   }
 
   return Response.json({ ok: true });

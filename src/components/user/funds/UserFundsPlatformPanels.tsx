@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
+import { RevenueLedgerTable } from "@/components/user/funds/RevenueLedgerTable";
 import { formatInrAmount } from "@/lib/format-inr";
 import type {
   PlatformPaymentRow,
@@ -22,6 +23,7 @@ export function UserFundsPlatformPanels({
   snapshot,
   payments,
   ledgers,
+  revenueReturnNotice = false,
   defaultPfrom = "",
   defaultPto = "",
   defaultPayKind = "all",
@@ -29,6 +31,8 @@ export function UserFundsPlatformPanels({
   snapshot: UserFundsPlatformSnapshot;
   payments: PlatformPaymentRow[];
   ledgers: RevenueLedgerRow[];
+  /** Set when user returns from Cashfree after starting a revenue-share checkout. */
+  revenueReturnNotice?: boolean;
   defaultPfrom?: string;
   defaultPto?: string;
   defaultPayKind?: "all" | "subscription";
@@ -56,19 +60,23 @@ export function UserFundsPlatformPanels({
         </GlassPanel>
         <GlassPanel className="!flex !flex-col !justify-between !p-5">
           <p className="text-xs text-[var(--text-muted)]">
-            Platform billing payments for revenue share will open in a later
-            release.
+            Use <span className="text-[var(--accent)]">Pay</span> on each week row
+            below. Checkout is powered by Cashfree; webhooks settle the ledger and
+            can unblock your bot automatically.
           </p>
-          <button
-            type="button"
-            disabled
-            className="mt-4 w-full cursor-not-allowed rounded-xl border border-[var(--border-glass)] bg-black/30 px-4 py-2.5 text-sm font-semibold text-[var(--text-muted)]"
-            title="Coming soon"
-          >
-            Pay revenue share
-          </button>
+          <p className="mt-3 text-[10px] text-[var(--text-muted)]">
+            Pending = Cashfree session in flight. Unpaid / partial = balance still
+            owed for that IST week.
+          </p>
         </GlassPanel>
       </div>
+
+      {revenueReturnNotice ? (
+        <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+          Thanks — if you completed payment, your ledger usually updates within a
+          few seconds. Refresh this page if amounts look unchanged.
+        </div>
+      ) : null}
 
       <GlassPanel className="!p-5">
         <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-[var(--text-primary)]">
@@ -150,6 +158,8 @@ export function UserFundsPlatformPanels({
                     <td className="py-2 pr-3 text-xs capitalize">
                       {p.kind === "subscription" ? (
                         <span className="text-emerald-400">Subscription</span>
+                      ) : p.kind === "revenue_share" ? (
+                        <span className="text-amber-200/90">Revenue share</span>
                       ) : (
                         <span className="text-[var(--text-muted)]">Other</span>
                       )}
@@ -168,63 +178,7 @@ export function UserFundsPlatformPanels({
         </div>
       </GlassPanel>
 
-      <GlassPanel className="!p-5">
-        <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-[var(--text-primary)]">
-          Weekly revenue ledgers
-        </h2>
-        <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-          Recent IST weekly windows from `weekly_revenue_share_ledgers`.
-        </p>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[640px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-[var(--border-glass)] text-xs uppercase text-[var(--text-muted)]">
-                <th className="py-2 pr-3">Week (IST)</th>
-                <th className="py-2 pr-3">Due</th>
-                <th className="py-2 pr-3">Paid</th>
-                <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3">Due at (IST)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledgers.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-[var(--text-muted)]">
-                    No ledger rows yet.
-                  </td>
-                </tr>
-              ) : (
-                ledgers.map((r) => (
-                  <tr
-                    key={r.id}
-                    className="border-b border-[var(--border-glass)]/40"
-                  >
-                    <td className="py-2 pr-3 font-mono text-xs text-[var(--accent)]">
-                      {r.weekStart} → {r.weekEnd}
-                    </td>
-                    <td className="py-2 pr-3 tabular-nums">
-                      {formatInrAmount(r.amountDueInr)}
-                    </td>
-                    <td className="py-2 pr-3 tabular-nums text-emerald-400/90">
-                      {formatInrAmount(r.amountPaidInr)}
-                    </td>
-                    <td className="py-2 pr-3 text-xs uppercase text-[var(--text-muted)]">
-                      {r.status.replace(/_/g, " ")}
-                    </td>
-                    <td className="py-2 pr-3 text-xs text-[var(--text-muted)]">
-                      {new Date(r.dueAt).toLocaleString("en-IN", {
-                        timeZone: "Asia/Kolkata",
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      })}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </GlassPanel>
+      <RevenueLedgerTable ledgers={ledgers} />
 
       <p className="text-center text-xs text-[var(--text-muted)]">
         <Link href="/user/transactions" className="text-[var(--accent)] hover:underline">

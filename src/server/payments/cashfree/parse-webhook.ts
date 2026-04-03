@@ -1,4 +1,15 @@
-import type { WebhookFulfillmentInput } from "@/server/payments/fulfill-strategy-payment";
+export type WebhookFulfillmentInput = {
+  orderId: string;
+  paymentStatus: "SUCCESS" | "FAILED" | "USER_DROPPED" | "EXPIRED" | "UNKNOWN";
+  externalPaymentId: string | null;
+};
+
+export type PaymentWebhookResult = {
+  handled: boolean;
+  skippedReason?: string;
+  /** Caller runs `releaseRevenueBlock` after commit when set. */
+  releaseRevenueBlockForUserId?: string;
+};
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   if (v && typeof v === "object" && !Array.isArray(v)) {
