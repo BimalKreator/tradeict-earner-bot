@@ -8,6 +8,7 @@ import { formatInrAmount } from "@/lib/format-inr";
 import { runStatusLabel } from "@/lib/my-strategy-run-labels";
 import {
   activateStrategyRunAction,
+  inactivateStrategyRunAction,
   pauseStrategyRunAction,
   strategyRunActionInitialState,
 } from "@/server/actions/userStrategyRun";
@@ -20,6 +21,9 @@ export type MyStrategyCardViewModel = MyStrategyRow & {
   remainingCalendarDaysIST: number;
   canActivate: boolean;
   canPause: boolean;
+  canInactivate: boolean;
+  activateButtonLabel: string;
+  settingsMissing: boolean;
   showRenewCta: boolean;
 };
 
@@ -37,6 +41,9 @@ function runBadgeClass(status: MyStrategyRow["runStatus"]): string {
   ) {
     return "border-amber-500/35 bg-amber-500/10 text-amber-100";
   }
+  if (status === "paused_admin") {
+    return "border-rose-500/35 bg-rose-500/10 text-rose-100";
+  }
   if (status === "expired" || status === "blocked_revenue_due") {
     return "border-slate-500/35 bg-slate-500/15 text-slate-200";
   }
@@ -53,17 +60,28 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
     pauseStrategyRunAction,
     strategyRunActionInitialState,
   );
+  const [inactivateState, inactivateAction, inactivatePending] = useActionState(
+    inactivateStrategyRunAction,
+    strategyRunActionInitialState,
+  );
 
   const feedback =
-    activateState.message || pauseState.message
-      ? activateState.message || pauseState.message
-      : "";
+    activateState.message ||
+    pauseState.message ||
+    inactivateState.message ||
+    "";
   const feedbackOk =
-    activateState.ok === true || pauseState.ok === true
+    activateState.ok === true ||
+    pauseState.ok === true ||
+    inactivateState.ok === true
       ? true
-      : activateState.ok === false || pauseState.ok === false
+      : activateState.ok === false ||
+          pauseState.ok === false ||
+          inactivateState.ok === false
         ? false
         : null;
+
+  const settingsHrefFromAction = activateState.settingsHref;
 
   useEffect(() => {
     if (feedback && msgRef.current) {
@@ -73,6 +91,8 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
 
   const settingsHref = `/user/my-strategies/${encodeURIComponent(row.slug)}/settings`;
   const renewHref = `/user/strategies/${encodeURIComponent(row.slug)}/checkout?intent=renew`;
+
+  const anyPending = activatePending || pausePending || inactivatePending;
 
   return (
     <GlassPanel className="flex h-full flex-col overflow-hidden border border-white/[0.08] bg-gradient-to-b from-white/[0.05] to-transparent">
@@ -87,6 +107,13 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
             {runStatusLabel(row.runStatus)}
           </span>
         </div>
+
+        {row.strategyStatus !== "active" && !row.isSubscriptionExpired ? (
+          <p className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+            This strategy is not available for trading right now (catalog status:{" "}
+            <span className="font-medium">{row.strategyStatus}</span>).
+          </p>
+        ) : null}
 
         {row.description ? (
           <p className="text-sm leading-relaxed text-[var(--text-muted)] line-clamp-3">
@@ -145,20 +172,53 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
           </div>
         </dl>
 
-        {feedback ? (
-          <p
-            ref={msgRef}
-            role="status"
-            className={
-              feedbackOk === true
-                ? "text-sm text-emerald-200/95"
-                : feedbackOk === false
-                  ? "text-sm text-amber-100/95"
-                  : "text-sm text-[var(--text-muted)]"
-            }
-          >
-            {feedback}
+        {row.canActivate && row.settingsMissing ? (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+            <p className="font-medium text-amber-50">
+              Capital and Leverage settings are missing
+            </p>
+            <p className="mt-1 text-amber-100/90">
+              Save both values on the strategy settings page before you can
+              activate or resume.
+            </p>
+            <Link
+              href={settingsHref}
+              className="mt-2 inline-flex items-center justify-center rounded-lg border border-amber-400/40 bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-50 hover:bg-amber-500/30"
+            >
+              Open strategy settings
+            </Link>
+          </div>
+        ) : null}
+
+        {row.runStatus === "active" ? (
+          <p className="text-xs text-sky-200/85">
+            New settings will apply to future trades only.
           </p>
+        ) : null}
+
+        {feedback ? (
+          <div ref={msgRef} className="space-y-2">
+            <p
+              role="status"
+              className={
+                feedbackOk === true
+                  ? "text-sm text-emerald-200/95"
+                  : feedbackOk === false
+                    ? "text-sm text-amber-100/95"
+                    : "text-sm text-[var(--text-muted)]"
+              }
+            >
+              {feedback}
+            </p>
+            {settingsHrefFromAction ? (
+              <Link
+                href={settingsHrefFromAction}
+                className="inline-flex rounded-lg border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-xs font-semibold text-sky-100 hover:bg-sky-500/25"
+              >
+                Open strategy settings
+              </Link>
+            ) : null}
+          </div>
         ) : null}
 
         <div className="mt-auto flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap">
@@ -167,10 +227,12 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
               <input type="hidden" name="subscriptionId" value={row.subscriptionId} />
               <button
                 type="submit"
-                disabled={activatePending}
+                disabled={anyPending || row.settingsMissing}
                 className="w-full rounded-xl border border-emerald-500/40 bg-emerald-500/15 py-2.5 text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/25 disabled:opacity-50"
               >
-                {activatePending ? "Activating…" : "Activate"}
+                {activatePending
+                  ? "Working…"
+                  : row.activateButtonLabel}
               </button>
             </form>
           ) : null}
@@ -179,10 +241,22 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
               <input type="hidden" name="subscriptionId" value={row.subscriptionId} />
               <button
                 type="submit"
-                disabled={pausePending}
+                disabled={anyPending}
                 className="w-full rounded-xl border border-white/[0.12] bg-black/30 py-2.5 text-sm font-medium text-[var(--text-primary)] transition hover:bg-black/45 disabled:opacity-50"
               >
                 {pausePending ? "Pausing…" : "Pause"}
+              </button>
+            </form>
+          ) : null}
+          {row.canInactivate ? (
+            <form action={inactivateAction} className="min-w-0 flex-1">
+              <input type="hidden" name="subscriptionId" value={row.subscriptionId} />
+              <button
+                type="submit"
+                disabled={anyPending}
+                className="w-full rounded-xl border border-slate-500/35 bg-slate-500/10 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-slate-500/20 disabled:opacity-50"
+              >
+                {inactivatePending ? "Turning off…" : "Inactivate"}
               </button>
             </form>
           ) : null}

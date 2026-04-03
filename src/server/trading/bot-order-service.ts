@@ -1,0 +1,120 @@
+import { eq } from "drizzle-orm";
+
+import { db } from "@/server/db";
+import { botOrders } from "@/server/db/schema";
+
+import type { PlaceOrderResult } from "./adapters/exchange-adapter-types";
+import { generateInternalClientOrderId } from "./ids";
+import { tradingLog } from "./trading-log";
+
+export async function insertBotOrderDraft(params: {
+  userId: string;
+  subscriptionId: string;
+  strategyId: string;
+  runId: string;
+  exchangeConnectionId: string;
+  correlationId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  orderType: "market" | "limit";
+  quantity: string;
+  limitPrice?: string | null;
+}): Promise<{ id: string; internalClientOrderId: string } | null> {
+  if (!db) return null;
+  const now = new Date();
+  const internalClientOrderId = generateInternalClientOrderId();
+
+  const [row] = await db
+    .insert(botOrders)
+    .values({
+      internalClientOrderId,
+      correlationId: params.correlationId,
+      userId: params.userId,
+      subscriptionId: params.subscriptionId,
+      strategyId: params.strategyId,
+      runId: params.runId,
+      exchangeConnectionId: params.exchangeConnectionId,
+      symbol: params.symbol,
+      side: params.side,
+      orderType: params.orderType,
+      quantity: params.quantity,
+      limitPrice: params.limitPrice ?? null,
+      status: "queued",
+      updatedAt: now,
+    })
+    .returning({ id: botOrders.id, internalClientOrderId: botOrders.internalClientOrderId });
+
+  if (!row) return null;
+  tradingLog("info", "bot_order_drafted", {
+    botOrderId: row.id,
+    internalClientOrderId: row.internalClientOrderId,
+    correlationId: params.correlationId,
+  });
+  return row;
+}
+
+export async function markBotOrderSubmitting(botOrderId: string): Promise<void> {
+  if (!db) return;
+  await db
+    .update(botOrders)
+    .set({ status: "submitting", updatedAt: new Date() })
+    .where(eq(botOrders.id, botOrderId));
+}
+
+export async function finalizeBotOrderFromPlaceResult(
+  botOrderId: string,
+  result: PlaceOrderResult,
+): Promise<void> {
+  if (!db) return;
+  const now = new Date();
+  if (result.ok) {
+    await db
+      .update(botOrders)
+      .set({
+        status: "open",
+        externalOrderId: result.externalOrderId,
+        externalClientOrderId: result.externalClientOrderId ?? null,
+        rawSubmitResponse: result.raw,
+        errorMessage: null,
+        updatedAt: now,
+      })
+      .where(eq(botOrders.id, botOrderId));
+    tradingLog("info", "bot_order_submitted", {
+      botOrderId,
+      externalOrderId: result.externalOrderId,
+    });
+    return;
+  }
+
+  await db
+    .update(botOrders)
+    .set({
+      status: "failed",
+      errorMessage: result.error.slice(0, 2000),
+      rawSubmitResponse: result.raw ?? null,
+      updatedAt: now,
+    })
+    .where(eq(botOrders.id, botOrderId));
+  tradingLog("warn", "bot_order_submit_failed", {
+    botOrderId,
+    error: result.error,
+  });
+}
+
+export async function updateBotOrderFromSync(params: {
+  botOrderId: string;
+  status: "open" | "filled" | "partial_fill" | "cancelled" | "rejected" | "failed";
+  rawSyncResponse: Record<string, unknown>;
+}): Promise<void> {
+  if (!db) return;
+  const now = new Date();
+  await db
+    .update(botOrders)
+    .set({
+      status: params.status,
+      rawSyncResponse: params.rawSyncResponse,
+      lastSyncedAt: now,
+      updatedAt: now,
+    })
+    .where(eq(botOrders.id, params.botOrderId));
+}

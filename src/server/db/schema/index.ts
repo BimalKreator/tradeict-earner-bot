@@ -13,6 +13,7 @@ export * from "./strategies";
 export * from "./subscriptions";
 export * from "./billing";
 export * from "./trading";
+export * from "./trading-engine";
 export * from "./compliance";
 export * from "./operations";
 export * from "./settings";

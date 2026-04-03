@@ -4,12 +4,14 @@ import { notFound } from "next/navigation";
 import { AdminUserEditForm } from "@/components/admin/AdminUserEditForm";
 import { AdminUserInternalNotesForm } from "@/components/admin/AdminUserInternalNotesForm";
 import { AdminUserLifecycleActions } from "@/components/admin/AdminUserLifecycleActions";
+import { AdminUserStrategyForcePauseForm } from "@/components/admin/AdminUserStrategyForcePauseForm";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import {
   deriveExchangeConnectionUiStatus,
   exchangeConnectionUiLabel,
 } from "@/lib/exchange-connection-display";
 import { formatInrAmount } from "@/lib/format-inr";
+import { adminCanForcePauseRunStatus } from "@/lib/admin-strategy-run";
 import { getAdminUserProfile } from "@/server/queries/admin-user-detail";
 
 export const dynamic = "force-dynamic";
@@ -180,7 +182,10 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
           ) : (
             <ul className="space-y-2 text-sm text-[var(--text-primary)]">
               {profile.activeStrategies.map((s) => (
-                <li key={s.subscriptionId} className="border-b border-[var(--border-glass)]/40 pb-2">
+                <li
+                  key={s.subscriptionId}
+                  className="border-b border-[var(--border-glass)]/40 pb-3"
+                >
                   <span className="font-medium">{s.strategyName}</span>
                   <span className="ml-2 text-xs text-[var(--text-muted)]">
                     run: {s.runStatus ?? "—"} · valid until{" "}
@@ -189,6 +194,13 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
                       timeZone: "Asia/Kolkata",
                     }).format(new Date(s.accessValidUntil))}
                   </span>
+                  {s.runId && adminCanForcePauseRunStatus(s.runStatus) ? (
+                    <AdminUserStrategyForcePauseForm
+                      targetUserId={user.id}
+                      subscriptionId={s.subscriptionId}
+                      strategyName={s.strategyName}
+                    />
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -203,11 +215,21 @@ export default async function AdminUserDetailPage({ params, searchParams }: Prop
           ) : (
             <ul className="space-y-2 text-sm text-[var(--text-primary)]">
               {profile.inactiveStrategies.map((s) => (
-                <li key={s.subscriptionId} className="border-b border-[var(--border-glass)]/40 pb-2">
+                <li
+                  key={s.subscriptionId}
+                  className="border-b border-[var(--border-glass)]/40 pb-3"
+                >
                   <span className="font-medium">{s.strategyName}</span>
                   <span className="ml-2 text-xs text-[var(--text-muted)]">
                     sub: {s.subscriptionStatus} · run: {s.runStatus ?? "—"}
                   </span>
+                  {s.runId && adminCanForcePauseRunStatus(s.runStatus) ? (
+                    <AdminUserStrategyForcePauseForm
+                      targetUserId={user.id}
+                      subscriptionId={s.subscriptionId}
+                      strategyName={s.strategyName}
+                    />
+                  ) : null}
                 </li>
               ))}
             </ul>

@@ -21,6 +21,27 @@ const USER_CAN_ACTIVATE_FROM = new Set([
   "inactive",
 ]);
 
+const RESUME_BUTTON_STATUSES = new Set(["paused_by_user", "paused_exchange_off"]);
+
+function subscriptionOkForRunActions(
+  row: Awaited<ReturnType<typeof listMyStrategiesForUser>>[number],
+  now: Date,
+  expired: boolean,
+): boolean {
+  if (expired) return false;
+  return (
+    row.subscriptionStatus === "active" &&
+    row.accessValidUntil.getTime() > now.getTime() &&
+    row.strategyStatus === "active"
+  );
+}
+
+function settingsFieldsMissing(row: Awaited<ReturnType<typeof listMyStrategiesForUser>>[number]): boolean {
+  const cap = row.capitalToUseInr?.trim() ?? "";
+  const lev = row.leverage?.trim() ?? "";
+  return cap === "" || lev === "";
+}
+
 function isSubscriptionExpired(
   row: Awaited<ReturnType<typeof listMyStrategiesForUser>>[number],
   now: Date,
@@ -41,9 +62,18 @@ function toViewModel(
     ? 0
     : remainingAccessCalendarDaysIST(row.accessValidUntil, now);
 
+  const runOk = subscriptionOkForRunActions(row, now, expired);
+
   const canActivate =
-    !expired && USER_CAN_ACTIVATE_FROM.has(row.runStatus);
-  const canPause = !expired && row.runStatus === "active";
+    runOk && USER_CAN_ACTIVATE_FROM.has(row.runStatus);
+  const canPause = runOk && row.runStatus === "active";
+  const canInactivate =
+    runOk &&
+    (row.runStatus === "active" || row.runStatus === "paused_by_user");
+  const activateButtonLabel = RESUME_BUTTON_STATUSES.has(row.runStatus)
+    ? "Resume"
+    : "Activate";
+  const settingsMissing = runOk && settingsFieldsMissing(row);
   const showRenewCta = expired || remainingCalendarDaysIST <= 7;
 
   return {
@@ -52,6 +82,9 @@ function toViewModel(
     remainingCalendarDaysIST,
     canActivate,
     canPause,
+    canInactivate,
+    activateButtonLabel,
+    settingsMissing,
     showRenewCta,
   };
 }

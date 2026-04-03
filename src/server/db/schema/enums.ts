@@ -142,3 +142,25 @@ export const auditActorTypeEnum = pgEnum("audit_actor_type", [
 ]);
 
 export const tradeSideEnum = pgEnum("trade_side", ["buy", "sell"]);
+
+/** Exchange bot order lifecycle (internal TE-* client order id + optional external id). */
+export const botOrderStatusEnum = pgEnum("bot_order_status", [
+  "draft",
+  "queued",
+  "submitting",
+  "open",
+  "filled",
+  "partial_fill",
+  "cancelled",
+  "rejected",
+  "failed",
+]);
+
+/** Postgres-backed execution queue for strategy signals (no Redis required). */
+export const tradingJobStatusEnum = pgEnum("trading_job_status", [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+  "dead",
+]);

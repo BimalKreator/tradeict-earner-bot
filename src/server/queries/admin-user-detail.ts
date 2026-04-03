@@ -38,6 +38,7 @@ export type AdminUserStrategyRow = {
   strategySlug: string;
   subscriptionStatus: string;
   accessValidUntil: Date;
+  runId: string | null;
   runStatus: string | null;
 };
 
@@ -140,6 +141,7 @@ export async function getAdminUserProfile(
         strategySlug: strategies.slug,
         subscriptionStatus: userStrategySubscriptions.status,
         accessValidUntil: userStrategySubscriptions.accessValidUntil,
+        runId: userStrategyRuns.id,
         runStatus: userStrategyRuns.status,
       })
       .from(userStrategySubscriptions)
@@ -212,6 +214,7 @@ export async function getAdminUserProfile(
       strategySlug: r.strategySlug,
       subscriptionStatus: r.subscriptionStatus,
       accessValidUntil: r.accessValidUntil,
+      runId: r.runId,
       runStatus: r.runStatus,
     };
     const entitled =

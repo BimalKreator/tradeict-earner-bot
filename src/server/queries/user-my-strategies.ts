@@ -24,10 +24,13 @@ export type MyStrategyRow = {
   slug: string;
   name: string;
   description: string | null;
+  strategyStatus: InferSelectModel<typeof strategies>["status"];
   subscriptionStatus: MyStrategySubscriptionStatus;
   accessValidUntil: Date;
   purchasedAt: Date;
   runStatus: MyStrategyRunStatus;
+  capitalToUseInr: string | null;
+  leverage: string | null;
   monthlyFeeInr: string;
   revenueSharePercent: string;
   hasPricingOverride: boolean;
@@ -100,12 +103,15 @@ export async function listMyStrategiesForUser(
       slug: strategies.slug,
       name: strategies.name,
       description: strategies.description,
+      strategyStatus: strategies.status,
       defaultMonthlyFeeInr: strategies.defaultMonthlyFeeInr,
       defaultRevenueSharePercent: strategies.defaultRevenueSharePercent,
       subscriptionStatus: userStrategySubscriptions.status,
       accessValidUntil: userStrategySubscriptions.accessValidUntil,
       purchasedAt: userStrategySubscriptions.purchasedAt,
       runStatus: userStrategyRuns.status,
+      capitalToUseInr: userStrategyRuns.capitalToUseInr,
+      leverage: userStrategyRuns.leverage,
     })
     .from(userStrategySubscriptions)
     .innerJoin(
@@ -145,10 +151,13 @@ export async function listMyStrategiesForUser(
       slug: r.slug,
       name: r.name,
       description: r.description,
+      strategyStatus: r.strategyStatus,
       subscriptionStatus: r.subscriptionStatus,
       accessValidUntil: r.accessValidUntil,
       purchasedAt: r.purchasedAt,
       runStatus: r.runStatus,
+      capitalToUseInr: r.capitalToUseInr ? String(r.capitalToUseInr) : null,
+      leverage: r.leverage ? String(r.leverage) : null,
       monthlyFeeInr: merged.monthlyFeeInr,
       revenueSharePercent: merged.revenueSharePercent,
       hasPricingOverride: merged.hasOverride,
