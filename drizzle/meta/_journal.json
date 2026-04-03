@@ -113,6 +113,13 @@
       "when": 1775350000000,
       "tag": "0015_phase25_pricing_override_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1775360000000,
+      "tag": "0016_phase28_notification_logs",
+      "breakpoints": true
     }
   ]
 }

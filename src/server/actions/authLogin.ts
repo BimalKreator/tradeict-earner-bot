@@ -76,10 +76,11 @@ async function issueLoginOtpAndEmail(
   const body = loginOtpEmail({ code });
   await sendTransactionalEmail({
     to: email,
-    templateKey: "login_otp",
+    templateKey: "auth.otp_login",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId,
   });
 }
 

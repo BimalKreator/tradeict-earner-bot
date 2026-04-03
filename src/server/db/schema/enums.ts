@@ -135,6 +135,12 @@ export const emailLogStatusEnum = pgEnum("email_log_status", [
   "failed",
 ]);
 
+/** User-facing notification audit trail (email today; more channels later). */
+export const notificationLogStatusEnum = pgEnum("notification_log_status", [
+  "sent",
+  "failed",
+]);
+
 export const auditActorTypeEnum = pgEnum("audit_actor_type", [
   "admin",
   "user",

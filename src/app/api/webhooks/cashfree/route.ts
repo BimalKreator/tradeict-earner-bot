@@ -1,4 +1,6 @@
 import { requireDb } from "@/server/db/require-db";
+import { sendBillingPaymentSuccessEmailAfterWebhook } from "@/server/notifications/send-billing-payment-success-email";
+import type { BillingPaymentSuccessEmailPayload } from "@/server/payments/cashfree/parse-webhook";
 import { parseCashfreeWebhookForFulfillment } from "@/server/payments/cashfree/parse-webhook";
 import { verifyCashfreeWebhookSignature } from "@/server/payments/cashfree/verify-webhook";
 import { fulfillStrategyPaymentFromWebhook } from "@/server/payments/fulfill-strategy-payment";
@@ -46,11 +48,13 @@ export async function POST(request: Request): Promise<Response> {
   const db = requireDb();
 
   let releaseUserId: string | undefined;
+  let billingReceipt: BillingPaymentSuccessEmailPayload | undefined;
 
   try {
     await db.transaction(async (tx) => {
       const r = await fulfillStrategyPaymentFromWebhook(tx, fulfillment);
       releaseUserId = r.releaseRevenueBlockForUserId;
+      billingReceipt = r.billingPaymentSuccess;
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -64,6 +68,15 @@ export async function POST(request: Request): Promise<Response> {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[cashfree webhook] releaseRevenueBlock error:", msg);
+    }
+  }
+
+  if (billingReceipt) {
+    try {
+      await sendBillingPaymentSuccessEmailAfterWebhook(billingReceipt);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[cashfree webhook] payment success email error:", msg);
     }
   }
 

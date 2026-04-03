@@ -103,6 +103,7 @@ export async function approveProfileChangeRequestAction(
   const now = new Date();
 
   let mailPayload: {
+    userId: string;
     notifyEmail: string;
     userName: string | null;
     summaryLines: string[];
@@ -206,6 +207,7 @@ export async function approveProfileChangeRequestAction(
       });
 
       return {
+        userId: u.id,
         notifyEmail: changes.email?.new
           ? changes.email.new.toLowerCase()
           : u.email,
@@ -252,10 +254,14 @@ export async function approveProfileChangeRequestAction(
   });
   await sendTransactionalEmail({
     to: mailPayload.notifyEmail,
-    templateKey: "profile_change_approved",
+    templateKey: "admin.profile_change_approved",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId: mailPayload.userId,
+    notificationMetadata: {
+      fields: mailPayload.summaryLines.length,
+    },
   });
 
   revalidatePath("/admin/profile-requests");
@@ -336,10 +342,12 @@ export async function rejectProfileChangeRequestAction(
   const body = profileChangeRejectedEmail({ name: u.name, note });
   await sendTransactionalEmail({
     to: u.email,
-    templateKey: "profile_change_rejected",
+    templateKey: "admin.profile_change_rejected",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId: u.id,
+    notificationMetadata: { has_note: Boolean(note) },
   });
 
   revalidatePath("/admin/profile-requests");

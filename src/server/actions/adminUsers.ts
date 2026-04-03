@@ -105,10 +105,11 @@ export async function approveUserAction(
   const body = approvalSuccessEmail({ name: user.name });
   await sendTransactionalEmail({
     to: user.email,
-    templateKey: "approval_success",
+    templateKey: "admin.account_approved",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId: user.id,
   });
 
   revalidateUserAdminPaths(user.id);
@@ -164,10 +165,12 @@ export async function rejectUserAction(
   const body = rejectionEmail({ name: user.name, note: noteStr });
   await sendTransactionalEmail({
     to: user.email,
-    templateKey: "approval_rejected",
+    templateKey: "admin.account_rejected",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId: user.id,
+    notificationMetadata: { has_note: Boolean(noteStr) },
   });
 
   revalidateUserAdminPaths(user.id);
@@ -353,10 +356,11 @@ export async function createAdminUserAction(
   });
   const sendResult = await sendTransactionalEmail({
     to: email,
-    templateKey: "admin_created_credentials",
+    templateKey: "auth.admin_created_account",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId: newId,
   });
 
   revalidateUserAdminPaths(newId);

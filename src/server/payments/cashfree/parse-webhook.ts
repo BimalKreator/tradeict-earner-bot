@@ -4,11 +4,33 @@ export type WebhookFulfillmentInput = {
   externalPaymentId: string | null;
 };
 
+/** After a successful Cashfree charge, send `billing.payment_success` (outside the DB tx). */
+export type BillingPaymentSuccessEmailPayload =
+  | {
+      kind: "strategy_subscription";
+      userId: string;
+      paymentId: string;
+      amountInr: string;
+      strategyName: string | null;
+      accessValidUntil: Date;
+      isRenewal: boolean;
+    }
+  | {
+      kind: "revenue_share";
+      userId: string;
+      paymentId: string;
+      amountInr: string;
+      strategyName: string | null;
+      weekStartIst: string;
+      weekEndIst: string;
+    };
+
 export type PaymentWebhookResult = {
   handled: boolean;
   skippedReason?: string;
   /** Caller runs `releaseRevenueBlock` after commit when set. */
   releaseRevenueBlockForUserId?: string;
+  billingPaymentSuccess?: BillingPaymentSuccessEmailPayload;
 };
 
 function asRecord(v: unknown): Record<string, unknown> | null {

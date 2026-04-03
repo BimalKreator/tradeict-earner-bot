@@ -172,9 +172,12 @@ export async function fulfillStrategyPaymentFromWebhook(
     .limit(1);
 
   let subscriptionId: string;
+  let accessValidUntil: Date;
+  let isRenewal: boolean;
 
   if (!latestSub) {
-    const accessValidUntil = new Date(Date.now() + extendMs);
+    accessValidUntil = new Date(Date.now() + extendMs);
+    isRenewal = false;
     const [inserted] = await tx
       .insert(userStrategySubscriptions)
       .values({
@@ -194,7 +197,8 @@ export async function fulfillStrategyPaymentFromWebhook(
       now.getTime(),
       latestSub.accessValidUntil.getTime(),
     );
-    const accessValidUntil = new Date(anchorMs + extendMs);
+    accessValidUntil = new Date(anchorMs + extendMs);
+    isRenewal = true;
     await tx
       .update(userStrategySubscriptions)
       .set({
@@ -242,5 +246,16 @@ export async function fulfillStrategyPaymentFromWebhook(
     });
   }
 
-  return { handled: true };
+  return {
+    handled: true,
+    billingPaymentSuccess: {
+      kind: "strategy_subscription",
+      userId: lockedPayment.userId,
+      paymentId: lockedPayment.id,
+      amountInr: String(lockedPayment.amountInr),
+      strategyName: strategyRow?.name ?? null,
+      accessValidUntil,
+      isRenewal,
+    },
+  };
 }

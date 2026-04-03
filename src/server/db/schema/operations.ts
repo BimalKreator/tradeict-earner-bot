@@ -11,6 +11,7 @@ import { admins } from "./admins";
 import {
   auditActorTypeEnum,
   emailLogStatusEnum,
+  notificationLogStatusEnum,
   reminderChannelEnum,
   reminderStatusEnum,
   reminderTypeEnum,
@@ -85,5 +86,26 @@ export const emailLogs = pgTable(
   (t) => [
     index("email_logs_to_created_idx").on(t.toEmail, t.createdAt),
     index("email_logs_status_idx").on(t.status),
+  ],
+);
+
+/**
+ * Every transactional email should write here (in addition to `email_logs`) for admin traceability.
+ * `type` matches the template key (e.g. `billing.revenue_due_reminder`).
+ */
+export const notificationLogs = pgTable(
+  "notification_logs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    type: text("type").notNull(),
+    channel: text("channel").notNull().default("email"),
+    status: notificationLogStatusEnum("status").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    sentAt: timestamp("sent_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("notification_logs_user_sent_idx").on(t.userId, t.sentAt),
+    index("notification_logs_type_sent_idx").on(t.type, t.sentAt),
   ],
 );

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { addCalendarDaysYmd, calendarDateIST } from "@/server/cron/ist-calendar";
 import { cronUnauthorized, verifyCronRequest } from "@/server/cron/verify-cron-request";
+import { runDailyReminders } from "@/server/jobs/daily-reminders";
 import { runDailyPnlSnapshotForIstDate } from "@/server/jobs/revenue-share-engine";
 import { enforceRevenueDueBlocks } from "@/server/revenue/revenue-due-gate";
 
@@ -16,7 +17,8 @@ export const dynamic = "force-dynamic";
  * Backfill: `?date=YYYY-MM-DD` (still requires `CRON_SECRET`).
  *
  * After a successful snapshot, runs {@link enforceRevenueDueBlocks} so overdue
- * weekly ledgers move `active` runs to `blocked_revenue_due` (Phase 22).
+ * weekly ledgers move `active` runs to `blocked_revenue_due` (Phase 22), then
+ * {@link runDailyReminders} for subscription expiry + revenue-share nudges (Phase 28).
  */
 export async function GET(request: Request) {
   if (!verifyCronRequest(request)) return cronUnauthorized();
@@ -34,7 +36,8 @@ export async function GET(request: Request) {
     const revenueBlocks = daily.ok
       ? await enforceRevenueDueBlocks()
       : { blockedRunIds: [] as string[] };
-    return NextResponse.json({ ok: daily.ok, daily, revenueBlocks });
+    const reminders = daily.ok ? await runDailyReminders() : null;
+    return NextResponse.json({ ok: daily.ok, daily, revenueBlocks, reminders });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });

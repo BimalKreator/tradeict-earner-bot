@@ -116,10 +116,11 @@ export async function requestPasswordResetAction(
     const body = forgotPasswordOtpEmail({ code });
     await sendTransactionalEmail({
       to: email,
-      templateKey: "forgot_password_otp",
+      templateKey: "auth.password_reset_otp",
       subject: body.subject,
       text: body.text,
       html: body.html,
+      userId: user.id,
     });
 
     const challenge = await signPasswordResetChallengeJwt(user.id);
@@ -329,10 +330,11 @@ export async function resendPasswordResetOtpAction(
   const body = forgotPasswordOtpEmail({ code });
   await sendTransactionalEmail({
     to: user.email,
-    templateKey: "forgot_password_otp",
+    templateKey: "auth.password_reset_otp",
     subject: body.subject,
     text: body.text,
     html: body.html,
+    userId: user.id,
   });
 
   return { ok: true };

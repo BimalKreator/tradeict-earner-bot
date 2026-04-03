@@ -206,5 +206,14 @@ export async function fulfillRevenueSharePaymentFromWebhook(
   return {
     handled: true,
     releaseRevenueBlockForUserId: lockedPayment.userId,
+    billingPaymentSuccess: {
+      kind: "revenue_share",
+      userId: lockedPayment.userId,
+      paymentId: lockedPayment.id,
+      amountInr: String(lockedPayment.amountInr),
+      strategyName: strategyRow?.name ?? null,
+      weekStartIst: String(ledger.weekStartDateIst),
+      weekEndIst: String(ledger.weekEndDateIst),
+    },
   };
 }

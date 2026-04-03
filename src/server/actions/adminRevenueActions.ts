@@ -15,6 +15,7 @@ import {
 } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 import { sendTransactionalEmail } from "@/server/email/send-email";
+import { billingRevenueDueReminderEmail } from "@/server/notifications/email-templates";
 import { getAppBaseUrl } from "@/server/payments/cashfree/app-url";
 
 function money2(n: number): string {
@@ -302,33 +303,26 @@ export async function adminSendPaymentReminderFormAction(
   }
 
   const fundsUrl = `${base}/user/funds?tab=platform`;
-  const subject = `Tradeict Earner — revenue share payment due (week ${String(row.weekStart)} IST)`;
-  const text = [
-    `Hello,`,
-    ``,
-    `You have an outstanding revenue-share balance for strategy "${row.strategyName ?? "your strategy"}" for the IST week ${String(row.weekStart)}–${String(row.weekEnd)}.`,
-    `Amount remaining: ₹${money2(out)}.`,
-    ``,
-    `Pay securely in your dashboard: ${fundsUrl}`,
-    ``,
-    `— Tradeict Earner`,
-  ].join("\n");
-
-  const html = `
-    <p>Hello,</p>
-    <p>You have an outstanding revenue-share balance for strategy <strong>${escapeHtml(row.strategyName ?? "your strategy")}</strong>
-    for the IST week <strong>${escapeHtml(String(row.weekStart))}</strong>–<strong>${escapeHtml(String(row.weekEnd))}</strong>.</p>
-    <p>Amount remaining: <strong>₹${money2(out)}</strong>.</p>
-    <p><a href="${fundsUrl}">Open your funds page to pay</a></p>
-    <p>— Tradeict Earner</p>
-  `;
+  const body = billingRevenueDueReminderEmail({
+    strategyName: row.strategyName ?? "your strategy",
+    weekStart: String(row.weekStart),
+    weekEnd: String(row.weekEnd),
+    outstandingInr: money2(out),
+    payUrl: fundsUrl,
+  });
 
   const sent = await sendTransactionalEmail({
     to: row.email,
-    subject,
-    text,
-    html,
-    templateKey: "billing.revenue_share_reminder",
+    subject: body.subject,
+    text: body.text,
+    html: body.html,
+    templateKey: "billing.revenue_due_reminder",
+    userId: row.userId,
+    notificationMetadata: {
+      ledger_id: ledgerId,
+      trigger: "admin_manual",
+      outstanding_inr: money2(out),
+    },
   });
 
   await database.insert(auditLogs).values({
@@ -356,14 +350,6 @@ export async function adminSendPaymentReminderFormAction(
   }
 
   return { ok: true, message: "Reminder email sent." };
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 export async function adminSaveLedgerNotesFormAction(

@@ -70,13 +70,21 @@ export async function registerUserAction(
   const email = parsed.data.email.toLowerCase();
   const passwordHash = await bcrypt.hash(parsed.data.password, 12);
 
+  let newUserId: string;
   try {
-    await database.insert(users).values({
-      email,
-      name: parsed.data.name,
-      phone: parsed.data.phone.replace(/\s/g, ""),
-      passwordHash,
-    });
+    const [created] = await database
+      .insert(users)
+      .values({
+        email,
+        name: parsed.data.name,
+        phone: parsed.data.phone.replace(/\s/g, ""),
+        passwordHash,
+      })
+      .returning({ id: users.id });
+    if (!created) {
+      return { error: "Could not create account. Please try again." };
+    }
+    newUserId = created.id;
   } catch (e: unknown) {
     if (isUniqueViolation(e)) {
       return {
@@ -92,10 +100,11 @@ export async function registerUserAction(
     const regBody = registrationReceivedEmail({ name: parsed.data.name });
     await sendTransactionalEmail({
       to: email,
-      templateKey: "registration_received",
+      templateKey: "auth.registration_received",
       subject: regBody.subject,
       text: regBody.text,
       html: regBody.html,
+      userId: newUserId,
     });
   } catch (e) {
     console.error("registerUserAction: confirmation email failed", e);
