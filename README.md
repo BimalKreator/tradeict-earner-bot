@@ -2,7 +2,7 @@
 
 Production-oriented foundation for a **multi-user trading bot platform** targeting **Delta Exchange India**: public site, **user panel** (`/user/...`), **admin panel** (`/admin/...`), plus future **billing**, **trading engine**, and **notification** modules.
 
-**Production deploy:** see **[DEPLOYMENT.md](./DEPLOYMENT.md)** (env vars, `EXCHANGE_SECRETS_ENCRYPTION_KEY`, PM2, cron, migrations, first admin).
+**Production deploy:** **[DEPLOYMENT.md](./DEPLOYMENT.md)** (env, PM2, cron, first admin). **Architecture & business rules:** **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 
 ## Stack
 

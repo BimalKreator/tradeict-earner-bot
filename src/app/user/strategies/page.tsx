@@ -40,8 +40,9 @@ export default async function UserStrategiesPage() {
         </h1>
         <p className="mt-1 max-w-2xl text-sm text-[var(--text-muted)]">
           Browse Delta India strategies you can subscribe to. Pricing may reflect
-          admin defaults or your personal overrides. Subscribe opens checkout
-          (payment in a later release).
+          admin defaults or your personal overrides. Checkout uses Cashfree; each
+          purchase adds <strong className="text-[var(--text-primary)]">30 days</strong>{" "}
+          of access, stacking on top of any time you already have left.
         </p>
         {!userId ? (
           <p className="mt-3 text-sm text-amber-100/90">

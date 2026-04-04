@@ -27,6 +27,85 @@ function coerceNum(v: unknown): number | null {
   return null;
 }
 
+/** Delta may return `success` as boolean or (legacy) string. */
+function deltaJsonSuccess(json: Record<string, unknown>): boolean {
+  return json.success === true || json.success === "true";
+}
+
+/** Wallet rows live under `result` or `data.result`. */
+function walletBalanceResultRows(json: Record<string, unknown>): unknown[] {
+  const top = json.result;
+  if (Array.isArray(top)) return top;
+  const data = json.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const inner = (data as Record<string, unknown>).result;
+    if (Array.isArray(inner)) return inner;
+  }
+  return [];
+}
+
+/** Meta may be top-level or under `data.meta`. */
+function walletBalanceMeta(json: Record<string, unknown>): Record<string, unknown> | null {
+  const meta = json.meta;
+  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+    return meta as Record<string, unknown>;
+  }
+  const data = json.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const dm = (data as Record<string, unknown>).meta;
+    if (dm && typeof dm === "object" && !Array.isArray(dm)) {
+      return dm as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+/**
+ * Portfolio-level INR (or account quote) total. API docs show string; live API may send number.
+ */
+function readNetEquityFromMeta(meta: Record<string, unknown> | null): string | null {
+  if (!meta) return null;
+  const keys = [
+    "net_equity",
+    "net_equity_inr",
+    "total_net_equity",
+    "portfolio_net_equity",
+  ];
+  for (const k of keys) {
+    const n = coerceNum(meta[k]);
+    if (n !== null) return String(n);
+  }
+  return null;
+}
+
+function walletAssetSymbol(o: Record<string, unknown>): string {
+  return typeof o.asset_symbol === "string"
+    ? o.asset_symbol
+    : String(o.asset_symbol ?? "");
+}
+
+/** Fiat INR wallet on Delta India (and similar symbols). */
+function isInrLikeWalletAsset(sym: string): boolean {
+  const s = sym.trim().toUpperCase();
+  if (s === "INR" || s === "INRF") return true;
+  if (s === "INR_FIAT" || s === "FIAT_INR") return true;
+  return false;
+}
+
+/** USD-stable collateral rows whose numeric balance is not INR until converted. */
+function isUsdStableWalletAsset(sym: string): boolean {
+  const s = sym.trim().toUpperCase();
+  return s === "USDT" || s === "USD" || s === "USDC" || s === "BUSD";
+}
+
+function parseInrPerUsdtFromEnv(): number | null {
+  const raw = process.env.DELTA_WALLET_INR_PER_USDT?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 function parseDeltaOrderResultPayload(
   json: Record<string, unknown>,
 ): {
@@ -256,6 +335,16 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     const path = "/v2/wallet/balances";
     try {
       const r = await this.signedFetch("GET", path, "", "");
+
+      // Temporary diagnostic — remove or gate after confirming wallet JSON shape in prod.
+      console.log(
+        "DELTA_WALLET_RAW_RESPONSE:",
+        JSON.stringify({ httpOk: r.ok, status: r.status, body: r.json }).slice(
+          0,
+          16000,
+        ),
+      );
+
       if (!r.ok) {
         return {
           ok: false,
@@ -263,53 +352,77 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
           httpStatus: r.status,
         };
       }
-      if (r.json.success !== true) {
+      if (!deltaJsonSuccess(r.json)) {
         return {
           ok: false,
-          error: "Delta wallet response not successful.",
+          error: `Delta wallet response not successful: ${r.text.slice(0, 300)}`,
           httpStatus: r.status,
         };
       }
-      const meta = r.json.meta;
-      const metaObj =
-        meta && typeof meta === "object"
-          ? (meta as Record<string, unknown>)
-          : null;
-      const netEquity =
-        metaObj && typeof metaObj.net_equity === "string"
-          ? metaObj.net_equity
-          : null;
 
-      const result = r.json.result;
+      const metaObj = walletBalanceMeta(r.json);
+      const netEquity = readNetEquityFromMeta(metaObj);
+
+      const resultArr = walletBalanceResultRows(r.json);
       const rows: DeltaWalletBalanceSnapshot["assetRows"] = [];
-      let availSum = 0;
-      let hasAvail = false;
-      if (Array.isArray(result)) {
-        for (const item of result) {
-          if (!item || typeof item !== "object") continue;
-          const o = item as Record<string, unknown>;
-          const sym =
-            typeof o.asset_symbol === "string"
-              ? o.asset_symbol
-              : String(o.asset_symbol ?? "");
-          const bal = o.balance != null ? String(o.balance) : null;
-          const av = o.available_balance != null ? String(o.available_balance) : null;
-          rows.push({ assetSymbol: sym, balance: bal, availableBalance: av });
-          const n = Number(av);
-          if (av != null && Number.isFinite(n)) {
-            availSum += n;
-            hasAvail = true;
-          }
+      for (const item of resultArr) {
+        if (!item || typeof item !== "object") continue;
+        const o = item as Record<string, unknown>;
+        const sym = walletAssetSymbol(o);
+        const bal = o.balance != null ? String(o.balance) : null;
+        const av =
+          o.available_balance != null ? String(o.available_balance) : null;
+        rows.push({ assetSymbol: sym, balance: bal, availableBalance: av });
+      }
+
+      const inrPerUsdt = parseInrPerUsdtFromEnv();
+
+      /** INR-like available margin only; USD-stable converted when env rate set (never sum raw mixed units). */
+      let marginInInr = 0;
+      let hasMarginInInr = false;
+      for (const row of rows) {
+        const avn = row.availableBalance != null ? Number(row.availableBalance) : NaN;
+        if (!Number.isFinite(avn)) continue;
+        if (isInrLikeWalletAsset(row.assetSymbol)) {
+          marginInInr += avn;
+          hasMarginInInr = true;
+        } else if (
+          isUsdStableWalletAsset(row.assetSymbol) &&
+          inrPerUsdt != null
+        ) {
+          marginInInr += avn * inrPerUsdt;
+          hasMarginInInr = true;
         }
       }
 
-      const firstBal = rows[0]?.balance ?? null;
-      const liveBalanceDisplay = netEquity ?? firstBal;
+      let liveBalanceDisplay: string | null = netEquity;
+
+      if (!liveBalanceDisplay) {
+        const inrRow = rows.find((row) => isInrLikeWalletAsset(row.assetSymbol));
+        const inrBal = inrRow?.balance != null ? Number(inrRow.balance) : NaN;
+        if (Number.isFinite(inrBal)) {
+          liveBalanceDisplay = String(inrBal);
+        }
+      }
+
+      if (!liveBalanceDisplay && inrPerUsdt != null) {
+        const usdRow = rows.find((row) => isUsdStableWalletAsset(row.assetSymbol));
+        const usdBal = usdRow?.balance != null ? Number(usdRow.balance) : NaN;
+        if (Number.isFinite(usdBal)) {
+          liveBalanceDisplay = String(usdBal * inrPerUsdt);
+        }
+      }
+
+      if (!liveBalanceDisplay) {
+        console.warn(
+          "[DeltaIndiaTradingAdapter] Could not derive INR wallet display: missing meta.net_equity, INR row, and USDT row+DELTA_WALLET_INR_PER_USDT. Check DELTA_WALLET_RAW_RESPONSE log.",
+        );
+      }
 
       return {
         ok: true,
         netEquity,
-        availableMarginTotal: hasAvail ? String(availSum) : null,
+        availableMarginTotal: hasMarginInInr ? String(marginInInr) : null,
         liveBalanceDisplay,
         assetRows: rows,
         rawMeta: metaObj,

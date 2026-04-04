@@ -138,7 +138,7 @@ export function UserFundsPollingSection({
               ? liveOk.balanceError
               : liveErr
                 ? liveErr.message
-                : "From meta.net_equity / wallet rows."
+                : "From meta.net_equity, INR wallet row, or USDT×DELTA_WALLET_INR_PER_USDT."
           }
         />
         <StatCard
