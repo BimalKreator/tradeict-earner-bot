@@ -1,17 +1,26 @@
+import { sql } from "drizzle-orm";
 import {
   index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
 import { admins } from "./admins";
-import { profileChangeRequestStatusEnum } from "./enums";
+import {
+  profileChangeRequestStatusEnum,
+  termsDocumentStatusEnum,
+} from "./enums";
 import { users } from "./users";
 
+/**
+ * @deprecated Legacy table — use `terms_and_conditions`. Retained for DBs seeded before Phase 29.
+ */
 export const termsVersions = pgTable(
   "terms_versions",
   {
@@ -30,6 +39,55 @@ export const termsVersions = pgTable(
       .notNull(),
   },
   (t) => [index("terms_effective_from_idx").on(t.effectiveFrom)],
+);
+
+/** Version-controlled T&C (Markdown). Only one `published` row allowed (partial unique index). */
+export const termsAndConditions = pgTable(
+  "terms_and_conditions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    versionName: text("version_name").notNull(),
+    /** Markdown (rendered on the public `/terms` page). */
+    content: text("content").notNull(),
+    status: termsDocumentStatusEnum("status").notNull().default("draft"),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("tac_status_idx").on(t.status),
+    index("tac_updated_at_idx").on(t.updatedAt),
+    uniqueIndex("tac_single_published_uidx")
+      .on(t.status)
+      .where(sql`${t.status} = 'published'`),
+  ],
+);
+
+/**
+ * Optional compliance gate: explicit acceptance of a specific terms revision.
+ */
+export const userAcceptedTerms = pgTable(
+  "user_accepted_terms",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    termsId: uuid("terms_id")
+      .notNull()
+      .references(() => termsAndConditions.id, { onDelete: "restrict" }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.termsId] }),
+    index("uat_user_idx").on(t.userId),
+    index("uat_terms_idx").on(t.termsId),
+  ],
 );
 
 /**

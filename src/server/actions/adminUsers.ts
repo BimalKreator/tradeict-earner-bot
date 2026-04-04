@@ -8,9 +8,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
+import { logAdminAction } from "@/server/audit/audit-logger";
 import { requireAdminId } from "@/server/auth/require-admin-id";
 import type { Database } from "@/server/db";
-import { auditLogs, users } from "@/server/db/schema";
+import { users } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 import {
   adminCreatedUserCredentialsEmail,
@@ -22,19 +23,17 @@ import { sendTransactionalEmail } from "@/server/email/send-email";
 const uuid = z.string().uuid();
 
 async function insertUserAudit(
-  database: Database,
   adminId: string,
   action: string,
   userId: string,
   metadata?: Record<string, unknown>,
 ) {
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action,
     entityType: "user",
     entityId: userId,
-    metadata: metadata ?? {},
+    extra: metadata,
   });
 }
 
@@ -97,7 +96,7 @@ export async function approveUserAction(
     })
     .where(eq(users.id, user.id));
 
-  await insertUserAudit(database, adminId, "user.approved", user.id, {
+  await insertUserAudit(adminId, "user.approved", user.id, {
     email: user.email,
     fromStatus,
   });
@@ -157,7 +156,7 @@ export async function rejectUserAction(
     })
     .where(eq(users.id, user.id));
 
-  await insertUserAudit(database, adminId, "user.rejected", user.id, {
+  await insertUserAudit(adminId, "user.rejected", user.id, {
     email: user.email,
     note: noteStr,
   });
@@ -218,7 +217,7 @@ export async function pauseUserAction(
     })
     .where(eq(users.id, user.id));
 
-  await insertUserAudit(database, adminId, "user.paused", user.id, {
+  await insertUserAudit(adminId, "user.paused", user.id, {
     email: user.email,
     previousStatus: user.approvalStatus,
   });
@@ -260,7 +259,7 @@ export async function archiveUserAction(
     .set({ approvalStatus: "archived", updatedAt: now })
     .where(eq(users.id, user.id));
 
-  await insertUserAudit(database, adminId, "user.archived", user.id, {
+  await insertUserAudit(adminId, "user.archived", user.id, {
     email: user.email,
     previousStatus,
   });
@@ -345,7 +344,7 @@ export async function createAdminUserAction(
     throw e;
   }
 
-  await insertUserAudit(database, adminId, "user.created_by_admin", newId, {
+  await insertUserAudit(adminId, "user.created_by_admin", newId, {
     email,
   });
 
@@ -431,7 +430,7 @@ export async function updateUserBasicAction(
     })
     .where(eq(users.id, user.id));
 
-  await insertUserAudit(database, adminId, "user.profile_updated", user.id, {
+  await insertUserAudit(adminId, "user.profile_updated", user.id, {
     email: user.email,
     name: { before: user.name, after: parsed.data.name },
     phone: { before: user.phone, after: parsed.data.phone },
@@ -493,7 +492,7 @@ export async function updateAdminInternalNotesAction(
     })
     .where(eq(users.id, user.id));
 
-  await insertUserAudit(database, adminId, "user.internal_notes_updated", user.id, {
+  await insertUserAudit(adminId, "user.internal_notes_updated", user.id, {
     email: user.email,
     lengthBefore: before.length,
     lengthAfter: after.length,

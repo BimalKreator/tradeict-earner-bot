@@ -9,7 +9,9 @@ import {
   type UserStrategySettingsConstraints,
 } from "@/lib/user-strategy-settings-schema";
 import { requireUserId } from "@/server/auth/require-user";
-import { auditLogs, strategies, userStrategyRuns, userStrategySubscriptions } from "@/server/db/schema";
+import { logAuditEvent } from "@/server/audit/audit-logger";
+import type { Database } from "@/server/db";
+import { strategies, userStrategyRuns, userStrategySubscriptions } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 
 export type UserStrategySettingsActionState = {
@@ -196,7 +198,7 @@ export async function updateUserStrategySettingsAction(
       })
       .where(eq(userStrategyRuns.id, row.runId));
 
-    await tx.insert(auditLogs).values({
+    await logAuditEvent({
       actorType: "user",
       actorUserId: userId,
       action: "strategy_run.settings_updated",
@@ -214,6 +216,7 @@ export async function updateUserStrategySettingsAction(
         strategy_slug: row.strategySlug,
         subscription_id: row.subscriptionId,
       },
+      tx,
     });
   });
 

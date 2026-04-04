@@ -1,17 +1,31 @@
-import { desc, lte } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { db } from "@/server/db";
-import { termsVersions } from "@/server/db/schema";
+import { termsAndConditions } from "@/server/db/schema";
 
-/** Latest terms row that is already in effect (`effective_from <= now`). */
-export async function getCurrentTermsVersion() {
+export type PublishedTerms = {
+  versionName: string;
+  content: string;
+  publishedAt: Date;
+};
+
+/** Single active published row (partial unique index guarantees at most one). */
+export async function getPublishedTerms(): Promise<PublishedTerms | null> {
   if (!db) return null;
-  const now = new Date();
-  const rows = await db
-    .select()
-    .from(termsVersions)
-    .where(lte(termsVersions.effectiveFrom, now))
-    .orderBy(desc(termsVersions.effectiveFrom), desc(termsVersions.version))
+  const [row] = await db
+    .select({
+      versionName: termsAndConditions.versionName,
+      content: termsAndConditions.content,
+      publishedAt: termsAndConditions.publishedAt,
+    })
+    .from(termsAndConditions)
+    .where(eq(termsAndConditions.status, "published"))
     .limit(1);
-  return rows[0] ?? null;
+
+  if (!row?.publishedAt) return null;
+  return {
+    versionName: row.versionName,
+    content: row.content,
+    publishedAt: row.publishedAt,
+  };
 }

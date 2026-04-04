@@ -113,6 +113,13 @@ export const profileChangeRequestStatusEnum = pgEnum(
   ["pending", "approved", "rejected"],
 );
 
+/** Versioned platform terms; at most one row may be `published` (enforced by partial unique index). */
+export const termsDocumentStatusEnum = pgEnum("terms_document_status", [
+  "draft",
+  "published",
+  "archived",
+]);
+
 export const reminderTypeEnum = pgEnum("reminder_type", [
   "payment_due",
   "revenue_due",

@@ -9,9 +9,9 @@ import {
   chartPointsToDbValue,
   parsePerformanceChartJsonText,
 } from "@/lib/strategy-performance-chart";
+import { logAdminAction } from "@/server/audit/audit-logger";
 import { requireAdminId } from "@/server/auth/require-admin-id";
-import type { Database } from "@/server/db";
-import { auditLogs, strategies } from "@/server/db/schema";
+import { strategies } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 
 const uuid = z.string().uuid();
@@ -19,19 +19,17 @@ const uuid = z.string().uuid();
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 async function insertStrategyAudit(
-  database: Database,
   adminId: string,
   action: string,
   strategyId: string,
   metadata?: Record<string, unknown>,
 ) {
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action,
     entityType: "strategy",
     entityId: strategyId,
-    metadata: metadata ?? {},
+    extra: metadata,
   });
 }
 
@@ -184,7 +182,7 @@ export async function createStrategyAction(
     throw e;
   }
 
-  await insertStrategyAudit(database, adminId, "strategy.created", newId, {
+  await insertStrategyAudit(adminId, "strategy.created", newId, {
     slug: slugRaw,
     name: parsed.data.name.trim(),
   });
@@ -273,7 +271,7 @@ export async function updateStrategyAction(
     .set(patch)
     .where(eq(strategies.id, idParsed.data));
 
-  await insertStrategyAudit(database, adminId, "strategy.updated", idParsed.data, {
+  await insertStrategyAudit(adminId, "strategy.updated", idParsed.data, {
     changed: Object.keys(patch),
     slug: existing.slug,
   });
@@ -316,7 +314,6 @@ export async function setStrategyVisibilityAction(
     .where(eq(strategies.id, row.id));
 
   await insertStrategyAudit(
-    database,
     adminId,
     "strategy.visibility_changed",
     row.id,
@@ -358,7 +355,6 @@ export async function setStrategyStatusAction(formData: FormData): Promise<void>
     .where(eq(strategies.id, row.id));
 
   await insertStrategyAudit(
-    database,
     adminId,
     "strategy.status_changed",
     row.id,

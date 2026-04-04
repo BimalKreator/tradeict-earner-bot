@@ -4,9 +4,10 @@ import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { logAdminAction } from "@/server/audit/audit-logger";
 import { requireAdminId } from "@/server/auth/require-admin-id";
+import type { Database } from "@/server/db";
 import {
-  auditLogs,
   feeWaivers,
   payments,
   strategies,
@@ -205,21 +206,27 @@ export async function adminApplyFeeWaiverFormAction(
         })
         .where(eq(weeklyRevenueShareLedgers.id, ledger.id));
 
-      await tx.insert(auditLogs).values({
-        actorType: "admin",
+      await logAdminAction({
         actorAdminId: adminId,
         action: "billing.fee_waiver_applied",
         entityType: "weekly_revenue_share_ledger",
         entityId: ledger.id,
-        metadata: {
+        oldValues: {
+          amount_due_inr: money2(due),
+          amount_paid_inr: money2(paid),
+          status: ledger.status,
+        },
+        newValues: {
+          amount_due_inr: newDue,
+          amount_paid_inr: money2(paid),
+          status: nextStatus,
+        },
+        extra: {
           target_user_id: ledger.userId,
           waiver_amount_inr: money2(reduction),
-          previous_amount_due_inr: money2(due),
-          new_amount_due_inr: newDue,
-          amount_paid_inr: money2(paid),
           reason,
-          ledger_status_after: nextStatus,
         },
+        tx,
       });
 
       return {
@@ -325,13 +332,12 @@ export async function adminSendPaymentReminderFormAction(
     },
   });
 
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action: "billing.payment_reminder_sent",
     entityType: "weekly_revenue_share_ledger",
     entityId: ledgerId,
-    metadata: {
+    extra: {
       target_user_id: row.userId,
       to_email: row.email,
       outstanding_inr: money2(out),
@@ -401,17 +407,14 @@ export async function adminSaveLedgerNotesFormAction(
     .set({ adminNotes: adminNotes.length ? adminNotes : null, updatedAt: now })
     .where(eq(weeklyRevenueShareLedgers.id, ledgerId));
 
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action: "billing.ledger_admin_notes_updated",
     entityType: "weekly_revenue_share_ledger",
     entityId: ledgerId,
-    metadata: {
-      target_user_id: ledger.userId,
-      previous_note: ledger.prev ?? null,
-      new_note: adminNotes.length ? adminNotes : null,
-    },
+    oldValues: { admin_notes: ledger.prev ?? null },
+    newValues: { admin_notes: adminNotes.length ? adminNotes : null },
+    extra: { target_user_id: ledger.userId },
   });
 
   revalidateRevenueViews(ledger.userId);
@@ -467,17 +470,14 @@ export async function adminSavePaymentNotesFormAction(
     .set({ adminNotes: adminNotes.length ? adminNotes : null, updatedAt: now })
     .where(eq(payments.id, paymentId));
 
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action: "billing.payment_admin_notes_updated",
     entityType: "payment",
     entityId: paymentId,
-    metadata: {
-      target_user_id: pay.userId,
-      previous_note: pay.prev ?? null,
-      new_note: adminNotes.length ? adminNotes : null,
-    },
+    oldValues: { admin_notes: pay.prev ?? null },
+    newValues: { admin_notes: adminNotes.length ? adminNotes : null },
+    extra: { target_user_id: pay.userId },
   });
 
   revalidateRevenueViews(pay.userId);
@@ -534,12 +534,11 @@ export async function adminBulkPaymentReminderFormAction(
     else emailsFail += 1;
   }
 
-  await requireDb().insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action: "billing.bulk_payment_reminder",
     entityType: "weekly_revenue_share_ledger",
-    metadata: {
+    extra: {
       ledger_ids: parsedIds,
       emails_ok: emailsOk,
       emails_fail: emailsFail,

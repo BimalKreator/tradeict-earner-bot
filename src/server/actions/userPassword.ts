@@ -6,7 +6,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { requireUserId } from "@/server/auth/require-user";
-import { auditLogs, users } from "@/server/db/schema";
+import { logAuditEvent } from "@/server/audit/audit-logger";
+import { users } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 
 const schema = z
@@ -85,7 +86,7 @@ export async function changePasswordFromProfileAction(
     .set({ passwordHash: newHash, updatedAt: now })
     .where(eq(users.id, userId));
 
-  await database.insert(auditLogs).values({
+  await logAuditEvent({
     actorType: "user",
     actorUserId: userId,
     action: "user.password_changed",

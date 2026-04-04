@@ -6,9 +6,9 @@
 
 import { and, eq, inArray, lte, sql } from "drizzle-orm";
 
+import { logAuditEvent } from "@/server/audit/audit-logger";
 import { db } from "@/server/db";
 import {
-  auditLogs,
   userStrategyRuns,
   userStrategySubscriptions,
   weeklyRevenueShareLedgers,
@@ -107,7 +107,7 @@ export async function enforceRevenueDueBlocks(): Promise<EnforceRevenueBlocksRes
     .where(inArray(userStrategyRuns.id, ids));
 
   for (const r of runs) {
-    await db.insert(auditLogs).values({
+    await logAuditEvent({
       actorType: "system",
       action: "revenue_share_auto_block",
       entityType: "user_strategy_run",
@@ -115,6 +115,7 @@ export async function enforceRevenueDueBlocks(): Promise<EnforceRevenueBlocksRes
       actorUserId: r.userId,
       metadata: {
         subscription_id: r.subscriptionId,
+        target_user_id: r.userId,
         due_cutoff_utc: cutoff.toISOString(),
       },
     });
@@ -171,15 +172,17 @@ export async function releaseRevenueBlock(
       })
       .where(eq(userStrategyRuns.id, row.id));
 
-    await db.insert(auditLogs).values({
+    await logAuditEvent({
       actorType: "system",
       action: "resumed_after_payment",
       entityType: "user_strategy_run",
       entityId: row.id,
       actorUserId: userId,
       metadata: {
-        from: "blocked_revenue_due",
-        to: "active",
+        subscription_id: row.subscriptionId,
+        target_user_id: userId,
+        old_values: { run_status: "blocked_revenue_due" },
+        new_values: { run_status: "active" },
       },
     });
 

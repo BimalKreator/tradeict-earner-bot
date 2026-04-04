@@ -44,7 +44,7 @@ async function main() {
   const client = postgres(databaseUrl, { max: 1 });
   const db = drizzle(client, { schema });
 
-  const { admins, appSettings, strategies, termsVersions } = schema;
+  const { admins, appSettings, strategies, termsAndConditions } = schema;
 
   const passwordHash = await bcrypt.hash(adminPassword, 12);
 
@@ -140,20 +140,27 @@ async function main() {
       },
     });
 
-  await db
-    .insert(termsVersions)
-    .values({
-      version: 1,
-      title: "Terms & conditions v1",
-      contentMd:
-        "This is the initial seeded terms document. Replace via the admin panel in production. " +
-        "All business dates use Asia/Kolkata (IST) unless stated otherwise.",
-      effectiveFrom: new Date(),
-      createdByAdminId: adminRow?.id ?? null,
-    })
-    .onConflictDoNothing({ target: termsVersions.version });
+  const [existingTerms] = await db
+    .select({ id: termsAndConditions.id })
+    .from(termsAndConditions)
+    .limit(1);
 
-  console.log("Seed completed: admin (if new), strategies, app_settings, terms_versions v1.");
+  if (!existingTerms) {
+    await db.insert(termsAndConditions).values({
+      versionName: "v1.0 (seed)",
+      content:
+        "# Terms & conditions (seed)\n\n" +
+        "This is the initial seeded terms document. **Replace** via **Admin → Terms** in production.\n\n" +
+        "All business dates use **Asia/Kolkata (IST)** unless stated otherwise.\n",
+      status: "published",
+      publishedAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+
+  console.log(
+    "Seed completed: admin (if new), strategies, app_settings, terms_and_conditions (if empty).",
+  );
   await client.end();
 }
 

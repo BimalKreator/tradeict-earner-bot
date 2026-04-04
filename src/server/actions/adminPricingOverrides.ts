@@ -6,7 +6,8 @@ import { z } from "zod";
 
 import { requireAdminId } from "@/server/auth/require-admin-id";
 import type { Database } from "@/server/db";
-import { auditLogs, strategies, userStrategyPricingOverrides } from "@/server/db/schema";
+import { logAdminAction } from "@/server/audit/audit-logger";
+import { strategies, userStrategyPricingOverrides } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 
 const uuid = z.string().uuid();
@@ -220,23 +221,22 @@ export async function adminCreatePricingOverrideFormAction(
       return { ok: false, message: "Insert failed." };
     }
 
-    await database.insert(auditLogs).values({
-      actorType: "admin",
+    const snap = snapshotFromRow({
+      ...inserted,
+      monthlyFeeInrOverride: inserted.monthlyFeeInrOverride
+        ? String(inserted.monthlyFeeInrOverride)
+        : null,
+      revenueSharePercentOverride: inserted.revenueSharePercentOverride
+        ? String(inserted.revenueSharePercentOverride)
+        : null,
+    });
+    await logAdminAction({
       actorAdminId: adminId,
       action: "admin.pricing_override_created",
       entityType: "user_strategy_pricing_override",
       entityId: inserted.id,
-      metadata: {
-        after: snapshotFromRow({
-          ...inserted,
-          monthlyFeeInrOverride: inserted.monthlyFeeInrOverride
-            ? String(inserted.monthlyFeeInrOverride)
-            : null,
-          revenueSharePercentOverride: inserted.revenueSharePercentOverride
-            ? String(inserted.revenueSharePercentOverride)
-            : null,
-        }),
-      },
+      newValues: snap as unknown as Record<string, unknown>,
+      extra: { target_user_id: inserted.userId },
     });
 
     revalidatePricingSurfaces(parsed.data.targetUserId, strat.slug);
@@ -382,32 +382,32 @@ export async function adminUpdatePricingOverrideFormAction(
       .where(eq(userStrategyPricingOverrides.id, before.id))
       .limit(1);
 
-    await database.insert(auditLogs).values({
-      actorType: "admin",
+    const afterSnap = after
+      ? snapshotFromRow({
+          id: after.id,
+          userId: after.userId,
+          strategyId: after.strategyId,
+          monthlyFeeInrOverride: after.monthlyFeeInrOverride
+            ? String(after.monthlyFeeInrOverride)
+            : null,
+          revenueSharePercentOverride: after.revenueSharePercentOverride
+            ? String(after.revenueSharePercentOverride)
+            : null,
+          effectiveFrom: after.effectiveFrom,
+          effectiveUntil: after.effectiveUntil,
+          isActive: after.isActive,
+          adminNotes: after.adminNotes,
+        })
+      : beforeSnap;
+
+    await logAdminAction({
       actorAdminId: adminId,
       action: "admin.pricing_override_updated",
       entityType: "user_strategy_pricing_override",
       entityId: before.id,
-      metadata: {
-        before: beforeSnap,
-        after: after
-          ? snapshotFromRow({
-              id: after.id,
-              userId: after.userId,
-              strategyId: after.strategyId,
-              monthlyFeeInrOverride: after.monthlyFeeInrOverride
-                ? String(after.monthlyFeeInrOverride)
-                : null,
-              revenueSharePercentOverride: after.revenueSharePercentOverride
-                ? String(after.revenueSharePercentOverride)
-                : null,
-              effectiveFrom: after.effectiveFrom,
-              effectiveUntil: after.effectiveUntil,
-              isActive: after.isActive,
-              adminNotes: after.adminNotes,
-            })
-          : beforeSnap,
-      },
+      oldValues: beforeSnap as unknown as Record<string, unknown>,
+      newValues: afterSnap as unknown as Record<string, unknown>,
+      extra: { target_user_id: parsed.data.targetUserId },
     });
 
     revalidatePricingSurfaces(parsed.data.targetUserId, strat?.slug);
@@ -486,13 +486,13 @@ export async function adminDeletePricingOverrideFormAction(
     .delete(userStrategyPricingOverrides)
     .where(eq(userStrategyPricingOverrides.id, row.id));
 
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action: "admin.pricing_override_deleted",
     entityType: "user_strategy_pricing_override",
     entityId: row.id,
-    metadata: { deleted: beforeSnap },
+    oldValues: beforeSnap as unknown as Record<string, unknown>,
+    extra: { target_user_id: parsed.data.targetUserId, deleted: true },
   });
 
   revalidatePricingSurfaces(parsed.data.targetUserId, strat?.slug);

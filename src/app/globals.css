@@ -87,6 +87,13 @@ body::before {
   color: var(--text-muted);
 }
 
+/* Public terms: comfortable measure for long-form reading */
+.terms-prose .legal-markdown {
+  max-width: 65ch;
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
 .legal-markdown h1,
 .legal-markdown h2,
 .legal-markdown h3 {

@@ -13,7 +13,8 @@ import {
   type ProfileChangeFieldKey,
   PROFILE_FIELD_LABELS,
 } from "@/lib/profile-change-fields";
-import { auditLogs, profileChangeRequests, users } from "@/server/db/schema";
+import { logAdminAction } from "@/server/audit/audit-logger";
+import { profileChangeRequests, users } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 import {
   profileChangeApprovedEmail,
@@ -187,16 +188,16 @@ export async function approveProfileChangeRequestAction(
         })
         .where(eq(profileChangeRequests.id, req.id));
 
-      await tx.insert(auditLogs).values({
-        actorType: "admin",
+      await logAdminAction({
         actorAdminId: adminId,
         action: "profile_change_request.approved",
         entityType: "profile_change_request",
         entityId: req.id,
-        metadata: {
-          userId: u.id,
+        extra: {
+          target_user_id: u.id,
           changes: Object.keys(changes),
         },
+        tx,
       });
 
       const summaryLines = Object.keys(changes).map((k) => {
@@ -330,13 +331,12 @@ export async function rejectProfileChangeRequestAction(
     })
     .where(eq(profileChangeRequests.id, req.id));
 
-  await database.insert(auditLogs).values({
-    actorType: "admin",
+  await logAdminAction({
     actorAdminId: adminId,
     action: "profile_change_request.rejected",
     entityType: "profile_change_request",
     entityId: req.id,
-    metadata: { userId: u.id, note },
+    extra: { target_user_id: u.id, note },
   });
 
   const body = profileChangeRejectedEmail({ name: u.name, note });

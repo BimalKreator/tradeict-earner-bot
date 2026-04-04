@@ -4,9 +4,10 @@ import { and, eq, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
+import { logAdminAction } from "@/server/audit/audit-logger";
 import { requireAdminId } from "@/server/auth/require-admin-id";
+import type { Database } from "@/server/db";
 import {
-  auditLogs,
   strategies,
   userStrategyRuns,
   userStrategySubscriptions,
@@ -149,20 +150,20 @@ export async function adminForcePauseRunFormAction(
       })
       .where(eq(userStrategyRuns.id, row.runId));
 
-    await tx.insert(auditLogs).values({
-      actorType: "admin",
+    await logAdminAction({
       actorAdminId: adminId,
       action: "admin.run_force_paused",
       entityType: "user_strategy_run",
       entityId: row.runId,
-      metadata: {
+      oldValues: { run_status: prevStatus },
+      newValues: { run_status: "paused_admin" as const },
+      extra: {
         admin_note: parsed.data.adminNotes,
         subscription_id: row.subscriptionId,
         target_user_id: row.targetUserId,
         strategy_slug: row.strategySlug,
-        old_values: { run_status: prevStatus },
-        new_values: { run_status: "paused_admin" as const },
       },
+      tx,
     });
   });
 
@@ -280,20 +281,20 @@ export async function adminResumeRunFormAction(
       })
       .where(eq(userStrategyRuns.id, row.runId));
 
-    await tx.insert(auditLogs).values({
-      actorType: "admin",
+    await logAdminAction({
       actorAdminId: adminId,
       action: "admin.run_resumed",
       entityType: "user_strategy_run",
       entityId: row.runId,
-      metadata: {
+      oldValues: { run_status: "paused_admin" as const },
+      newValues: { run_status: "active" as const },
+      extra: {
         admin_note: parsed.data.adminNotes,
         subscription_id: row.subscriptionId,
         target_user_id: row.targetUserId,
         strategy_slug: row.strategySlug,
-        old_values: { run_status: "paused_admin" as const },
-        new_values: { run_status: "active" as const },
       },
+      tx,
     });
   });
 
@@ -371,18 +372,18 @@ export async function adminExtendSubscriptionFormAction(
       })
       .where(eq(userStrategySubscriptions.id, row.subscriptionId));
 
-    await tx.insert(auditLogs).values({
-      actorType: "admin",
+    await logAdminAction({
       actorAdminId: adminId,
       action: "admin.subscription_extended",
       entityType: "user_strategy_subscription",
       entityId: row.subscriptionId,
-      metadata: {
+      oldValues: { access_valid_until: prevUntil.toISOString() },
+      newValues: { access_valid_until: nextUntil.toISOString() },
+      extra: {
         target_user_id: row.userId,
         add_days: parsed.data.addDays,
-        old_values: { access_valid_until: prevUntil.toISOString() },
-        new_values: { access_valid_until: nextUntil.toISOString() },
       },
+      tx,
     });
   });
 
