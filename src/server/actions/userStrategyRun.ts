@@ -13,29 +13,17 @@ import {
 } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 import { hasValidDeltaIndiaConnectionForTrading } from "@/server/queries/exchange-valid-for-trading";
+import {
+  activationRevenueDueBlockMessage,
+  canActivateFromRunStatus,
+  subscriptionActiveEntitled,
+} from "@/server/strategy/strategy-activation-gates";
 
 const subscriptionIdSchema = z.string().uuid();
-
-/** Source states allowed to move to `active` after all gates pass. */
-const ACTIVATE_FROM = new Set([
-  "ready_to_activate",
-  "paused_by_user",
-  "paused_exchange_off",
-  "paused_insufficient_funds",
-  "inactive",
-]);
 
 function numericFieldPresent(raw: string | null | undefined): boolean {
   if (raw == null) return false;
   return String(raw).trim() !== "";
-}
-
-function subscriptionActiveEntitled(
-  status: string,
-  accessValidUntil: Date,
-  now: Date,
-): boolean {
-  return status === "active" && accessValidUntil.getTime() > now.getTime();
 }
 
 export type StrategyRunActionState = {
@@ -110,26 +98,12 @@ export async function activateStrategyRunAction(
 
   const settingsPath = `/user/my-strategies/${encodeURIComponent(row.strategySlug)}/settings`;
 
-  if (row.runStatus === "blocked_revenue_due") {
-    return {
-      ok: false,
-      message: "Resolve revenue due before activating this strategy.",
-    };
-  }
-  if (row.runStatus === "paused_revenue_due") {
-    return {
-      ok: false,
-      message: "This strategy cannot be activated while revenue is overdue.",
-    };
-  }
-  if (row.runStatus === "paused_admin") {
-    return {
-      ok: false,
-      message: "This run was paused by support. Contact us to continue.",
-    };
+  const revenueMsg = activationRevenueDueBlockMessage(row.runStatus);
+  if (revenueMsg) {
+    return { ok: false, message: revenueMsg };
   }
 
-  if (!ACTIVATE_FROM.has(row.runStatus)) {
+  if (!canActivateFromRunStatus(row.runStatus)) {
     return {
       ok: false,
       message: "This strategy cannot be activated or resumed from its current state.",

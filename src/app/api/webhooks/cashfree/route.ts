@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { requireDb } from "@/server/db/require-db";
 import { sendBillingPaymentSuccessEmailAfterWebhook } from "@/server/notifications/send-billing-payment-success-email";
 import type { BillingPaymentSuccessEmailPayload } from "@/server/payments/cashfree/parse-webhook";
@@ -5,6 +7,9 @@ import { parseCashfreeWebhookForFulfillment } from "@/server/payments/cashfree/p
 import { verifyCashfreeWebhookSignature } from "@/server/payments/cashfree/verify-webhook";
 import { fulfillStrategyPaymentFromWebhook } from "@/server/payments/fulfill-strategy-payment";
 import { releaseRevenueBlock } from "@/server/revenue/revenue-due-gate";
+
+/** Our PG `payments.id` is used as Cashfree `order_id`; reject garbage before hitting the DB. */
+const webhookOrderIdSchema = z.string().uuid();
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +48,10 @@ export async function POST(request: Request): Promise<Response> {
   const fulfillment = parseCashfreeWebhookForFulfillment(parsed);
   if (!fulfillment) {
     return Response.json({ ok: true, note: "no_order_id" });
+  }
+
+  if (!webhookOrderIdSchema.safeParse(fulfillment.orderId).success) {
+    return Response.json({ ok: true, note: "ignored_order_id_shape" });
   }
 
   const db = requireDb();

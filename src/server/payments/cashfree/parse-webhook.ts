@@ -47,16 +47,19 @@ export function extractCashfreeOrderId(body: unknown): string | null {
   const data = asRecord(root.data);
   if (data) {
     const order = asRecord(data.order);
-    if (order && typeof order.order_id === "string" && order.order_id.length > 0) {
-      return order.order_id;
+    if (order && typeof order.order_id === "string") {
+      const id = order.order_id.trim();
+      if (id.length > 0) return id;
     }
-    if (typeof data.order_id === "string" && data.order_id.length > 0) {
-      return data.order_id;
+    if (typeof data.order_id === "string") {
+      const id = data.order_id.trim();
+      if (id.length > 0) return id;
     }
   }
 
-  if (typeof root.order_id === "string" && root.order_id.length > 0) {
-    return root.order_id;
+  if (typeof root.order_id === "string") {
+    const id = root.order_id.trim();
+    if (id.length > 0) return id;
   }
 
   return null;

@@ -13,6 +13,7 @@ import type {
   PaymentWebhookResult,
   WebhookFulfillmentInput,
 } from "@/server/payments/cashfree/parse-webhook";
+import { applyRevenuePaymentToLedgerAmounts } from "@/server/payments/revenue-ledger-payment-math";
 
 type DbClient = PostgresJsDatabase<typeof schema>;
 type PaymentRow = InferSelectModel<typeof payments>;
@@ -140,9 +141,11 @@ export async function fulfillRevenueSharePaymentFromWebhook(
     return { handled: true, skippedReason: "invalid_amounts" };
   }
 
-  const combined = prevPaid + payAmt;
-  const newPaid = Math.min(combined, due);
-  const fullySettled = newPaid >= due - 0.009;
+  const { newPaid, fullySettled } = applyRevenuePaymentToLedgerAmounts({
+    amountDueInr: due,
+    amountPaidInr: prevPaid,
+    paymentAmountInr: payAmt,
+  });
   const newLedgerStatus = fullySettled ? ("paid" as const) : ("partial" as const);
 
   await tx

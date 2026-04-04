@@ -30,13 +30,12 @@ import {
   istDueFridayAfterWeekEndSunday,
   istEndOfCalendarDayUtc,
 } from "@/server/cron/ist-calendar";
+import {
+  toMoneyString,
+  weeklyAmountDue,
+} from "@/server/jobs/revenue-share-math";
 
 const TERMINAL_BOT_STATUSES = ["filled", "partial_fill"] as const;
-
-function toMoneyString(n: number): string {
-  if (!Number.isFinite(n)) return "0.00";
-  return n.toFixed(2);
-}
 
 function assertIstYmd(label: string, s: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
@@ -102,13 +101,6 @@ async function effectiveRevenueSharePercent(
   const raw = ov?.o ?? s?.d;
   const n = Number(raw);
   return Number.isFinite(n) ? toMoneyString(n) : "0.00";
-}
-
-function weeklyAmountDue(weeklyNetProfit: number, percentStr: string): string {
-  const p = Number(percentStr);
-  if (weeklyNetProfit <= 0 || !Number.isFinite(p) || p <= 0) return "0.00";
-  const due = (weeklyNetProfit * p) / 100;
-  return toMoneyString(due);
 }
 
 export type DailyPnlJobResult = {

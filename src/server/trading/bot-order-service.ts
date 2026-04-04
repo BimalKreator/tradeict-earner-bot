@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import { botExecutionLogs, botOrders } from "@/server/db/schema";
@@ -6,6 +6,33 @@ import { botExecutionLogs, botOrders } from "@/server/db/schema";
 import type { PlaceOrderResult } from "./adapters/exchange-adapter-types";
 import { generateInternalClientOrderId } from "./ids";
 import { tradingLog } from "./trading-log";
+
+function isPostgresUniqueViolation(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  const code = (e as { code?: string }).code;
+  return code === "23505";
+}
+
+async function findBotOrderByCorrelation(
+  correlationId: string,
+  subscriptionId: string,
+): Promise<{ id: string; internalClientOrderId: string } | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({
+      id: botOrders.id,
+      internalClientOrderId: botOrders.internalClientOrderId,
+    })
+    .from(botOrders)
+    .where(
+      and(
+        eq(botOrders.correlationId, correlationId),
+        eq(botOrders.subscriptionId, subscriptionId),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
 
 export async function recordBotExecutionLog(params: {
   botOrderId: string;
@@ -39,33 +66,57 @@ export async function insertBotOrderDraft(params: {
   const now = new Date();
   const internalClientOrderId = generateInternalClientOrderId();
 
-  const [row] = await db
-    .insert(botOrders)
-    .values({
-      internalClientOrderId,
-      correlationId: params.correlationId,
-      userId: params.userId,
-      subscriptionId: params.subscriptionId,
-      strategyId: params.strategyId,
-      runId: params.runId,
-      exchangeConnectionId: params.exchangeConnectionId,
-      symbol: params.symbol,
-      side: params.side,
-      orderType: params.orderType,
-      quantity: params.quantity,
-      limitPrice: params.limitPrice ?? null,
-      status: "queued",
-      updatedAt: now,
-    })
-    .returning({ id: botOrders.id, internalClientOrderId: botOrders.internalClientOrderId });
+  try {
+    const [row] = await db
+      .insert(botOrders)
+      .values({
+        internalClientOrderId,
+        correlationId: params.correlationId,
+        userId: params.userId,
+        subscriptionId: params.subscriptionId,
+        strategyId: params.strategyId,
+        runId: params.runId,
+        exchangeConnectionId: params.exchangeConnectionId,
+        symbol: params.symbol,
+        side: params.side,
+        orderType: params.orderType,
+        quantity: params.quantity,
+        limitPrice: params.limitPrice ?? null,
+        status: "queued",
+        updatedAt: now,
+      })
+      .returning({
+        id: botOrders.id,
+        internalClientOrderId: botOrders.internalClientOrderId,
+      });
 
-  if (!row) return null;
-  tradingLog("info", "bot_order_drafted", {
-    botOrderId: row.id,
-    internalClientOrderId: row.internalClientOrderId,
-    correlationId: params.correlationId,
-  });
-  return row;
+    if (!row) return null;
+    tradingLog("info", "bot_order_drafted", {
+      botOrderId: row.id,
+      internalClientOrderId: row.internalClientOrderId,
+      correlationId: params.correlationId,
+    });
+    return row;
+  } catch (e) {
+    if (
+      isPostgresUniqueViolation(e) &&
+      params.correlationId &&
+      params.correlationId.length > 0
+    ) {
+      const existing = await findBotOrderByCorrelation(
+        params.correlationId,
+        params.subscriptionId,
+      );
+      if (existing) {
+        tradingLog("info", "bot_order_draft_deduped_correlation", {
+          botOrderId: existing.id,
+          correlationId: params.correlationId,
+        });
+        return existing;
+      }
+    }
+    throw e;
+  }
 }
 
 export async function markBotOrderSubmitting(botOrderId: string): Promise<void> {

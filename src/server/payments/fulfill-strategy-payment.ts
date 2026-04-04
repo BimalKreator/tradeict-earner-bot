@@ -14,10 +14,9 @@ import type {
   WebhookFulfillmentInput,
 } from "@/server/payments/cashfree/parse-webhook";
 import { fulfillRevenueSharePaymentFromWebhook } from "@/server/payments/fulfill-revenue-share-payment";
+import { computeStackedAccessValidUntil } from "@/server/payments/subscription-access-stack";
 
 type DbClient = PostgresJsDatabase<typeof schema>;
-
-const MS_PER_DAY = 86400000;
 
 /**
  * ## Subscription renewal stacking (SUCCESS webhook)
@@ -27,10 +26,8 @@ const MS_PER_DAY = 86400000;
  * by `created_at` and updates **that same row** — it does not insert a duplicate
  * subscription when renewing.
  *
- * **Extension math (must match checkout renewal forecast):**
- * - `extendMs = access_days_purchased * MS_PER_DAY` (default 30 days).
- * - `anchorMs = max(now.getTime(), current.access_valid_until.getTime())`.
- * - New `access_valid_until = new Date(anchorMs + extendMs)`.
+ * **Extension math (must match checkout renewal forecast):** see
+ * `computeStackedAccessValidUntil` in `subscription-access-stack.ts`.
  *
  * So if access is still active, new time stacks **on top of** the current end
  * (user does not lose remaining days). If access has **lapsed**, `current_end`
@@ -148,9 +145,6 @@ export async function fulfillStrategyPaymentFromWebhook(
     return { handled: true, skippedReason: "ignored_status" };
   }
 
-  const days = lockedPayment.accessDaysPurchased ?? 30;
-  const extendMs = days * MS_PER_DAY;
-
   const [strategyRow] = await tx
     .select({ name: strategies.name })
     .from(strategies)
@@ -176,7 +170,11 @@ export async function fulfillStrategyPaymentFromWebhook(
   let isRenewal: boolean;
 
   if (!latestSub) {
-    accessValidUntil = new Date(Date.now() + extendMs);
+    accessValidUntil = computeStackedAccessValidUntil(
+      now,
+      null,
+      lockedPayment.accessDaysPurchased,
+    );
     isRenewal = false;
     const [inserted] = await tx
       .insert(userStrategySubscriptions)
@@ -193,11 +191,11 @@ export async function fulfillStrategyPaymentFromWebhook(
     subscriptionId = inserted!.id;
     await ensureRunReadyToActivate(tx, subscriptionId, now);
   } else {
-    const anchorMs = Math.max(
-      now.getTime(),
-      latestSub.accessValidUntil.getTime(),
+    accessValidUntil = computeStackedAccessValidUntil(
+      now,
+      latestSub.accessValidUntil,
+      lockedPayment.accessDaysPurchased,
     );
-    accessValidUntil = new Date(anchorMs + extendMs);
     isRenewal = true;
     await tx
       .update(userStrategySubscriptions)

@@ -12,6 +12,77 @@ export type DeltaWalletTestResult =
       httpStatus?: number;
     };
 
+type DeltaWalletJson = {
+  error?: { code?: string; message?: string };
+  success?: boolean;
+};
+
+/**
+ * Classifies a Delta wallet/balances HTTP response (testable without network).
+ */
+export function interpretDeltaWalletHttpResponse(params: {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  text: string;
+  json: DeltaWalletJson;
+}): DeltaWalletTestResult {
+  const { ok, status, statusText, text, json } = params;
+  const errCode = json.error?.code ?? "";
+  const errMsg = (
+    json.error?.message ??
+    (text.slice(0, 200) || statusText)
+  ).toLowerCase();
+
+  if (ok) {
+    return {
+      ok: true,
+      message: "Wallet reachable — balances API responded successfully.",
+    };
+  }
+
+  if (status === 401 || errCode === "invalid_api_key") {
+    return {
+      ok: false,
+      kind: "invalid_credentials",
+      message: "Invalid API key or signature (check key and secret).",
+      httpStatus: status,
+    };
+  }
+
+  if (
+    status === 403 ||
+    errCode === "forbidden" ||
+    errMsg.includes("permission") ||
+    errMsg.includes("withdraw") ||
+    errMsg.includes("not allowed")
+  ) {
+    return {
+      ok: false,
+      kind: "permission_denied",
+      message:
+        "Permission denied — use a key without withdrawal rights and with read/trade scope as required by Delta.",
+      httpStatus: status,
+    };
+  }
+
+  if (errCode === "signature_expired" || errMsg.includes("signature")) {
+    return {
+      ok: false,
+      kind: "invalid_credentials",
+      message: "Signature rejected or expired — retry; ensure server time is accurate.",
+      httpStatus: status,
+    };
+  }
+
+  return {
+    ok: false,
+    kind: "failure",
+    message: `Delta API error (${status}): ${text.slice(0, 180)}`,
+    httpStatus: status,
+  };
+}
+
 /**
  * Authenticated GET to `/v2/wallet/balances` — read-only connectivity check.
  * @see https://docs.delta.exchange/ — signing: method + timestamp + path + query + body (hex HMAC-SHA256)
@@ -59,65 +130,18 @@ export async function testDeltaIndiaWalletAccess(params: {
   }
 
   const text = await res.text();
-  let json: { error?: { code?: string; message?: string }; success?: boolean } =
-    {};
+  let json: DeltaWalletJson = {};
   try {
-    json = JSON.parse(text) as typeof json;
+    json = JSON.parse(text) as DeltaWalletJson;
   } catch {
     /* non-JSON body */
   }
 
-  const errCode = json.error?.code ?? "";
-  const errMsg = (
-    json.error?.message ??
-    (text.slice(0, 200) || res.statusText)
-  ).toLowerCase();
-
-  if (res.ok) {
-    return {
-      ok: true,
-      message: "Wallet reachable — balances API responded successfully.",
-    };
-  }
-
-  if (res.status === 401 || errCode === "invalid_api_key") {
-    return {
-      ok: false,
-      kind: "invalid_credentials",
-      message: "Invalid API key or signature (check key and secret).",
-      httpStatus: res.status,
-    };
-  }
-
-  if (
-    res.status === 403 ||
-    errCode === "forbidden" ||
-    errMsg.includes("permission") ||
-    errMsg.includes("withdraw") ||
-    errMsg.includes("not allowed")
-  ) {
-    return {
-      ok: false,
-      kind: "permission_denied",
-      message:
-        "Permission denied — use a key without withdrawal rights and with read/trade scope as required by Delta.",
-      httpStatus: res.status,
-    };
-  }
-
-  if (errCode === "signature_expired" || errMsg.includes("signature")) {
-    return {
-      ok: false,
-      kind: "invalid_credentials",
-      message: "Signature rejected or expired — retry; ensure server time is accurate.",
-      httpStatus: res.status,
-    };
-  }
-
-  return {
-    ok: false,
-    kind: "failure",
-    message: `Delta API error (${res.status}): ${text.slice(0, 180)}`,
-    httpStatus: res.status,
-  };
+  return interpretDeltaWalletHttpResponse({
+    ok: res.ok,
+    status: res.status,
+    statusText: res.statusText,
+    text,
+    json,
+  });
 }
