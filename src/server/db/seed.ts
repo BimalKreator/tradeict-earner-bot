@@ -140,6 +140,14 @@ async function main() {
       },
     });
 
+  await db
+    .insert(appSettings)
+    .values({
+      key: "global_emergency_stop",
+      valueJson: { active: false },
+    })
+    .onConflictDoNothing({ target: appSettings.key });
+
   const [existingTerms] = await db
     .select({ id: termsAndConditions.id })
     .from(termsAndConditions)

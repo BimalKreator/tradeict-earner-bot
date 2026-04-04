@@ -25,6 +25,7 @@ const RUN_LABELS: Record<string, string> = {
   paused_revenue_due: "Paused — revenue due",
   paused_admin: "Paused — admin",
   paused_exchange_off: "Paused — exchange",
+  paused_insufficient_funds: "Paused — insufficient margin",
   paused_by_user: "Paused — user",
   ready_to_activate: "Ready to activate",
   inactive: "Inactive",

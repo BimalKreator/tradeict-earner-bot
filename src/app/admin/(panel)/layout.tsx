@@ -3,6 +3,7 @@ import { requireAdminSession } from "@/server/auth/require-admin";
 
 const navItems = [
   { href: "/admin/dashboard", label: "Dashboard" },
+  { href: "/admin/risk", label: "Risk" },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/user-strategies", label: "User strategies" },
   { href: "/admin/profile-requests", label: "Profile requests" },

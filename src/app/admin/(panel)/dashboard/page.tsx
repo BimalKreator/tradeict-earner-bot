@@ -1,9 +1,11 @@
 import { AdminActivityFeed } from "@/components/admin/AdminActivityFeed";
 import { AdminAttentionPanel } from "@/components/admin/AdminAttentionPanel";
+import { AdminEmergencyStopBanner } from "@/components/admin/AdminEmergencyStopBanner";
 import { AdminMetricCards } from "@/components/admin/AdminMetricCards";
 import { AdminRegistrationsChart } from "@/components/admin/AdminRegistrationsChart";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { formatInrAmount, formatIntCount } from "@/lib/format-inr";
+import { getGlobalEmergencyStopActive } from "@/server/platform/global-emergency-stop";
 import { getAdminDashboardPageData } from "@/server/queries/admin-dashboard";
 
 export const metadata = {
@@ -13,7 +15,10 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function AdminDashboardPage() {
-  const data = await getAdminDashboardPageData();
+  const [data, globalEmergencyStopActive] = await Promise.all([
+    getAdminDashboardPageData(),
+    getGlobalEmergencyStopActive(),
+  ]);
 
   if (!data) {
     return (
@@ -93,6 +98,8 @@ export default async function AdminDashboardPage() {
         </p>
       </div>
 
+      <AdminEmergencyStopBanner active={globalEmergencyStopActive} />
+
       <AdminMetricCards metrics={kpiCards} />
 
       <AdminAttentionPanel
@@ -116,8 +123,8 @@ export default async function AdminDashboardPage() {
           <span className="text-[var(--text-primary)]">Users</span>,{" "}
           <span className="text-[var(--text-primary)]">Revenue</span>,{" "}
           <span className="text-[var(--text-primary)]">Strategies</span>,{" "}
-          <span className="text-[var(--text-primary)]">Audit logs</span> in the
-          sidebar.
+          <span className="text-[var(--text-primary)]">Audit logs</span>, and{" "}
+          <span className="text-[var(--text-primary)]">Risk</span> in the sidebar.
         </p>
       </GlassPanel>
     </div>

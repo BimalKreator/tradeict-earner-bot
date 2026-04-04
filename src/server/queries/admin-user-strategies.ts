@@ -86,6 +86,7 @@ function bucketCondition(
         "paused_admin",
         "paused_by_user",
         "paused_exchange_off",
+        "paused_insufficient_funds",
         "inactive",
         "ready_to_activate",
         "paused",

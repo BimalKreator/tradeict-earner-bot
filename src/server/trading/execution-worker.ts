@@ -24,7 +24,9 @@ import {
   completeTradingJob,
   failTradingJobRetryOrDead,
 } from "./execution-queue";
+import { isInsufficientBalanceOrMarginDeltaError } from "./delta-order-errors";
 import { bumpBotPositionNetQuantity } from "./position-service";
+import { pauseRunForInsufficientFunds } from "./run-risk-pause";
 import { tradingLog } from "./trading-log";
 
 import type { TradingExecutionJobPayload } from "@/server/db/schema";
@@ -87,6 +89,22 @@ async function runPostSubmitSync(
 
 /**
  * Processes a single claimed job: eligibility → adapter → `bot_orders` → optional sync → position bump on fill.
+ *
+ * ## Gate hierarchy (safety order)
+ *
+ * 1. **Idempotency / correlation** — When `correlationId` matches an existing `bot_orders` row with a Delta
+ *    `external_order_id`, we reconcile/sync only (no duplicate venue submission). Failed/rejected rows short-circuit.
+ * 2. **Global emergency stop** — `app_settings.global_emergency_stop.active` halts **all** new submissions,
+ *    including exits (`assertRunStillEligibleForExecution` returns `global_emergency_stop`).
+ * 3. **Revenue / billing block** — `blocked_revenue_due`: new **entries** blocked; **exits** still allowed to reduce risk.
+ * 4. **Admin / user pause** — e.g. `paused_admin`, `paused_revenue_due`, non-active run states block execution
+ *    (exits are not exempt except where explicitly allowed for revenue block above).
+ * 5. **Strategy catalog** — `strategies.status` must be `active` (admin strategy pause stops new fan-out from dispatcher).
+ * 6. **Exchange readiness** — Delta connection active, keys present, last test success.
+ * 7. **Capital / leverage settings** — Required numerics present; **leverage** is capped to `strategies.max_leverage`
+ *    on the eligibility row when the strategy defines a max.
+ * 8. **Margin / API errors** — After a failed `placeOrder`, Delta “insufficient balance/margin” style errors
+ *    auto-pause the run as `paused_insufficient_funds` to avoid API spam (order row remains failed as recorded).
  */
 export async function processOneTradingJob(
   workerId: string,
@@ -122,6 +140,12 @@ export async function processOneTradingJob(
   }
 
   const row = elig.row;
+  if (row.leverageCapped) {
+    tradingLog("info", "leverage_capped_to_strategy_max", {
+      runId: row.runId,
+      strategyId: row.strategyId,
+    });
+  }
 
   const [ec] = await db
     .select({
@@ -286,6 +310,19 @@ export async function processOneTradingJob(
   }
 
   if (!place.ok) {
+    if (
+      isInsufficientBalanceOrMarginDeltaError(
+        place.error,
+        place.raw ?? null,
+      )
+    ) {
+      await pauseRunForInsufficientFunds(row.runId, place.error);
+      tradingLog("warn", "run_paused_insufficient_funds", {
+        runId: row.runId,
+        botOrderId,
+        jobId: job.id,
+      });
+    }
     await failTradingJobRetryOrDead(
       job.id,
       job.attempts,

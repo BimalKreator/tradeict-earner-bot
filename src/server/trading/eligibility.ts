@@ -8,6 +8,7 @@ import {
   userStrategySubscriptions,
   users,
 } from "@/server/db/schema";
+import { getGlobalEmergencyStopActive } from "@/server/platform/global-emergency-stop";
 
 export type EligibleStrategyRunRow = {
   userId: string;
@@ -16,8 +17,38 @@ export type EligibleStrategyRunRow = {
   strategyId: string;
   exchangeConnectionId: string;
   capitalToUseInr: string;
+  /** Effective leverage for execution (capped to `strategies.max_leverage` when set). */
   leverage: string;
+  /** True when run leverage in DB exceeded strategy max and was clamped for execution. */
+  leverageCapped?: boolean;
 };
+
+function parsePositiveNum(raw: string | null | undefined): number | null {
+  if (raw == null) return null;
+  const n = Number(String(raw).trim());
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Enforces strategy.max_leverage at execution time: if the user run exceeds the cap,
+ * the effective leverage is the strategy maximum (no DB mutation here).
+ */
+export function effectiveLeverageForExecution(
+  runLeverageStr: string,
+  strategyMaxLeverageRaw: string | null | undefined,
+): { leverage: string; capped: boolean } {
+  const userLev = parsePositiveNum(runLeverageStr);
+  const maxLev = parsePositiveNum(
+    strategyMaxLeverageRaw != null ? String(strategyMaxLeverageRaw) : null,
+  );
+  if (userLev == null) {
+    return { leverage: runLeverageStr, capped: false };
+  }
+  if (maxLev == null || userLev <= maxLev) {
+    return { leverage: runLeverageStr, capped: false };
+  }
+  return { leverage: String(maxLev), capped: true };
+}
 
 const hasKeysExpr = sql`(
   length(trim(coalesce(${exchangeConnections.apiKeyCiphertext}, ''))) > 0
@@ -40,6 +71,10 @@ export async function findEligibleRunsForStrategyExecution(
   },
 ): Promise<EligibleStrategyRunRow[]> {
   if (!db) return [];
+
+  if (await getGlobalEmergencyStopActive()) {
+    return [];
+  }
 
   const now = new Date();
   const action = options?.signalAction ?? "entry";
@@ -97,6 +132,7 @@ export async function findEligibleRunsForStrategyExecution(
       exchangeConnectionId: exchangeConnections.id,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
+      strategyMaxLeverage: strategies.maxLeverage,
     })
     .from(userStrategyRuns)
     .innerJoin(
@@ -118,15 +154,22 @@ export async function findEligibleRunsForStrategyExecution(
     )
     .where(and(...filters));
 
-  return rows.map((r) => ({
-    userId: r.userId,
-    subscriptionId: r.subscriptionId,
-    runId: r.runId,
-    strategyId: r.strategyId,
-    exchangeConnectionId: r.exchangeConnectionId,
-    capitalToUseInr: String(r.capitalToUseInr),
-    leverage: String(r.leverage),
-  }));
+  return rows.map((r) => {
+    const { leverage, capped } = effectiveLeverageForExecution(
+      String(r.leverage),
+      r.strategyMaxLeverage != null ? String(r.strategyMaxLeverage) : null,
+    );
+    return {
+      userId: r.userId,
+      subscriptionId: r.subscriptionId,
+      runId: r.runId,
+      strategyId: r.strategyId,
+      exchangeConnectionId: r.exchangeConnectionId,
+      capitalToUseInr: String(r.capitalToUseInr),
+      leverage,
+      ...(capped ? { leverageCapped: true } : {}),
+    };
+  });
 }
 
 export type ExecutionEligibilityFailure =
@@ -138,7 +181,8 @@ export type ExecutionEligibilityFailure =
   | "revenue_or_pause_block"
   | "blocked_revenue_entry"
   | "exchange_not_ready"
-  | "settings_incomplete";
+  | "settings_incomplete"
+  | "global_emergency_stop";
 
 /**
  * Re-check a single run immediately before placing an order (worker safety).
@@ -166,6 +210,7 @@ export async function assertRunStillEligibleForExecution(
       subDeleted: userStrategySubscriptions.deletedAt,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
+      strategyMaxLeverage: strategies.maxLeverage,
     })
     .from(userStrategyRuns)
     .innerJoin(
@@ -183,6 +228,11 @@ export async function assertRunStillEligibleForExecution(
   const signalAction = opts?.signalAction ?? "entry";
 
   if (!r) return { ok: false, reason: "run_not_found" };
+
+  if (await getGlobalEmergencyStopActive()) {
+    return { ok: false, reason: "global_emergency_stop" };
+  }
+
   if (r.approval !== "approved") return { ok: false, reason: "user_not_approved" };
   if (r.subDeleted != null) return { ok: false, reason: "subscription_inactive" };
   if (r.subStatus !== "active" || r.accessValidUntil <= now) {
@@ -243,6 +293,11 @@ export async function assertRunStillEligibleForExecution(
     return { ok: false, reason: "exchange_not_ready" };
   }
 
+  const levEff = effectiveLeverageForExecution(
+    String(r.leverage),
+    r.strategyMaxLeverage != null ? String(r.strategyMaxLeverage) : null,
+  );
+
   return {
     ok: true,
     row: {
@@ -252,7 +307,8 @@ export async function assertRunStillEligibleForExecution(
       strategyId: r.strategyId,
       exchangeConnectionId: ec.id,
       capitalToUseInr: String(r.capitalToUseInr),
-      leverage: String(r.leverage),
+      leverage: levEff.leverage,
+      ...(levEff.capped ? { leverageCapped: true } : {}),
     },
   };
 }

@@ -18,10 +18,15 @@ const USER_CAN_ACTIVATE_FROM = new Set([
   "ready_to_activate",
   "paused_by_user",
   "paused_exchange_off",
+  "paused_insufficient_funds",
   "inactive",
 ]);
 
-const RESUME_BUTTON_STATUSES = new Set(["paused_by_user", "paused_exchange_off"]);
+const RESUME_BUTTON_STATUSES = new Set([
+  "paused_by_user",
+  "paused_exchange_off",
+  "paused_insufficient_funds",
+]);
 
 function subscriptionOkForRunActions(
   row: Awaited<ReturnType<typeof listMyStrategiesForUser>>[number],

@@ -10,6 +10,7 @@ const LABELS: Record<UserStrategyRunStatus, string> = {
   paused: "Paused",
   paused_revenue_due: "Paused — revenue due",
   paused_exchange_off: "Paused — exchange",
+  paused_insufficient_funds: "Paused — insufficient margin",
   paused_admin: "Paused — admin",
   expired: "Expired",
   blocked_revenue_due: "Blocked — revenue due",

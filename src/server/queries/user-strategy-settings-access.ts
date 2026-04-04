@@ -28,6 +28,8 @@ const EDITABLE_RUN_STATUSES = new Set<RunRow["status"]>([
   "active",
   "paused_by_user",
   "ready_to_activate",
+  "paused_insufficient_funds",
+  "paused_exchange_off",
 ]);
 
 export async function getUserStrategySettingsPageData(

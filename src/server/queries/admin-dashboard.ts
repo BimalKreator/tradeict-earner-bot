@@ -109,6 +109,7 @@ export type AdminDashboardPageData = {
 
 const RUN_ATTENTION_STATUSES = [
   "paused_exchange_off",
+  "paused_insufficient_funds",
   "paused_admin",
   "blocked_revenue_due",
 ] as const;

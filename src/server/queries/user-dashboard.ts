@@ -36,6 +36,7 @@ const PAUSED_RUN_STATUSES = new Set<string>([
   "paused",
   "paused_revenue_due",
   "paused_exchange_off",
+  "paused_insufficient_funds",
   "paused_admin",
   "paused_by_user",
   "blocked_revenue_due",

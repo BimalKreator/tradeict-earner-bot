@@ -21,6 +21,7 @@ const ACTIVATE_FROM = new Set([
   "ready_to_activate",
   "paused_by_user",
   "paused_exchange_off",
+  "paused_insufficient_funds",
   "inactive",
 ]);
 
@@ -361,10 +362,15 @@ export async function inactivateStrategyRunAction(
     return { ok: false, message: "This strategy is not available." };
   }
 
-  if (row.runStatus !== "active" && row.runStatus !== "paused_by_user") {
+  if (
+    row.runStatus !== "active" &&
+    row.runStatus !== "paused_by_user" &&
+    row.runStatus !== "paused_insufficient_funds"
+  ) {
     return {
       ok: false,
-      message: "You can only inactivate an active or user-paused strategy.",
+      message:
+        "You can only inactivate an active, user-paused, or insufficient-margin-paused strategy.",
     };
   }
 

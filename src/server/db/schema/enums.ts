@@ -76,6 +76,7 @@ export const userStrategyRunStatusEnum = pgEnum("user_strategy_run_status", [
   "paused",
   "paused_revenue_due",
   "paused_exchange_off",
+  "paused_insufficient_funds",
   "paused_admin",
   "expired",
   "blocked_revenue_due",

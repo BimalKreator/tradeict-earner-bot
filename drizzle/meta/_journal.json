@@ -127,6 +127,13 @@
       "when": 1775370000000,
       "tag": "0017_phase29_terms_and_conditions",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1775380000000,
+      "tag": "0018_phase31_risk_controls",
+      "breakpoints": true
     }
   ]
 }

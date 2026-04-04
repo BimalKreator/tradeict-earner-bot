@@ -9,6 +9,7 @@ const RUN_LABELS: Record<string, string> = {
   paused: "Paused",
   paused_revenue_due: "Paused (revenue)",
   paused_exchange_off: "Paused (exchange)",
+  paused_insufficient_funds: "Paused (margin)",
   paused_admin: "Paused (admin)",
   paused_by_user: "Paused (user)",
   expired: "Expired",

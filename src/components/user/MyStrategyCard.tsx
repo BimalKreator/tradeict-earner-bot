@@ -37,7 +37,8 @@ function runBadgeClass(status: MyStrategyRow["runStatus"]): string {
   if (
     status === "paused_by_user" ||
     status === "paused" ||
-    status === "paused_exchange_off"
+    status === "paused_exchange_off" ||
+    status === "paused_insufficient_funds"
   ) {
     return "border-amber-500/35 bg-amber-500/10 text-amber-100";
   }
