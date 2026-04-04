@@ -38,15 +38,15 @@ export function AdminUserStrategyForcePauseForm({
           id={noteId}
           name="adminNotes"
           required
-          rows={2}
+          rows={3}
           disabled={pending}
           placeholder="Internal note (audit log) — required"
-          className="w-full rounded-lg border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-amber-500/40 disabled:opacity-50"
+          className="min-h-[5.5rem] w-full rounded-lg border border-white/[0.12] bg-black/30 px-3 py-3 text-sm text-[var(--text-primary)] outline-none placeholder:text-slate-500 focus:ring-2 focus:ring-amber-500/40 disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/25 disabled:opacity-50"
+          className="btn-danger text-sm disabled:opacity-50"
         >
           {pending ? "Applying…" : "Force pause"}
         </button>

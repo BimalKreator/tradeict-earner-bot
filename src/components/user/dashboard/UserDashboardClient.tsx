@@ -125,7 +125,7 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard
           label="Active strategies"
           value={data.runsActive}
@@ -151,11 +151,11 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
         <p className="text-sm font-medium text-[var(--text-primary)]">
           Chart & activity
         </p>
-        <div className="flex rounded-full border border-[var(--border-glass)] bg-black/25 p-1 text-xs font-semibold">
+        <div className="flex w-full max-w-md rounded-full border border-[var(--border-glass)] bg-black/25 p-1 text-xs font-semibold sm:w-auto">
           <button
             type="button"
             onClick={() => setScope("bot")}
-            className={`rounded-full px-4 py-1.5 transition ${
+            className={`min-h-11 flex-1 rounded-full px-3 py-2 transition sm:flex-none sm:px-4 ${
               scope === "bot"
                 ? "bg-[var(--accent)]/20 text-[var(--accent)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
@@ -166,7 +166,7 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
           <button
             type="button"
             onClick={() => setScope("all")}
-            className={`rounded-full px-4 py-1.5 transition ${
+            className={`min-h-11 flex-1 rounded-full px-3 py-2 transition sm:flex-none sm:px-4 ${
               scope === "all"
                 ? "bg-[var(--accent)]/20 text-[var(--accent)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"

@@ -46,7 +46,7 @@ export function AdminTradesToolbar(props: {
             type="date"
             name="dateFrom"
             defaultValue={v.dateFrom}
-            className="rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 py-2 text-sm text-[var(--text-primary)]"
+            className="form-touch rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/25 focus:ring-2"
           />
         </label>
         <label className="flex min-w-[140px] flex-col gap-1 text-xs text-[var(--text-muted)]">
@@ -55,7 +55,7 @@ export function AdminTradesToolbar(props: {
             type="date"
             name="dateTo"
             defaultValue={v.dateTo}
-            className="rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 py-2 text-sm text-[var(--text-primary)]"
+            className="form-touch rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/25 focus:ring-2"
           />
         </label>
         <label className="flex min-w-[180px] flex-1 flex-col gap-1 text-xs text-[var(--text-muted)]">
@@ -65,7 +65,7 @@ export function AdminTradesToolbar(props: {
             name="q"
             defaultValue={v.userQ}
             placeholder="Search"
-            className="rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 py-2 text-sm text-[var(--text-primary)]"
+            className="form-touch rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/25 focus:ring-2"
           />
         </label>
         <label className="flex min-w-[160px] flex-col gap-1 text-xs text-[var(--text-muted)]">
@@ -73,7 +73,7 @@ export function AdminTradesToolbar(props: {
           <select
             name="strategyId"
             defaultValue={v.strategyId}
-            className="rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 py-2 text-sm text-[var(--text-primary)]"
+            className="form-touch rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/25 focus:ring-2"
           >
             <option value="">All</option>
             {strategies.map((s) => (
@@ -88,7 +88,7 @@ export function AdminTradesToolbar(props: {
           <select
             name="pnl"
             defaultValue={v.pnl}
-            className="rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 py-2 text-sm text-[var(--text-primary)]"
+            className="form-touch rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/25 focus:ring-2"
           >
             <option value="any">All</option>
             <option value="profit">Profit only</option>
@@ -100,17 +100,14 @@ export function AdminTradesToolbar(props: {
           <select
             name="exec"
             defaultValue={v.execOutcome}
-            className="rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 py-2 text-sm text-[var(--text-primary)]"
+            className="form-touch rounded-lg border border-[var(--border-glass)] bg-black/40 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/25 focus:ring-2"
           >
             <option value="any">All</option>
             <option value="success">Success</option>
             <option value="failure">Failure (bot failed/rejected)</option>
           </select>
         </label>
-        <button
-          type="submit"
-          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-slate-950 hover:opacity-90"
-        >
+        <button type="submit" className="btn-primary">
           Apply
         </button>
       </form>

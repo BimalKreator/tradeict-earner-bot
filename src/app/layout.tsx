@@ -3,6 +3,8 @@ import { IBM_Plex_Sans, Outfit } from "next/font/google";
 
 import "./globals.css";
 
+import { GlobalToastHost } from "@/components/ui/GlobalToastHost";
+
 const display = Outfit({
   variable: "--font-display",
   subsets: ["latin"],
@@ -36,6 +38,7 @@ export default function RootLayout({
     >
       <body className="relative min-h-full flex flex-col font-sans antialiased">
         {children}
+        <GlobalToastHost />
       </body>
     </html>
   );

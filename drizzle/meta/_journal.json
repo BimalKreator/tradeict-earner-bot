@@ -134,6 +134,13 @@
       "when": 1775380000000,
       "tag": "0018_phase31_risk_controls",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1775266854671,
+      "tag": "0019_flippant_arachne",
+      "breakpoints": true
     }
   ]
 }

@@ -188,3 +188,91 @@ body::before {
   background: rgba(56, 189, 248, 0.08);
   color: var(--text-primary);
 }
+
+/* —— Phase 33: touch-friendly forms & button hierarchy (visual only) —— */
+.form-touch {
+  min-height: 2.75rem; /* 44px tap target */
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 1.25rem;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  color: #020617;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2) inset;
+  transition:
+    background 0.15s ease,
+    opacity 0.15s ease;
+}
+.btn-primary:hover {
+  background: var(--accent);
+}
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 1.1rem;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border-glass);
+  backdrop-filter: blur(8px);
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+.btn-secondary:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 1.1rem;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.35);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  backdrop-filter: blur(8px);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.btn-danger:hover {
+  background: rgba(185, 28, 28, 0.45);
+  border-color: rgba(252, 165, 165, 0.55);
+}
+
+/* Sticky first column helper for wide data tables (pair with TableScroll) */
+.table-sticky-first th:first-child,
+.table-sticky-first td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: rgba(3, 7, 18, 0.96);
+  box-shadow: 1px 0 0 var(--border-glass);
+  backdrop-filter: blur(10px);
+}
+.table-sticky-first thead th:first-child {
+  z-index: 3;
+}

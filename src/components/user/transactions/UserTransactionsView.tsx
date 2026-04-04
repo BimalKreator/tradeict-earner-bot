@@ -1,6 +1,8 @@
 import Link from "next/link";
 
+import { EmptyState } from "@/components/ui/EmptyState";
 import { GlassPanel } from "@/components/ui/GlassPanel";
+import { TableScroll } from "@/components/ui/TableScroll";
 import { formatInrAmount } from "@/lib/format-inr";
 import { transactionsPageHref } from "@/lib/user-transactions-url";
 import type {
@@ -158,7 +160,7 @@ export function UserTransactionsView({
               type="date"
               name="from"
               defaultValue={filters.dateFrom ?? ""}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             />
           </label>
           <label className="block text-xs text-[var(--text-muted)]">
@@ -167,7 +169,7 @@ export function UserTransactionsView({
               type="date"
               name="to"
               defaultValue={filters.dateTo ?? ""}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             />
           </label>
           <label className="block text-xs text-[var(--text-muted)]">
@@ -175,7 +177,7 @@ export function UserTransactionsView({
             <select
               name="strategy"
               defaultValue={filters.strategyId ?? ""}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             >
               <option value="">All strategies</option>
               {strategyOptions.map((s) => (
@@ -192,7 +194,7 @@ export function UserTransactionsView({
               name="symbol"
               placeholder="e.g. BTC"
               defaultValue={filters.symbol ?? ""}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             />
           </label>
           <label className="block text-xs text-[var(--text-muted)]">
@@ -200,7 +202,7 @@ export function UserTransactionsView({
             <select
               name="state"
               defaultValue={filters.state}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             >
               <option value="any">All</option>
               <option value="open">Open</option>
@@ -212,7 +214,7 @@ export function UserTransactionsView({
             <select
               name="pnl"
               defaultValue={filters.pnl}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             >
               <option value="any">Any</option>
               <option value="profit">Profit only</option>
@@ -224,45 +226,49 @@ export function UserTransactionsView({
             <select
               name="source"
               defaultValue={filters.source}
-              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
+              className="form-touch mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/35 px-3 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/30 focus:ring-2"
             >
               <option value="all">All activity</option>
               <option value="bot_only">Bot trades only</option>
             </select>
           </label>
           <div className="flex flex-wrap items-end gap-3">
-            <button
-              type="submit"
-              className="rounded-xl bg-[var(--accent)]/90 px-5 py-2 text-sm font-semibold text-slate-950 hover:bg-[var(--accent)]"
-            >
+            <button type="submit" className="btn-primary">
               Apply filters
             </button>
-            <Link
-              href="/user/transactions"
-              className="rounded-xl border border-[var(--border-glass)] px-4 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-            >
+            <Link href="/user/transactions" className="btn-secondary inline-flex">
               Reset
             </Link>
           </div>
         </form>
       </GlassPanel>
 
-      <div className="md:hidden space-y-3">
-        {data.rows.length === 0 ? (
-          <GlassPanel className="!p-8 text-center text-sm text-[var(--text-muted)]">
-            No trades match these filters.
-          </GlassPanel>
-        ) : (
-          data.rows.map((row) => <LedgerRowCard key={`${row.ledgerKind}-${row.ledgerId}`} row={row} />)
-        )}
-      </div>
+      {data.rows.length === 0 ? (
+        <GlassPanel className="!p-0">
+          <EmptyState
+            title="No trades found for this period"
+            description="Adjust your IST date range, strategy, or filters — or reset to see all activity."
+            action={
+              <Link href="/user/transactions" className="btn-secondary inline-flex">
+                Clear all filters
+              </Link>
+            }
+          />
+        </GlassPanel>
+      ) : (
+        <>
+          <div className="space-y-3 md:hidden">
+            {data.rows.map((row) => (
+              <LedgerRowCard key={`${row.ledgerKind}-${row.ledgerId}`} row={row} />
+            ))}
+          </div>
 
-      <GlassPanel className="hidden overflow-hidden !p-0 md:block">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1100px] text-left text-sm">
+          <GlassPanel className="hidden overflow-hidden !p-0 md:block">
+            <TableScroll>
+              <table className="table-sticky-first w-full min-w-[1100px] text-left text-sm">
             <thead>
               <tr className="border-b border-[var(--border-glass)] bg-black/30 text-xs uppercase tracking-wide text-[var(--text-muted)]">
-                <th className="px-4 py-3 font-medium">Symbol</th>
+                <th className="px-4 py-3 pl-3 font-medium">Symbol</th>
                 <th className="px-3 py-3 font-medium">Strategy</th>
                 <th className="px-3 py-3 font-medium">Entry (IST)</th>
                 <th className="px-3 py-3 font-medium">Exit (IST)</th>
@@ -279,17 +285,7 @@ export function UserTransactionsView({
               </tr>
             </thead>
             <tbody>
-              {data.rows.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={14}
-                    className="px-4 py-10 text-center text-[var(--text-muted)]"
-                  >
-                    No trades match these filters.
-                  </td>
-                </tr>
-              ) : (
-                data.rows.map((row) => {
+                {data.rows.map((row) => {
                   const pnl = row.netPnlInr != null ? Number(row.netPnlInr) : NaN;
                   const pnlCls =
                     Number.isFinite(pnl) && pnl > 0
@@ -306,7 +302,7 @@ export function UserTransactionsView({
                       key={`${row.ledgerKind}-${row.ledgerId}`}
                       className="border-b border-[var(--border-glass)]/30 hover:bg-white/[0.03]"
                     >
-                      <td className="px-4 py-3 font-mono text-xs text-[var(--accent)]">
+                      <td className="px-4 py-3 pl-3 font-mono text-xs text-[var(--accent)]">
                         {row.symbol}
                       </td>
                       <td className="max-w-[140px] truncate px-3 py-3 text-xs text-[var(--text-muted)]">
@@ -356,12 +352,13 @@ export function UserTransactionsView({
                       </td>
                     </tr>
                   );
-                })
-              )}
+                })}
             </tbody>
           </table>
-        </div>
-      </GlassPanel>
+            </TableScroll>
+          </GlassPanel>
+        </>
+      )}
 
       {totalPages > 1 ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -372,7 +369,7 @@ export function UserTransactionsView({
             {data.page > 1 ? (
               <Link
                 href={mkPage(data.page - 1)}
-                className="rounded-xl border border-[var(--border-glass)] px-4 py-2 text-sm text-[var(--accent)] hover:bg-white/5"
+                className="btn-secondary inline-flex min-w-[6.5rem]"
               >
                 Previous
               </Link>
@@ -380,7 +377,7 @@ export function UserTransactionsView({
             {data.page < totalPages ? (
               <Link
                 href={mkPage(data.page + 1)}
-                className="rounded-xl border border-[var(--border-glass)] px-4 py-2 text-sm text-[var(--accent)] hover:bg-white/5"
+                className="btn-secondary inline-flex min-w-[6.5rem]"
               >
                 Next
               </Link>

@@ -151,7 +151,7 @@ export function UserStrategySettingsForm({
             disabled={pending}
             inputMode="decimal"
             autoComplete="off"
-            className="mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2.5 text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
+            className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
             placeholder={
               constraints.recommendedCapitalInr
                 ? `e.g. ${constraints.recommendedCapitalInr}`
@@ -173,6 +173,7 @@ export function UserStrategySettingsForm({
             Leverage
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="flex min-h-11 w-full flex-1 items-center py-1 sm:max-w-md">
             <input
               type="range"
               min={sliderMin}
@@ -183,9 +184,10 @@ export function UserStrategySettingsForm({
               onChange={(e) =>
                 setLeverageFromSlider(Number.parseFloat(e.target.value))
               }
-              className="h-2 w-full flex-1 cursor-pointer accent-[var(--accent)] disabled:cursor-not-allowed"
+              className="h-11 w-full cursor-pointer accent-[var(--accent)] disabled:cursor-not-allowed"
               aria-label="Leverage slider"
             />
+            </div>
             <input
               id="leverage"
               name="leverage"
@@ -194,7 +196,7 @@ export function UserStrategySettingsForm({
               disabled={pending || maxLevNum == null}
               inputMode="decimal"
               autoComplete="off"
-              className="w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2.5 text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50 sm:w-32"
+              className="form-touch w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50 sm:w-32"
             />
           </div>
           {leverageErr ? (
@@ -223,7 +225,7 @@ export function UserStrategySettingsForm({
       <button
         type="submit"
         disabled={pending || Object.keys(liveErrors).length > 0}
-        className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
+        className="btn-primary disabled:opacity-50"
       >
         {pending ? "Saving…" : "Save settings"}
       </button>
