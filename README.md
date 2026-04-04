@@ -2,6 +2,8 @@
 
 Production-oriented foundation for a **multi-user trading bot platform** targeting **Delta Exchange India**: public site, **user panel** (`/user/...`), **admin panel** (`/admin/...`), plus future **billing**, **trading engine**, and **notification** modules.
 
+**Production deploy:** see **[DEPLOYMENT.md](./DEPLOYMENT.md)** (env vars, `EXCHANGE_SECRETS_ENCRYPTION_KEY`, PM2, cron, migrations, first admin).
+
 ## Stack
 
 - **Next.js 15** (App Router) + **TypeScript** + **React 19**
@@ -55,9 +57,14 @@ Production-oriented foundation for a **multi-user trading bot platform** targeti
 - **`SUPPORT_EMAIL`**: used on **`/contact`** and as a fallback on **`/terms`** if no published terms exist.
 - **Migrations**: run **`npm run db:migrate`** so enum `user_approval_status` includes **`pending_approval`** and **`archived`** (see **`drizzle/0002_phase4_enum_rate.sql`**).
 
-### Health check
+### Health checks
 
-- **`GET /api/health/db`** — returns JSON; verifies `SELECT 1` when `DATABASE_URL` is set.
+- **`GET /api/health`** — JSON `{ "status": "healthy", "timestamp": "..." }` for uptime monitors (no DB).
+- **`GET /api/health/db`** — verifies `SELECT 1` when `DATABASE_URL` is set.
+
+### Delta API IP whitelisting
+
+- Set **`NEXT_PUBLIC_SERVER_OUTBOUND_IP`** to your VPS outbound IP. Users see it on **`/user/exchange`** with a copy button. If unset, the UI shows **IP not configured**.
 
 ---
 
@@ -134,4 +141,4 @@ Keep new code in **`src/server/services/*`** and **`src/app/api/*`** as those fe
 
 ## Deploy notes (Ubuntu VPS)
 
-Run `npm run build` then `npm run start` behind **nginx** or **Caddy** with TLS. Process manager (**pm2**, **systemd**) recommended. Ensure `DATABASE_URL` and secrets live only on the server, not in git.
+See **[DEPLOYMENT.md](./DEPLOYMENT.md)** for PM2 (web + `trading:worker`), cron, and secrets. In short: `npm run build` then `npm run start` behind **nginx** or **Caddy** with TLS; keep `DATABASE_URL` and secrets off git.

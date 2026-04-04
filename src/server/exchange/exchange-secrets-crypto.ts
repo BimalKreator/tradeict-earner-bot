@@ -20,10 +20,22 @@ export function getExchangeSecretsKeyOrNull(): Buffer | null {
 
 export function assertExchangeSecretsKeyConfigured(): Buffer {
   const key = getExchangeSecretsKeyOrNull();
-  if (!key) {
-    throw new Error("EXCHANGE_SECRETS_ENCRYPTION_KEY_MISSING_OR_INVALID");
+  if (key) return key;
+
+  const raw = process.env.EXCHANGE_SECRETS_ENCRYPTION_KEY?.trim();
+  if (!raw) {
+    throw new Error(
+      "EXCHANGE_SECRETS_ENCRYPTION_KEY is not set. It must be exactly 32 ASCII characters (e.g. output of `openssl rand -hex 16`). See DEPLOYMENT.md.",
+    );
   }
-  return key;
+  if (raw.length !== 32) {
+    throw new Error(
+      `EXCHANGE_SECRETS_ENCRYPTION_KEY must be exactly 32 UTF-8 code units (got ${raw.length}). See DEPLOYMENT.md.`,
+    );
+  }
+  throw new Error(
+    "EXCHANGE_SECRETS_ENCRYPTION_KEY must encode to exactly 32 bytes in UTF-8. Use ASCII only (e.g. `openssl rand -hex 16`). See DEPLOYMENT.md.",
+  );
 }
 
 /** Stored as: v{version}:{iv b64}:{tag b64}:{ciphertext b64} */

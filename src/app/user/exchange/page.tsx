@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { DeltaApiWhitelistBanner } from "@/components/user/DeltaApiWhitelistBanner";
 import { ExchangeConnectionPanel } from "@/components/user/ExchangeConnectionPanel";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { requireUserIdForPage } from "@/server/auth/require-user";
@@ -48,6 +49,10 @@ export default async function UserExchangePage() {
 
   const row = await getUserDeltaIndiaConnection(userId);
 
+  const outboundWhitelistIp = (
+    process.env.NEXT_PUBLIC_SERVER_OUTBOUND_IP ?? ""
+  ).trim();
+
   const connection = row
     ? {
         id: row.id,
@@ -77,6 +82,8 @@ export default async function UserExchangePage() {
           automation.
         </p>
       </div>
+
+      <DeltaApiWhitelistBanner outboundIp={outboundWhitelistIp} />
 
       <ExchangeConnectionPanel connection={connection} />
     </div>

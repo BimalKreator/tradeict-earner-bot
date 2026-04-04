@@ -41,11 +41,13 @@ async function loadRowForUser(userId: string) {
 }
 
 function encryptionConfigErrorMessage(e: unknown): string {
-  if (
-    e instanceof Error &&
-    e.message === "EXCHANGE_SECRETS_ENCRYPTION_KEY_MISSING_OR_INVALID"
-  ) {
-    return "Server misconfiguration: EXCHANGE_SECRETS_ENCRYPTION_KEY must be set to exactly 32 characters (UTF-8).";
+  if (e instanceof Error) {
+    if (e.message.includes("EXCHANGE_SECRETS_ENCRYPTION_KEY")) {
+      return e.message;
+    }
+    if (e.message === "EXCHANGE_SECRETS_ENCRYPTION_KEY_MISSING_OR_INVALID") {
+      return "Server misconfiguration: EXCHANGE_SECRETS_ENCRYPTION_KEY must be set to exactly 32 ASCII characters. See DEPLOYMENT.md.";
+    }
   }
   return "Could not encrypt credentials. Check server configuration.";
 }
