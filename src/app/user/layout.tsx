@@ -2,6 +2,7 @@ import { PanelShell } from "@/components/layout/PanelShell";
 
 const navItems = [
   { href: "/user/dashboard", label: "Dashboard" },
+  { href: "/user/reports", label: "Reports" },
   { href: "/user/strategies", label: "Strategies" },
   { href: "/user/my-strategies", label: "My strategies" },
   { href: "/user/transactions", label: "Transactions" },
