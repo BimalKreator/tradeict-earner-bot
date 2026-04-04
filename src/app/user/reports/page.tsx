@@ -2,7 +2,7 @@ import { ExportCsvButton } from "@/components/reports/ExportCsvButton";
 import { ReportBarList } from "@/components/reports/ReportBarList";
 import { ReportLineChart } from "@/components/reports/ReportLineChart";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import { requireUserIdForPage } from "@/server/auth/require-user";
 import { getUserReportsBundle } from "@/server/queries/user-reports";
 
@@ -81,8 +81,8 @@ export default async function UserReportsPage() {
           Reports & analytics
         </h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Realized bot PnL by IST calendar period, strategy attribution, and
-          successful payment history. Export CSV for spreadsheets. PnL sums use{" "}
+          Realized bot PnL (shown as USD) by IST calendar period, strategy attribution, and
+          successful payment history (amounts in INR). Export CSV for spreadsheets. PnL sums use{" "}
           <code className="text-[var(--accent)]">bot_orders.realized_pnl_inr</code>{" "}
           on filled / partial fills.
         </p>
@@ -90,21 +90,21 @@ export default async function UserReportsPage() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <GlassPanel className="border border-white/[0.06] p-4">
-          <p className="text-xs text-[var(--text-muted)]">90d daily window total</p>
+          <p className="text-xs text-[var(--text-muted)]">90d daily window total (USD)</p>
           <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
-            {formatInrAmount(data.totals.dailyWindowPnlInr)}
+            {formatUsdAmount(data.totals.dailyWindowPnlInr)}
           </p>
         </GlassPanel>
         <GlassPanel className="border border-white/[0.06] p-4">
-          <p className="text-xs text-[var(--text-muted)]">Weekly series window total</p>
+          <p className="text-xs text-[var(--text-muted)]">Weekly series window total (USD)</p>
           <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
-            {formatInrAmount(data.totals.weeklyWindowPnlInr)}
+            {formatUsdAmount(data.totals.weeklyWindowPnlInr)}
           </p>
         </GlassPanel>
         <GlassPanel className="border border-white/[0.06] p-4">
-          <p className="text-xs text-[var(--text-muted)]">Monthly series window total</p>
+          <p className="text-xs text-[var(--text-muted)]">Monthly series window total (USD)</p>
           <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
-            {formatInrAmount(data.totals.monthlyWindowPnlInr)}
+            {formatUsdAmount(data.totals.monthlyWindowPnlInr)}
           </p>
         </GlassPanel>
       </div>
@@ -112,17 +112,17 @@ export default async function UserReportsPage() {
       <section className="grid gap-4 xl:grid-cols-3" id="pnl">
         <ReportLineChart
           title="Daily PnL"
-          hint="Last 90 IST calendar days"
+          hint="Last 90 IST calendar days · USD"
           series={data.dailyPnl}
         />
         <ReportLineChart
           title="Weekly PnL"
-          hint="IST week buckets (Mon-aligned), ~13 weeks of activity"
+          hint="IST week buckets (Mon-aligned), ~13 weeks · USD"
           series={data.weeklyPnl}
         />
         <ReportLineChart
           title="Monthly PnL"
-          hint="YYYY-MM in IST, last 12 months with fills"
+          hint="YYYY-MM in IST, last 12 months with fills · USD"
           series={data.monthlyPnl}
         />
       </section>
@@ -141,8 +141,9 @@ export default async function UserReportsPage() {
       <section className="grid gap-4 lg:grid-cols-2" id="strategy-pnl">
         <ReportBarList
           title="Strategy-wise PnL"
-          hint="365d IST · realized bot fills only"
+          hint="365d IST · realized bot fills only · USD"
           rows={strategyBars}
+          valueMode="usd"
         />
         <GlassPanel className="p-5">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -175,7 +176,7 @@ export default async function UserReportsPage() {
               <thead>
                 <tr className="border-b border-[var(--border-glass)] text-[10px] uppercase text-[var(--text-muted)]">
                   <th className="pb-2 pr-2">Strategy</th>
-                  <th className="pb-2 pr-2">PnL (INR)</th>
+                  <th className="pb-2 pr-2">PnL (USD)</th>
                   <th className="pb-2">Fills</th>
                 </tr>
               </thead>
@@ -188,7 +189,7 @@ export default async function UserReportsPage() {
                     <td className="py-2 pr-2 text-[var(--text-primary)]">
                       {r.strategyName}
                     </td>
-                    <td className="py-2 pr-2 text-sky-200">{formatInrAmount(r.pnlInr)}</td>
+                    <td className="py-2 pr-2 text-sky-200">{formatUsdAmount(r.pnlInr)}</td>
                     <td className="py-2 text-[var(--text-muted)]">{r.fillsCount}</td>
                   </tr>
                 ))}
@@ -230,7 +231,7 @@ export default async function UserReportsPage() {
               <thead>
                 <tr className="border-b border-[var(--border-glass)] text-[10px] uppercase text-[var(--text-muted)]">
                   <th className="pb-2 pr-2">When (IST)</th>
-                  <th className="pb-2 pr-2">Amount</th>
+                  <th className="pb-2 pr-2">Amount (INR)</th>
                   <th className="pb-2 pr-2">Strategy</th>
                   <th className="pb-2">Reference</th>
                 </tr>
@@ -292,7 +293,7 @@ export default async function UserReportsPage() {
               <thead>
                 <tr className="border-b border-[var(--border-glass)] text-[10px] uppercase text-[var(--text-muted)]">
                   <th className="pb-2 pr-2">When (IST)</th>
-                  <th className="pb-2 pr-2">Amount</th>
+                  <th className="pb-2 pr-2">Amount (INR)</th>
                   <th className="pb-2 pr-2">Week (IST)</th>
                   <th className="pb-2 pr-2">Strategy</th>
                   <th className="pb-2">Ledger</th>

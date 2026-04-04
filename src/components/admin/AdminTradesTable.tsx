@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { EmptyState } from "@/components/ui/EmptyState";
 import { TableScroll } from "@/components/ui/TableScroll";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import type { AdminTradeLedgerRow } from "@/server/queries/admin-trades-ledger";
 
 const BADGE: Record<
@@ -79,13 +79,13 @@ function AdminTradeMobileCard({ r }: { r: AdminTradeLedgerRow }) {
           <p className="font-mono tabular-nums text-[var(--text-primary)]">{r.quantity}</p>
         </div>
         <div>
-          <p className="text-[var(--text-muted)]">Net PnL</p>
+          <p className="text-[var(--text-muted)]">Net PnL (USD)</p>
           <p className={`tabular-nums font-medium ${pnlCls}`}>
-            {r.netPnlInr != null ? formatInrAmount(r.netPnlInr) : "—"}
+            {r.netPnlInr != null ? formatUsdAmount(r.netPnlInr) : "—"}
           </p>
         </div>
         <div className="col-span-2">
-          <p className="text-[var(--text-muted)]">Rev share fee</p>
+          <p className="text-[var(--text-muted)]">Rev share fee (INR)</p>
           <p className="tabular-nums text-sky-200/90">{formatInrAmount(r.revenueShareFeeInr)}</p>
         </div>
       </div>
@@ -129,8 +129,8 @@ export function AdminTradesTable({ rows }: { rows: AdminTradeLedgerRow[] }) {
                 <th className="pb-2 pr-2 font-medium">Qty</th>
                 <th className="pb-2 pr-2 font-medium">Entry</th>
                 <th className="pb-2 pr-2 font-medium">Exit</th>
-                <th className="pb-2 pr-2 font-medium">PnL</th>
-                <th className="pb-2 pr-2 font-medium">Rev %</th>
+                <th className="pb-2 pr-2 font-medium">PnL (USD)</th>
+                <th className="pb-2 pr-2 font-medium">Rev fee (INR)</th>
                 <th className="pb-2 pr-2 font-medium">Venue ID</th>
                 <th className="pb-2 pr-2 font-medium">Status</th>
               </tr>
@@ -172,7 +172,7 @@ export function AdminTradesTable({ rows }: { rows: AdminTradeLedgerRow[] }) {
                       {r.exitPrice ?? "—"}
                     </td>
                     <td className="py-1.5 pr-2 align-top tabular-nums">
-                      {r.netPnlInr != null ? formatInrAmount(r.netPnlInr) : "—"}
+                      {r.netPnlInr != null ? formatUsdAmount(r.netPnlInr) : "—"}
                     </td>
                     <td className="py-1.5 pr-2 align-top tabular-nums text-sky-300/80">
                       {formatInrAmount(r.revenueShareFeeInr)}

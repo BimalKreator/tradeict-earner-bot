@@ -4,7 +4,7 @@ import { AdminEmergencyStopBanner } from "@/components/admin/AdminEmergencyStopB
 import { AdminMetricCards } from "@/components/admin/AdminMetricCards";
 import { AdminRegistrationsChart } from "@/components/admin/AdminRegistrationsChart";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount, formatIntCount } from "@/lib/format-inr";
+import { formatInrAmount, formatIntCount, formatUsdAmount } from "@/lib/format-inr";
 import { getGlobalEmergencyStopActive } from "@/server/platform/global-emergency-stop";
 import { getAdminDashboardPageData } from "@/server/queries/admin-dashboard";
 
@@ -54,9 +54,9 @@ export default async function AdminDashboardPage() {
       sublabel: "Entries paused — overdue weekly ledger",
     },
     {
-      label: "Global capital allocated",
-      value: formatInrAmount(m.globalCapitalAllocatedInr),
-      sublabel: "Sum of capital_to_use_inr on active runs",
+      label: "Global capital allocated (USD)",
+      value: formatUsdAmount(m.globalCapitalAllocatedInr),
+      sublabel: "Sum of capital_to_use_inr on active runs (stored column, USD display)",
     },
     {
       label: "Revenue collected",

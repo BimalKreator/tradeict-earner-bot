@@ -5,8 +5,8 @@ export type DeltaWalletBalanceSnapshot = {
   /** Sum of `available_balance` across returned asset rows (UI “available margin”). */
   availableMarginTotal: string | null;
   /**
-   * INR total for UI: `meta.net_equity` (string or number), else INR wallet row,
-   * else USDT×`DELTA_WALLET_INR_PER_USDT` when set — never a random first-row balance.
+   * USD total for UI: `meta.net_equity` (string or number), else sum of USD-stable
+   * wallet balances, else legacy INR row — never a random first-row balance.
    */
   liveBalanceDisplay: string | null;
   assetRows: Array<{

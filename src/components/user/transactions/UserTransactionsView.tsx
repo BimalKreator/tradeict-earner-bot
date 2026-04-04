@@ -3,7 +3,7 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { TableScroll } from "@/components/ui/TableScroll";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import { transactionsPageHref } from "@/lib/user-transactions-url";
 import type {
   StrategyFilterOption,
@@ -86,13 +86,13 @@ function LedgerRowCard({ row }: { row: TransactionLedgerRow }) {
           <p className="tabular-nums text-[var(--text-primary)]">{row.quantity}</p>
         </div>
         <div>
-          <p className="text-[var(--text-muted)]">Net PnL</p>
+          <p className="text-[var(--text-muted)]">Net PnL (USD)</p>
           <p className={`tabular-nums font-medium ${pnlClass}`}>
-            {row.netPnlInr != null ? formatInrAmount(row.netPnlInr) : "—"}
+            {row.netPnlInr != null ? formatUsdAmount(row.netPnlInr) : "—"}
           </p>
         </div>
         <div className="col-span-2">
-          <p className="text-[var(--text-muted)]">Rev share fee</p>
+          <p className="text-[var(--text-muted)]">Rev share fee (INR)</p>
           <p className="tabular-nums text-[var(--text-primary)]">
             {formatInrAmount(row.revenueShareFeeInr)}
           </p>
@@ -125,7 +125,7 @@ export function UserTransactionsView({
         </p>
         <div className="mt-3 flex flex-wrap gap-8">
           <div>
-            <p className="text-xs text-[var(--text-muted)]">Net PnL</p>
+            <p className="text-xs text-[var(--text-muted)]">Net PnL (USD)</p>
             <p
               className={`font-[family-name:var(--font-display)] text-2xl font-bold tabular-nums ${
                 Number(data.summaryNetPnlInr) >= 0
@@ -133,11 +133,11 @@ export function UserTransactionsView({
                   : "text-red-400"
               }`}
             >
-              {formatInrAmount(data.summaryNetPnlInr)}
+              {formatUsdAmount(data.summaryNetPnlInr)}
             </p>
           </div>
           <div>
-            <p className="text-xs text-[var(--text-muted)]">Revenue share fee</p>
+            <p className="text-xs text-[var(--text-muted)]">Revenue share fee (INR)</p>
             <p className="font-[family-name:var(--font-display)] text-2xl font-bold tabular-nums text-[var(--accent)]">
               {formatInrAmount(data.summaryRevShareFeeInr)}
             </p>
@@ -275,10 +275,10 @@ export function UserTransactionsView({
                 <th className="px-3 py-3 font-medium">Qty</th>
                 <th className="px-3 py-3 font-medium">Entry px</th>
                 <th className="px-3 py-3 font-medium">Exit px</th>
-                <th className="px-3 py-3 font-medium">Gross</th>
-                <th className="px-3 py-3 font-medium">Fee</th>
-                <th className="px-3 py-3 font-medium">Net PnL</th>
-                <th className="px-3 py-3 font-medium">Rev share</th>
+                <th className="px-3 py-3 font-medium">Gross (USD)</th>
+                <th className="px-3 py-3 font-medium">Fee (USD)</th>
+                <th className="px-3 py-3 font-medium">Net PnL (USD)</th>
+                <th className="px-3 py-3 font-medium">Rev share (INR)</th>
                 <th className="px-3 py-3 font-medium">Status</th>
                 <th className="px-3 py-3 font-medium">Tag</th>
                 <th className="px-3 py-3 font-medium">Side</th>
@@ -323,14 +323,14 @@ export function UserTransactionsView({
                       </td>
                       <td className="px-3 py-3 tabular-nums text-xs text-[var(--text-muted)]">
                         {row.grossAmountInr != null
-                          ? formatInrAmount(row.grossAmountInr)
+                          ? formatUsdAmount(row.grossAmountInr)
                           : "—"}
                       </td>
                       <td className="px-3 py-3 tabular-nums text-xs text-[var(--text-muted)]">
-                        {row.feeInr != null ? formatInrAmount(row.feeInr) : "—"}
+                        {row.feeInr != null ? formatUsdAmount(row.feeInr) : "—"}
                       </td>
                       <td className={`px-3 py-3 tabular-nums text-xs font-medium ${pnlCls}`}>
-                        {row.netPnlInr != null ? formatInrAmount(row.netPnlInr) : "—"}
+                        {row.netPnlInr != null ? formatUsdAmount(row.netPnlInr) : "—"}
                       </td>
                       <td className="px-3 py-3 tabular-nums text-xs text-[var(--text-primary)]">
                         {formatInrAmount(row.revenueShareFeeInr)}

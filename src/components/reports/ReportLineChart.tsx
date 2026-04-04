@@ -4,10 +4,10 @@ import { useMemo } from "react";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 
-function formatInr(n: number): string {
-  return new Intl.NumberFormat("en-IN", {
+function formatUsdAxis(n: number): string {
+  return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency: "INR",
+    currency: "USD",
     maximumFractionDigits: 0,
   }).format(n);
 }
@@ -65,7 +65,7 @@ export function ReportLineChart({
           <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">{hint}</p>
         </div>
         <span className="text-xs text-[var(--text-muted)]">
-          Low {formatInr(min)} → High {formatInr(max)}
+          Low {formatUsdAxis(min)} → High {formatUsdAxis(max)}
         </span>
       </div>
       <div className="relative w-full overflow-x-auto">

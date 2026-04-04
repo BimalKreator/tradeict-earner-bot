@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import type { UserStrategyCardModel } from "@/server/queries/user-strategy-catalog";
 
 import { UserStrategySparkline } from "./UserStrategySparkline";
@@ -62,7 +62,7 @@ export function UserStrategyCatalogCard({ strategy }: { strategy: UserStrategyCa
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500">
-                Monthly fee
+                Monthly fee (INR)
               </p>
               <p className="text-lg font-semibold tabular-nums text-[var(--text-primary)]">
                 {formatInrAmount(strategy.monthlyFeeInr)}
@@ -86,8 +86,8 @@ export function UserStrategyCatalogCard({ strategy }: { strategy: UserStrategyCa
 
         {strategy.recommendedCapitalInr ? (
           <p className="text-xs text-[var(--text-muted)]">
-            <span className="text-[var(--text-primary)]">Recommended capital:</span>{" "}
-            {formatInrAmount(strategy.recommendedCapitalInr)}
+            <span className="text-[var(--text-primary)]">Recommended capital (USD):</span>{" "}
+            {formatUsdAmount(strategy.recommendedCapitalInr)}
           </p>
         ) : null}
 

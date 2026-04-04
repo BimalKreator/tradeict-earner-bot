@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatUsdAmount } from "@/lib/format-inr";
 import type { AdminUserStrategyListRow } from "@/server/queries/admin-user-strategies";
 
 const RUN_LABELS: Record<string, string> = {
@@ -33,7 +33,7 @@ export function AdminUserStrategiesTable({ rows }: { rows: AdminUserStrategyList
             <th className="pb-2 pr-3 font-medium">Strategy</th>
             <th className="pb-2 pr-3 font-medium">Access until</th>
             <th className="pb-2 pr-3 font-medium">Run status</th>
-            <th className="pb-2 pr-3 font-medium">Capital</th>
+            <th className="pb-2 pr-3 font-medium">Capital (USD)</th>
             <th className="pb-2 pr-3 font-medium">Lev.</th>
             <th className="pb-2 font-medium">Detail</th>
           </tr>
@@ -69,7 +69,7 @@ export function AdminUserStrategiesTable({ rows }: { rows: AdminUserStrategyList
                 </span>
               </td>
               <td className="py-2 pr-3 align-top tabular-nums text-[var(--text-muted)]">
-                {r.capitalToUseInr ? formatInrAmount(r.capitalToUseInr) : "—"}
+                {r.capitalToUseInr ? formatUsdAmount(r.capitalToUseInr) : "—"}
               </td>
               <td className="py-2 pr-3 align-top tabular-nums text-[var(--text-muted)]">
                 {r.leverage ?? "—"}

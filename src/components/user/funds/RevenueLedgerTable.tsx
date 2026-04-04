@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import { payRevenueShareAction } from "@/server/actions/revenueShareCheckout";
 import type { RevenueLedgerRow } from "@/server/queries/user-funds-platform";
 
@@ -236,10 +236,10 @@ export function RevenueLedgerTable({ ledgers }: { ledgers: RevenueLedgerRow[] })
                 </dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-[var(--text-muted)]">Weekly net profit</dt>
+                <dt className="text-[var(--text-muted)]">Weekly net profit (USD)</dt>
                 <dd className="tabular-nums text-[var(--text-primary)]">
                   {open.weeklyNetProfitInr != null
-                    ? formatInrAmount(open.weeklyNetProfitInr)
+                    ? formatUsdAmount(open.weeklyNetProfitInr)
                     : "—"}
                 </dd>
               </div>

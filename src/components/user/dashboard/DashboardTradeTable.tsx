@@ -3,17 +3,14 @@ import Link from "next/link";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { TableScroll } from "@/components/ui/TableScroll";
+import { formatUsdAmount } from "@/lib/format-inr";
 import type { UserDashboardTradeRow } from "@/lib/user-dashboard-types";
 
-function formatInr(n: string | null): string {
+function formatTradePnl(n: string | null): string {
   if (n === null || n === "") return "—";
   const v = Number(n);
   if (!Number.isFinite(v)) return n;
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 2,
-  }).format(v);
+  return formatUsdAmount(v);
 }
 
 function TradeMobileCard({
@@ -55,7 +52,7 @@ function TradeMobileCard({
           <p className="tabular-nums text-[var(--text-muted)]">{r.priceOrFill ?? "—"}</p>
         </div>
         <div>
-          <p className="text-[var(--text-muted)]">PnL</p>
+          <p className="text-[var(--text-muted)]">PnL (USD)</p>
           <p
             className={`tabular-nums font-medium ${
               r.pnlInr && Number(r.pnlInr) < 0
@@ -65,7 +62,7 @@ function TradeMobileCard({
                   : "text-[var(--text-muted)]"
             }`}
           >
-            {formatInr(r.pnlInr)}
+            {formatTradePnl(r.pnlInr)}
           </p>
         </div>
         {mode === "bot" && r.orderStatus ? (
@@ -136,7 +133,7 @@ export function DashboardTradeTable({
                     <th className="px-3 py-3 font-medium">
                       {mode === "bot" ? "Fill" : "Price"}
                     </th>
-                    <th className="px-3 py-3 font-medium">PnL</th>
+                    <th className="px-3 py-3 font-medium">PnL (USD)</th>
                     {mode === "bot" ? (
                       <th className="px-3 py-3 font-medium">Status</th>
                     ) : null}
@@ -171,7 +168,7 @@ export function DashboardTradeTable({
                               : "text-[var(--text-muted)]"
                         }`}
                       >
-                        {formatInr(r.pnlInr)}
+                        {formatTradePnl(r.pnlInr)}
                       </td>
                       {mode === "bot" ? (
                         <td className="px-3 py-3 text-xs text-[var(--text-muted)]">

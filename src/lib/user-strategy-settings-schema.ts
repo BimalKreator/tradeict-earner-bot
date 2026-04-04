@@ -50,7 +50,7 @@ export function createUserStrategyRunSettingsSchema(
         ctx.addIssue({
           code: "custom",
           path: ["capitalToUseInr"],
-          message: `Capital must be at least ₹${recNum} (recommended minimum).`,
+          message: `Capital must be at least $${recNum} (recommended minimum, USD).`,
         });
       }
     });
@@ -72,7 +72,7 @@ export function createUserStrategyRunSettingsSchema(
       ctx.addIssue({
         code: "custom",
         path: ["capitalToUseInr"],
-        message: `Capital must be at least ₹${recNum} (recommended minimum).`,
+        message: `Capital must be at least $${recNum} (recommended minimum, USD).`,
       });
     }
 

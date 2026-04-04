@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ExportCsvButton } from "@/components/reports/ExportCsvButton";
 import { ReportBarList } from "@/components/reports/ReportBarList";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount, formatIntCount } from "@/lib/format-inr";
+import { formatInrAmount, formatIntCount, formatUsdAmount } from "@/lib/format-inr";
 import { getAdminReportsPageData } from "@/server/queries/admin-reports";
 
 export const metadata = {
@@ -212,8 +212,9 @@ export default async function AdminReportsPage() {
       <section className="grid gap-4 lg:grid-cols-2" id="pnl-leaders">
         <ReportBarList
           title="Top strategies by realized PnL"
-          hint="All users · bot filled / partial orders"
+          hint="All users · bot filled / partial orders · USD"
           rows={topStratPnlBars}
+          valueMode="usd"
         />
         <GlassPanel className="p-5">
           <p className="mb-3 text-sm font-medium text-[var(--text-primary)]">
@@ -241,7 +242,7 @@ export default async function AdminReportsPage() {
               <thead>
                 <tr className="border-b border-[var(--border-glass)] text-[10px] uppercase text-[var(--text-muted)]">
                   <th className="pb-2 pr-2">User</th>
-                  <th className="pb-2 pr-2">PnL</th>
+                  <th className="pb-2 pr-2">PnL (USD)</th>
                   <th className="pb-2">Fills</th>
                 </tr>
               </thead>
@@ -256,7 +257,7 @@ export default async function AdminReportsPage() {
                         {r.email}
                       </Link>
                     </td>
-                    <td className="py-2 pr-2">{formatInrAmount(r.pnlInr)}</td>
+                    <td className="py-2 pr-2">{formatUsdAmount(r.pnlInr)}</td>
                     <td className="py-2">{r.fillsCount}</td>
                   </tr>
                 ))}

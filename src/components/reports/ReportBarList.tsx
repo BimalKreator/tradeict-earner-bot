@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 
 export function ReportBarList({
   title,
@@ -14,7 +15,7 @@ export function ReportBarList({
   hint: string;
   rows: { label: string; valueInr: string; sub?: string }[];
   /** `percent` treats `valueInr` as 0–100 for bar width; displays with % suffix. */
-  valueMode?: "inr" | "percent";
+  valueMode?: "inr" | "usd" | "percent";
 }) {
   const { maxAbs, items } = useMemo(() => {
     const vals = rows.map((r) => Math.abs(Number(r.valueInr) || 0));
@@ -70,11 +71,9 @@ export function ReportBarList({
               >
                 {valueMode === "percent"
                   ? `${r.n.toFixed(1)}%`
-                  : new Intl.NumberFormat("en-IN", {
-                      style: "currency",
-                      currency: "INR",
-                      maximumFractionDigits: 2,
-                    }).format(r.n)}
+                  : valueMode === "usd"
+                    ? formatUsdAmount(r.n)
+                    : formatInrAmount(r.n)}
               </span>
             </div>
             <div className="mt-1 h-2 overflow-hidden rounded-full bg-black/40">
@@ -95,14 +94,12 @@ export function ReportBarList({
           </li>
         ))}
       </ul>
-      {valueMode === "inr" ? (
+      {valueMode === "inr" || valueMode === "usd" ? (
         <p className="mt-3 text-[10px] text-[var(--text-muted)]">
-          Scale max |PnL| in view:{" "}
-          {new Intl.NumberFormat("en-IN", {
-            style: "currency",
-            currency: "INR",
-            maximumFractionDigits: 0,
-          }).format(maxAbs)}
+          Scale max |value| in view:{" "}
+          {valueMode === "usd"
+            ? formatUsdAmount(maxAbs)
+            : formatInrAmount(maxAbs)}
         </p>
       ) : null}
     </GlassPanel>

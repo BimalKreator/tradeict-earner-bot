@@ -3,7 +3,7 @@
 import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ZodIssue } from "zod";
 
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatUsdAmount } from "@/lib/format-inr";
 import {
   createUserStrategyRunSettingsSchema,
   type UserStrategySettingsConstraints,
@@ -107,10 +107,10 @@ export function UserStrategySettingsForm({
         </h2>
         <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
           <div className="rounded-xl border border-white/[0.06] bg-black/25 px-3 py-2">
-            <dt className="text-[var(--text-muted)]">Recommended capital (min)</dt>
+            <dt className="text-[var(--text-muted)]">Recommended capital (min, USD)</dt>
             <dd className="mt-1 font-medium text-[var(--text-primary)]">
               {constraints.recommendedCapitalInr
-                ? formatInrAmount(constraints.recommendedCapitalInr)
+                ? formatUsdAmount(constraints.recommendedCapitalInr)
                 : "Not set — any positive capital amount is allowed."}
             </dd>
           </div>
@@ -141,7 +141,7 @@ export function UserStrategySettingsForm({
             htmlFor="capitalToUseInr"
             className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
           >
-            Capital to use (INR)
+            Capital to use (USD)
           </label>
           <input
             id="capitalToUseInr"
@@ -155,7 +155,7 @@ export function UserStrategySettingsForm({
             placeholder={
               constraints.recommendedCapitalInr
                 ? `e.g. ${constraints.recommendedCapitalInr}`
-                : "Amount in ₹"
+                : "Amount in USD"
             }
           />
           {capitalErr ? (

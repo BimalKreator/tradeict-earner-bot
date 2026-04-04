@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { AdminUserStrategyDetailActions } from "@/components/admin/AdminUserStrategyDetailActions";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatUsdAmount } from "@/lib/format-inr";
 import { getAdminUserStrategyDetail } from "@/server/queries/admin-user-strategies";
 
 export const dynamic = "force-dynamic";
@@ -125,9 +125,9 @@ export default async function AdminUserStrategyDetailPage({ params }: Props) {
         </p>
         <div className="grid gap-2 text-sm sm:grid-cols-2">
           <p className="text-[var(--text-primary)]">
-            Capital (INR):{" "}
+            Capital (USD):{" "}
             <span className="font-medium tabular-nums">
-              {d.capitalToUseInr ? formatInrAmount(d.capitalToUseInr) : "—"}
+              {d.capitalToUseInr ? formatUsdAmount(d.capitalToUseInr) : "—"}
             </span>
           </p>
           <p className="text-[var(--text-primary)]">

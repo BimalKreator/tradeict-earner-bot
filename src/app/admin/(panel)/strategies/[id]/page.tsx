@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { StrategyPerformanceChartPreview } from "@/components/admin/StrategyPerformanceChartPreview";
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import { validatePerformanceChartPayload } from "@/lib/strategy-performance-chart";
 import { getAdminStrategyDetail } from "@/server/queries/admin-strategies";
 
@@ -105,10 +105,10 @@ export default async function AdminStrategyDetailPage({ params }: Props) {
               </dd>
             </div>
             <div>
-              <dt className="text-xs uppercase text-slate-500">Capital / leverage</dt>
+              <dt className="text-xs uppercase text-slate-500">Capital (USD) / leverage</dt>
               <dd className="text-[var(--text-primary)]">
                 {strategy.recommendedCapitalInr
-                  ? formatInrAmount(strategy.recommendedCapitalInr)
+                  ? formatUsdAmount(strategy.recommendedCapitalInr)
                   : "—"}{" "}
                 · max lev. {strategy.maxLeverage ?? "—"}
               </dd>
@@ -186,8 +186,8 @@ export default async function AdminStrategyDetailPage({ params }: Props) {
                   IST
                 </span>
                 {" · "}
-                equity{" "}
-                {s.metricEquityInr != null ? formatInrAmount(s.metricEquityInr) : "—"}
+                equity (USD){" "}
+                {s.metricEquityInr != null ? formatUsdAmount(s.metricEquityInr) : "—"}
                 {" · "}
                 return {s.metricReturnPct != null ? `${s.metricReturnPct}%` : "—"}
               </li>

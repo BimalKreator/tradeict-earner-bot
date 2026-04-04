@@ -130,7 +130,7 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500">
-                Monthly fee
+                Monthly fee (INR)
               </p>
               <p className="text-lg font-semibold tabular-nums text-[var(--text-primary)]">
                 {formatInrAmount(row.monthlyFeeInr)}

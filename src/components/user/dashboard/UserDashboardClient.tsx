@@ -4,22 +4,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import type { UserDashboardData } from "@/lib/user-dashboard-types";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 
 import { DashboardTradeTable } from "./DashboardTradeTable";
 import { ExchangeStatusBadge } from "./ExchangeStatusBadge";
 import { FundsSummaryWidget } from "./FundsSummaryWidget";
 import { PnLMiniChart } from "./PnLMiniChart";
 import { StatCard } from "./StatCard";
-
-function formatInrAmount(s: string, opts?: { fractionDigits?: number }): string {
-  const n = Number(s);
-  if (!Number.isFinite(n)) return s;
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: opts?.fractionDigits ?? 2,
-  }).format(n);
-}
 
 type TradeScope = "bot" | "all";
 
@@ -107,21 +98,21 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <StatCard
-          label="Today's bot profit (IST)"
-          value={formatInrAmount(data.todayBotPnlInr)}
-          hint="Sum of realized PnL on filled bot orders for today in Asia/Kolkata."
+          label="Today's bot profit (IST, USD)"
+          value={formatUsdAmount(data.todayBotPnlInr)}
+          hint="Sum of realized PnL on filled bot orders for today in Asia/Kolkata (shown as USD)."
           accent={pnlAccent(data.todayBotPnlInr)}
         />
         <StatCard
-          label="Total bot PnL"
-          value={formatInrAmount(data.totalBotPnlInr)}
-          hint="All-time sum of realized PnL on bot-filled orders."
+          label="Total bot PnL (USD)"
+          value={formatUsdAmount(data.totalBotPnlInr)}
+          hint="All-time sum of realized PnL on bot-filled orders (shown as USD)."
           accent={pnlAccent(data.totalBotPnlInr)}
         />
         <StatCard
-          label="Revenue share due (this week)"
+          label="Revenue share due (this week, INR)"
           value={formatInrAmount(data.revenueDueWeekInr)}
-          hint="Unpaid balance for weekly ledgers covering today (IST calendar week rows)."
+          hint="Unpaid platform revenue share for weekly ledgers covering today (IST)."
         />
       </div>
 
@@ -178,7 +169,7 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
       </div>
 
       <PnLMiniChart
-        title={scope === "bot" ? "Daily bot PnL" : "Daily PnL (all trades)"}
+        title={scope === "bot" ? "Daily bot PnL (USD)" : "Daily PnL — all trades (USD)"}
         series={scope === "bot" ? data.chartBot : data.chartAll}
       />
 

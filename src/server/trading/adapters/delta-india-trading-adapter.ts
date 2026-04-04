@@ -61,13 +61,12 @@ function walletBalanceMeta(json: Record<string, unknown>): Record<string, unknow
 }
 
 /**
- * Portfolio-level INR (or account quote) total. API docs show string; live API may send number.
+ * Portfolio-level total from `meta` (Delta India returns USD for wallet display).
  */
 function readNetEquityFromMeta(meta: Record<string, unknown> | null): string | null {
   if (!meta) return null;
   const keys = [
     "net_equity",
-    "net_equity_inr",
     "total_net_equity",
     "portfolio_net_equity",
   ];
@@ -84,7 +83,7 @@ function walletAssetSymbol(o: Record<string, unknown>): string {
     : String(o.asset_symbol ?? "");
 }
 
-/** Fiat INR wallet on Delta India (and similar symbols). */
+/** Legacy fiat INR wallet row (fallback only). */
 function isInrLikeWalletAsset(sym: string): boolean {
   const s = sym.trim().toUpperCase();
   if (s === "INR" || s === "INRF") return true;
@@ -92,18 +91,10 @@ function isInrLikeWalletAsset(sym: string): boolean {
   return false;
 }
 
-/** USD-stable collateral rows whose numeric balance is not INR until converted. */
+/** USD-stable / USD-denominated wallet rows (balances in USD). */
 function isUsdStableWalletAsset(sym: string): boolean {
   const s = sym.trim().toUpperCase();
   return s === "USDT" || s === "USD" || s === "USDC" || s === "BUSD";
-}
-
-function parseInrPerUsdtFromEnv(): number | null {
-  const raw = process.env.DELTA_WALLET_INR_PER_USDT?.trim();
-  if (!raw) return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return n;
 }
 
 function parseDeltaOrderResultPayload(
@@ -336,15 +327,6 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     try {
       const r = await this.signedFetch("GET", path, "", "");
 
-      // Temporary diagnostic — remove or gate after confirming wallet JSON shape in prod.
-      console.log(
-        "DELTA_WALLET_RAW_RESPONSE:",
-        JSON.stringify({ httpOk: r.ok, status: r.status, body: r.json }).slice(
-          0,
-          16000,
-        ),
-      );
-
       if (!r.ok) {
         return {
           ok: false,
@@ -375,27 +357,33 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
         rows.push({ assetSymbol: sym, balance: bal, availableBalance: av });
       }
 
-      const inrPerUsdt = parseInrPerUsdtFromEnv();
-
-      /** INR-like available margin only; USD-stable converted when env rate set (never sum raw mixed units). */
-      let marginInInr = 0;
-      let hasMarginInInr = false;
+      /** Sum available margin in USD across USD-stable wallet rows only. */
+      let marginUsd = 0;
+      let hasMarginUsd = false;
       for (const row of rows) {
         const avn = row.availableBalance != null ? Number(row.availableBalance) : NaN;
         if (!Number.isFinite(avn)) continue;
-        if (isInrLikeWalletAsset(row.assetSymbol)) {
-          marginInInr += avn;
-          hasMarginInInr = true;
-        } else if (
-          isUsdStableWalletAsset(row.assetSymbol) &&
-          inrPerUsdt != null
-        ) {
-          marginInInr += avn * inrPerUsdt;
-          hasMarginInInr = true;
+        if (isUsdStableWalletAsset(row.assetSymbol)) {
+          marginUsd += avn;
+          hasMarginUsd = true;
         }
       }
 
       let liveBalanceDisplay: string | null = netEquity;
+
+      if (!liveBalanceDisplay) {
+        let stableBalSum = 0;
+        let anyStable = false;
+        for (const row of rows) {
+          if (!isUsdStableWalletAsset(row.assetSymbol)) continue;
+          const b = row.balance != null ? Number(row.balance) : NaN;
+          if (Number.isFinite(b)) {
+            stableBalSum += b;
+            anyStable = true;
+          }
+        }
+        if (anyStable) liveBalanceDisplay = String(stableBalSum);
+      }
 
       if (!liveBalanceDisplay) {
         const inrRow = rows.find((row) => isInrLikeWalletAsset(row.assetSymbol));
@@ -405,24 +393,16 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
         }
       }
 
-      if (!liveBalanceDisplay && inrPerUsdt != null) {
-        const usdRow = rows.find((row) => isUsdStableWalletAsset(row.assetSymbol));
-        const usdBal = usdRow?.balance != null ? Number(usdRow.balance) : NaN;
-        if (Number.isFinite(usdBal)) {
-          liveBalanceDisplay = String(usdBal * inrPerUsdt);
-        }
-      }
-
       if (!liveBalanceDisplay) {
         console.warn(
-          "[DeltaIndiaTradingAdapter] Could not derive INR wallet display: missing meta.net_equity, INR row, and USDT row+DELTA_WALLET_INR_PER_USDT. Check DELTA_WALLET_RAW_RESPONSE log.",
+          "[DeltaIndiaTradingAdapter] Could not derive wallet display: missing meta.net_equity and no USD-stable or INR wallet row.",
         );
       }
 
       return {
         ok: true,
         netEquity,
-        availableMarginTotal: hasMarginInInr ? String(marginInInr) : null,
+        availableMarginTotal: hasMarginUsd ? String(marginUsd) : null,
         liveBalanceDisplay,
         assetRows: rows,
         rawMeta: metaObj,

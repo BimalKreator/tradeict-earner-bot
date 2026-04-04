@@ -228,7 +228,7 @@ export function AdminStrategyForm(props: Props) {
               htmlFor={`${baseId}-cap`}
               className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
             >
-              Recommended capital (INR)
+              Recommended capital (USD)
             </label>
             <input
               id={`${baseId}-cap`}

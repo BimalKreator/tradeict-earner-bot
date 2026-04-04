@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import { isFundsLiveOk, type FundsLiveApiResponse } from "@/lib/funds-live-api";
 
 /**
@@ -38,7 +38,7 @@ export function FundsSummaryWidget({
   const ok = live && isFundsLiveOk(live) ? live : null;
   const bal =
     ok?.liveBalance != null
-      ? formatInrAmount(ok.liveBalance)
+      ? formatUsdAmount(ok.liveBalance)
       : ok?.balanceError
         ? "—"
         : live && !isFundsLiveOk(live)
@@ -53,7 +53,8 @@ export function FundsSummaryWidget({
             Funds snapshot
           </p>
           <p className="mt-2 text-sm text-[var(--text-muted)]">
-            Live Delta balance (60s refresh) and revenue share due this IST week.
+            Live Delta balance in USD (60s refresh) and revenue share due this IST week
+            (INR).
           </p>
         </div>
         <Link
@@ -66,7 +67,7 @@ export function FundsSummaryWidget({
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <div>
           <p className="text-[10px] uppercase text-[var(--text-muted)]">
-            Live balance
+            Live balance (USD)
           </p>
           <p className="mt-0.5 font-[family-name:var(--font-display)] text-xl font-bold tabular-nums text-[var(--text-primary)]">
             {bal}
@@ -82,7 +83,7 @@ export function FundsSummaryWidget({
         </div>
         <div>
           <p className="text-[10px] uppercase text-[var(--text-muted)]">
-            Revenue due (this week)
+            Revenue due (this week, INR)
           </p>
           <p className="mt-0.5 font-[family-name:var(--font-display)] text-xl font-bold tabular-nums text-amber-200/90">
             {formatInrAmount(revenueDueWeekInr)}

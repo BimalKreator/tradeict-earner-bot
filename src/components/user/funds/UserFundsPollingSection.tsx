@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { formatInrAmount } from "@/lib/format-inr";
+import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import {
   type FundsLiveApiResponse,
   isFundsLiveOk,
@@ -102,7 +102,7 @@ export function UserFundsPollingSection({
 
   const bal =
     liveOk && liveOk.liveBalance != null
-      ? formatInrAmount(liveOk.liveBalance)
+      ? formatUsdAmount(liveOk.liveBalance)
       : liveOk?.balanceError
         ? "—"
         : liveErr
@@ -110,7 +110,7 @@ export function UserFundsPollingSection({
           : "…";
   const margin =
     liveOk && liveOk.availableMargin != null
-      ? formatInrAmount(liveOk.availableMargin)
+      ? formatUsdAmount(liveOk.availableMargin)
       : liveOk?.balanceError
         ? "—"
         : liveErr
@@ -119,7 +119,7 @@ export function UserFundsPollingSection({
 
   const netFlow =
     liveOk && liveOk.netFundFlow != null
-      ? formatInrAmount(liveOk.netFundFlow)
+      ? formatUsdAmount(liveOk.netFundFlow)
       : "—";
 
   const netFlowHint =
@@ -131,30 +131,30 @@ export function UserFundsPollingSection({
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Live balance (Delta)"
+          label="Live balance (Delta, USD)"
           value={bal}
           hint={
             liveOk?.balanceError
               ? liveOk.balanceError
               : liveErr
                 ? liveErr.message
-                : "From meta.net_equity, INR wallet row, or USDT×DELTA_WALLET_INR_PER_USDT."
+                : "From Delta meta.net_equity or USD-stable wallet rows."
           }
         />
         <StatCard
-          label="Available margin (sum)"
+          label="Available margin (USD)"
           value={margin}
-          hint="Sum of per-asset available_balance from Delta."
+          hint="Sum of available_balance on USD / USDT / USDC wallets from Delta."
         />
         <StatCard
-          label="Pending revenue share (all)"
+          label="Pending revenue share (all, INR)"
           value={formatInrAmount(platform.revenueSharePendingAllInr)}
-          hint="Unpaid + partial on all weekly ledger rows."
+          hint="Unpaid + partial on all weekly ledger rows (platform billing, INR)."
         />
         <StatCard
-          label="Total net profit (ledger)"
-          value={formatInrAmount(platform.totalNetProfitInr)}
-          hint="Sum of realized PnL on bot orders + trades."
+          label="Total net profit (ledger, USD)"
+          value={formatUsdAmount(platform.totalNetProfitInr)}
+          hint="Sum of realized PnL on bot orders + trades (stored in legacy *_inr columns, shown as USD)."
           valueClass={
             Number(platform.totalNetProfitInr) >= 0
               ? "text-emerald-400"
@@ -165,7 +165,7 @@ export function UserFundsPollingSection({
 
       <GlassPanel className="!p-5">
         <p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-          Net fund flow (estimate)
+          Net fund flow (estimate, USD)
         </p>
         <p className="mt-1 font-[family-name:var(--font-display)] text-2xl font-bold tabular-nums text-[var(--text-primary)]">
           {netFlow}
@@ -203,8 +203,8 @@ export function UserFundsPollingSection({
                   <th className="px-4 py-2">Time</th>
                   <th className="px-3 py-2">Type</th>
                   <th className="px-3 py-2">Asset</th>
-                  <th className="px-3 py-2">Amount</th>
-                  <th className="px-3 py-2">Balance after</th>
+                  <th className="px-3 py-2">Amount (USD)</th>
+                  <th className="px-3 py-2">Balance after (USD)</th>
                 </tr>
               </thead>
               <tbody>
@@ -235,10 +235,10 @@ export function UserFundsPollingSection({
                           Number(m.amount) >= 0 ? "text-emerald-400" : "text-red-400"
                         }`}
                       >
-                        {m.amount}
+                        {formatUsdAmount(m.amount)}
                       </td>
                       <td className="px-3 py-2 tabular-nums text-xs text-[var(--text-muted)]">
-                        {m.balanceAfter ?? "—"}
+                        {m.balanceAfter != null ? formatUsdAmount(m.balanceAfter) : "—"}
                       </td>
                     </tr>
                   ))
