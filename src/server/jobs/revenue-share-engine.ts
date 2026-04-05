@@ -248,14 +248,30 @@ export async function runWeeklyRevenueShareForIstWeek(
     );
     const dueStr = weeklyAmountDue(weeklyNet, pct);
     const dueN = Number(dueStr);
+    const pctN = Number(pct);
     const status = dueN > 0 ? ("unpaid" as const) : ("paid" as const);
+    const autoClearedZero =
+      dueN <= 0 &&
+      (weeklyNet <= 0 || !Number.isFinite(pctN) || pctN <= 0);
 
     const meta = {
       weekly_net_profit_inr: toMoneyString(weeklyNet),
       snapshot_week_start_ist: ws,
       snapshot_week_end_ist: we,
       evaluated_at_utc: evaluatedAt.toISOString(),
+      ...(autoClearedZero
+        ? {
+            zero_due: true as const,
+            zero_due_reason:
+              weeklyNet <= 0
+                ? ("no_positive_net" as const)
+                : ("zero_percent_or_rounding" as const),
+          }
+        : {}),
     };
+
+    const paidAt = status === "paid" ? evaluatedAt : null;
+    const amountPaidInr = status === "paid" ? dueStr : "0.00";
 
     const out = await db
       .insert(weeklyRevenueShareLedgers)
@@ -266,10 +282,11 @@ export async function runWeeklyRevenueShareForIstWeek(
         weekStartDateIst: ws,
         weekEndDateIst: we,
         amountDueInr: dueStr,
-        amountPaidInr: "0.00",
+        amountPaidInr,
         revenueSharePercentApplied: pct,
         status,
         dueAt,
+        paidAt,
         metadata: meta,
       })
       .onConflictDoNothing({

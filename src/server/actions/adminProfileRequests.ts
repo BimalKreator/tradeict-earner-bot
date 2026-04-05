@@ -1,12 +1,9 @@
 "use server";
 
 import { and, eq, ne } from "drizzle-orm";
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
-import { SESSION_COOKIE_NAME } from "@/lib/auth";
-import { verifySessionToken } from "@/lib/session";
 import type { ProfileChangesJson } from "@/lib/profile-change-fields";
 import {
   PROFILE_CHANGE_FIELD_KEYS,
@@ -21,19 +18,7 @@ import {
   profileChangeRejectedEmail,
 } from "@/server/email/templates";
 import { sendTransactionalEmail } from "@/server/email/send-email";
-
-async function requireAdminId(): Promise<string> {
-  const jar = await cookies();
-  const token = jar.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) {
-    throw new Error("UNAUTHORIZED");
-  }
-  const session = await verifySessionToken(token);
-  if (!session || session.role !== "admin") {
-    throw new Error("UNAUTHORIZED");
-  }
-  return session.userId;
-}
+import { requireAdminId } from "@/server/auth/require-admin-id";
 
 const uuid = z.string().uuid();
 

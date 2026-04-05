@@ -144,7 +144,8 @@ export async function adminCreatePricingOverrideFormAction(
   if (fee == null && pct == null) {
     return {
       ok: false,
-      message: "Provide at least a monthly fee override and/or revenue share %.",
+      message:
+        "Set at least one field: monthly fee (₹0 allowed) and/or revenue share % (0–100, 0% allowed).",
     };
   }
 
@@ -296,7 +297,8 @@ export async function adminUpdatePricingOverrideFormAction(
   if (fee == null && pct == null) {
     return {
       ok: false,
-      message: "Provide at least a monthly fee override and/or revenue share %.",
+      message:
+        "Set at least one field: monthly fee (₹0 allowed) and/or revenue share % (0–100, 0% allowed).",
     };
   }
 

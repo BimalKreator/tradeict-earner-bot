@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -35,6 +36,7 @@ export function StrategyCashfreeCheckout({
   hasPricingOverride,
   checkoutKind,
   forecastLine,
+  isFreeAccess,
 }: {
   strategySlug: string;
   strategyName: string;
@@ -43,7 +45,10 @@ export function StrategyCashfreeCheckout({
   hasPricingOverride: boolean;
   checkoutKind: "new" | "renewal";
   forecastLine: string;
+  /** Effective monthly fee is ₹0 — no Cashfree session. */
+  isFreeAccess: boolean;
 }) {
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -55,6 +60,13 @@ export function StrategyCashfreeCheckout({
       if (!result.ok) {
         setError(result.error);
         setBusy(false);
+        return;
+      }
+
+      if (result.mode === "free") {
+        router.push(
+          `/user/strategies/${encodeURIComponent(strategySlug)}/checkout/return?paymentId=${result.paymentId}`,
+        );
         return;
       }
 
@@ -78,7 +90,7 @@ export function StrategyCashfreeCheckout({
     } finally {
       setBusy(false);
     }
-  }, [strategySlug]);
+  }, [router, strategySlug]);
 
   return (
     <GlassPanel className="space-y-4">
@@ -107,8 +119,9 @@ export function StrategyCashfreeCheckout({
         </p>
       </div>
       <p className="text-sm text-[var(--text-muted)]">
-        You will complete payment on Cashfree&apos;s secure page. Subscription
-        activates after we confirm payment (usually within seconds).
+        {isFreeAccess
+          ? "No payment is required. Activate to add 30 days of access immediately."
+          : "You will complete payment on Cashfree&apos;s secure page. Subscription activates after we confirm payment (usually within seconds)."}
       </p>
       {error ? (
         <p
@@ -124,7 +137,13 @@ export function StrategyCashfreeCheckout({
         disabled={busy}
         className="w-full rounded-xl bg-[var(--accent)] py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
       >
-        {busy ? "Starting checkout…" : `Pay for ${strategyName}`}
+        {busy
+          ? isFreeAccess
+            ? "Activating…"
+            : "Starting checkout…"
+          : isFreeAccess
+            ? `Activate ${strategyName}`
+            : `Pay for ${strategyName}`}
       </button>
     </GlassPanel>
   );

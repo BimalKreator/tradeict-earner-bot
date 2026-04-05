@@ -76,12 +76,14 @@ export async function listAdminUserPricingOverrides(
     strategyId: r.strategyId,
     strategyName: r.strategyName ?? "—",
     strategySlug: r.strategySlug,
-    monthlyFeeInrOverride: r.monthlyFeeInrOverride
-      ? String(r.monthlyFeeInrOverride)
-      : null,
-    revenueSharePercentOverride: r.revenueSharePercentOverride
-      ? String(r.revenueSharePercentOverride)
-      : null,
+    monthlyFeeInrOverride:
+      r.monthlyFeeInrOverride != null
+        ? String(r.monthlyFeeInrOverride)
+        : null,
+    revenueSharePercentOverride:
+      r.revenueSharePercentOverride != null
+        ? String(r.revenueSharePercentOverride)
+        : null,
     effectiveFrom: r.effectiveFrom,
     effectiveUntil: r.effectiveUntil,
     isActive: r.isActive,

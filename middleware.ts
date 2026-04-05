@@ -9,21 +9,23 @@ import {
 
 /**
  * Protects /user/* and /admin/* (except /admin/login).
- * User JWT → /user only; admin JWT → /admin only. Stub cookie in dev when allowed.
+ * User JWT → /user only; admin JWT → /admin only.
+ *
+ * `AUTH_PHASE1_BYPASS` relaxes **user** routes only — admin always requires a real
+ * admin JWT (stub cookie is never accepted under `/admin/*`).
  */
 export async function middleware(request: NextRequest) {
-  if (process.env.AUTH_PHASE1_BYPASS === "true") {
-    return NextResponse.next();
-  }
-
   const path = request.nextUrl.pathname;
+  const isAdminArea = path.startsWith("/admin");
+  const isUserArea = path.startsWith("/user");
 
   if (path === "/admin/login") {
     return NextResponse.next();
   }
 
-  const isAdminArea = path.startsWith("/admin");
-  const isUserArea = path.startsWith("/user");
+  if (process.env.AUTH_PHASE1_BYPASS === "true" && isUserArea) {
+    return NextResponse.next();
+  }
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
@@ -40,13 +42,13 @@ export async function middleware(request: NextRequest) {
     const allowStub =
       process.env.NODE_ENV !== "production" ||
       process.env.AUTH_PHASE1_ALLOW_STUB === "true";
-    if (allowStub) {
-      return NextResponse.next();
-    }
     if (isAdminArea) {
       const u = request.nextUrl.clone();
       u.pathname = "/admin/login";
       return NextResponse.redirect(u);
+    }
+    if (allowStub) {
+      return NextResponse.next();
     }
     return redirectUserLogin(request);
   }
@@ -62,10 +64,14 @@ export async function middleware(request: NextRequest) {
   }
 
   if (isAdminArea) {
+    if (session.role === "user") {
+      const u = request.nextUrl.clone();
+      u.pathname = "/user/dashboard";
+      return NextResponse.redirect(u);
+    }
     if (session.role !== "admin") {
       const u = request.nextUrl.clone();
-      u.pathname = "/login";
-      u.searchParams.set("error", "admin");
+      u.pathname = "/admin/login";
       return NextResponse.redirect(u);
     }
   }

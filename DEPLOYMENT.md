@@ -104,6 +104,20 @@ Schedule it with **cron** or **PM2 cron** so it runs every minute (or as needed)
 
 Use the same `DATABASE_URL` and env as the web process.
 
+### Native TA worker (RSI scalper, long-lived)
+
+This process polls Delta public candles and may enqueue `trading_execution_jobs` via `dispatchStrategyExecutionSignal`. It does **not** run Next.js, so it stays off the web server’s event loop.
+
+1. Set **`TA_RSI_SCALPER_ENABLED=true`**, **`TA_RSI_SCALPER_STRATEGY_ID`** (UUID of the strategy row), **`TA_RSI_SCALPER_QUANTITY`**, and the usual DB / trading env (see `.env.example`).
+2. Align **`TA_RSI_SCALPER_SYMBOL`** with your Delta India product map (`DELTA_INDIA_SYMBOL_TO_PRODUCT_ID`) if execution uses India symbols (e.g. `BTCUSD` vs `BTC_USDT` on global API).
+3. Start alongside the web app and the queue worker:
+
+```bash
+pm2 start npm --name tradeict-ta-worker -- run trading:ta-worker
+```
+
+The default interval is **60 seconds** (`TA_RSI_SCALPER_INTERVAL_MS`). Keep **`npm run trading:worker`** on cron or PM2 as well so enqueued jobs are drained.
+
 ---
 
 ## 4. Cron jobs

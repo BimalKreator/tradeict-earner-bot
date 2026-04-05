@@ -79,6 +79,10 @@ export default async function UserStrategyCheckoutPage({
     notFound();
   }
 
+  const isFreeAccess =
+    Number.isFinite(Number(quote.monthlyFeeInr)) &&
+    Number(quote.monthlyFeeInr) === 0;
+
   const expiryIst = formatDateMediumIST(forecast.projectedAccessValidUntil);
   const renewalForecastLine = `Adds ${forecast.accessDaysAdded} days. New expiry: ${expiryIst}`;
   const newSubForecastLine = `If you pay now, access is expected through ${expiryIst} (IST date).`;
@@ -117,6 +121,7 @@ export default async function UserStrategyCheckoutPage({
         forecastLine={
           forecast.isRenewal ? renewalForecastLine : newSubForecastLine
         }
+        isFreeAccess={isFreeAccess}
       />
     </div>
   );

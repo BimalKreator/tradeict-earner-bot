@@ -68,15 +68,15 @@ const baseFieldsSchema = z.object({
   default_monthly_fee_inr: z
     .string()
     .trim()
-    .min(1, "Monthly fee required")
+    .refine((s) => s.length > 0, "Monthly fee required")
     .refine((s) => {
       const n = Number(s);
       return Number.isFinite(n) && n >= 0;
-    }, "Invalid monthly fee"),
+    }, "Monthly fee must be 0 or greater"),
   default_revenue_share_percent: z
     .string()
     .trim()
-    .min(1, "Revenue share required")
+    .refine((s) => s.length > 0, "Revenue share required")
     .refine((s) => {
       const n = Number(s);
       return Number.isFinite(n) && n >= 0 && n <= 100;

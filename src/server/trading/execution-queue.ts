@@ -11,6 +11,22 @@ function backoffMs(attempt: number): number {
   return Math.min(base, 300_000);
 }
 
+/**
+ * True if any row exists for this correlation id (any status).
+ * Used by native TA workers to avoid enqueueing duplicate jobs on repeated ticks.
+ */
+export async function hasTradingJobForCorrelationId(
+  correlationId: string,
+): Promise<boolean> {
+  if (!db) return false;
+  const [row] = await db
+    .select({ id: tradingExecutionJobs.id })
+    .from(tradingExecutionJobs)
+    .where(eq(tradingExecutionJobs.correlationId, correlationId))
+    .limit(1);
+  return row != null;
+}
+
 export async function enqueueStrategySignalJobs(
   payloads: TradingExecutionJobPayload[],
 ): Promise<number> {

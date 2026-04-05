@@ -10,6 +10,7 @@ import {
   userStrategySubscriptions,
 } from "@/server/db/schema";
 import type {
+  BillingPaymentSuccessEmailPayload,
   PaymentWebhookResult,
   WebhookFulfillmentInput,
 } from "@/server/payments/cashfree/parse-webhook";
@@ -63,6 +64,141 @@ function invoiceNumberForPayment(paymentId: string): string {
 }
 
 export type { PaymentWebhookResult } from "@/server/payments/cashfree/parse-webhook";
+
+/**
+ * Extends `user_strategy_subscriptions`, marks the strategy `payments` row success,
+ * and inserts a paid invoice — shared by Cashfree SUCCESS webhooks and ₹0 checkout.
+ * Caller must hold `payments` row `FOR UPDATE` and ensure the row is not already `success`.
+ */
+export async function applyStrategySubscriptionFulfillmentTx(
+  tx: DbClient,
+  lockedPayment: typeof payments.$inferSelect,
+  now: Date,
+  opts: {
+    lastWebhookStatus: string;
+    externalPaymentId?: string | null;
+  },
+): Promise<{ billingPaymentSuccess: BillingPaymentSuccessEmailPayload }> {
+  if (!lockedPayment.strategyId) {
+    throw new Error("applyStrategySubscriptionFulfillmentTx: missing strategyId");
+  }
+
+  const [strategyRow] = await tx
+    .select({ name: strategies.name })
+    .from(strategies)
+    .where(eq(strategies.id, lockedPayment.strategyId))
+    .limit(1);
+
+  const [latestSub] = await tx
+    .select()
+    .from(userStrategySubscriptions)
+    .where(
+      and(
+        eq(userStrategySubscriptions.userId, lockedPayment.userId),
+        eq(userStrategySubscriptions.strategyId, lockedPayment.strategyId),
+        isNull(userStrategySubscriptions.deletedAt),
+      ),
+    )
+    .orderBy(desc(userStrategySubscriptions.createdAt))
+    .for("update")
+    .limit(1);
+
+  let subscriptionId: string;
+  let accessValidUntil: Date;
+  let isRenewal: boolean;
+
+  if (!latestSub) {
+    accessValidUntil = computeStackedAccessValidUntil(
+      now,
+      null,
+      lockedPayment.accessDaysPurchased,
+    );
+    isRenewal = false;
+    const [inserted] = await tx
+      .insert(userStrategySubscriptions)
+      .values({
+        userId: lockedPayment.userId,
+        strategyId: lockedPayment.strategyId,
+        status: "active",
+        accessValidUntil,
+        purchasedAt: now,
+        firstActivationAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: userStrategySubscriptions.id });
+    subscriptionId = inserted!.id;
+    await ensureRunReadyToActivate(tx, subscriptionId, now);
+  } else {
+    accessValidUntil = computeStackedAccessValidUntil(
+      now,
+      latestSub.accessValidUntil,
+      lockedPayment.accessDaysPurchased,
+    );
+    isRenewal = true;
+    await tx
+      .update(userStrategySubscriptions)
+      .set({
+        status: "active",
+        accessValidUntil,
+        firstActivationAt: latestSub.firstActivationAt ?? now,
+        updatedAt: now,
+      })
+      .where(eq(userStrategySubscriptions.id, latestSub.id));
+    subscriptionId = latestSub.id;
+    await ensureRunReadyToActivate(tx, subscriptionId, now);
+  }
+
+  const extPay =
+    opts.externalPaymentId !== undefined
+      ? opts.externalPaymentId
+      : lockedPayment.externalPaymentId;
+
+  await tx
+    .update(payments)
+    .set({
+      status: "success",
+      subscriptionId,
+      externalPaymentId: extPay,
+      updatedAt: now,
+      metadata: {
+        ...(lockedPayment.metadata ?? {}),
+        last_webhook_status: opts.lastWebhookStatus,
+      },
+    })
+    .where(eq(payments.id, lockedPayment.id));
+
+  const [existingInvoice] = await tx
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(eq(invoices.paymentId, lockedPayment.id))
+    .limit(1);
+
+  if (!existingInvoice) {
+    await tx.insert(invoices).values({
+      paymentId: lockedPayment.id,
+      invoiceNumber: invoiceNumberForPayment(lockedPayment.id),
+      amountInr: lockedPayment.amountInr,
+      taxAmountInr: "0",
+      lineDescription: strategyRow?.name
+        ? `Strategy subscription — ${strategyRow.name}`
+        : "Strategy subscription",
+      status: "paid",
+      issuedAt: now,
+    });
+  }
+
+  const billingPaymentSuccess: BillingPaymentSuccessEmailPayload = {
+    kind: "strategy_subscription",
+    userId: lockedPayment.userId,
+    paymentId: lockedPayment.id,
+    amountInr: String(lockedPayment.amountInr),
+    strategyName: strategyRow?.name ?? null,
+    accessValidUntil,
+    isRenewal,
+  };
+
+  return { billingPaymentSuccess };
+}
 
 /**
  * Idempotent subscription + invoice fulfillment under `SERIALIZABLE`-style safety:
@@ -145,115 +281,18 @@ export async function fulfillStrategyPaymentFromWebhook(
     return { handled: true, skippedReason: "ignored_status" };
   }
 
-  const [strategyRow] = await tx
-    .select({ name: strategies.name })
-    .from(strategies)
-    .where(eq(strategies.id, lockedPayment.strategyId))
-    .limit(1);
-
-  const [latestSub] = await tx
-    .select()
-    .from(userStrategySubscriptions)
-    .where(
-      and(
-        eq(userStrategySubscriptions.userId, lockedPayment.userId),
-        eq(userStrategySubscriptions.strategyId, lockedPayment.strategyId),
-        isNull(userStrategySubscriptions.deletedAt),
-      ),
-    )
-    .orderBy(desc(userStrategySubscriptions.createdAt))
-    .for("update")
-    .limit(1);
-
-  let subscriptionId: string;
-  let accessValidUntil: Date;
-  let isRenewal: boolean;
-
-  if (!latestSub) {
-    accessValidUntil = computeStackedAccessValidUntil(
-      now,
-      null,
-      lockedPayment.accessDaysPurchased,
-    );
-    isRenewal = false;
-    const [inserted] = await tx
-      .insert(userStrategySubscriptions)
-      .values({
-        userId: lockedPayment.userId,
-        strategyId: lockedPayment.strategyId,
-        status: "active",
-        accessValidUntil,
-        purchasedAt: now,
-        firstActivationAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: userStrategySubscriptions.id });
-    subscriptionId = inserted!.id;
-    await ensureRunReadyToActivate(tx, subscriptionId, now);
-  } else {
-    accessValidUntil = computeStackedAccessValidUntil(
-      now,
-      latestSub.accessValidUntil,
-      lockedPayment.accessDaysPurchased,
-    );
-    isRenewal = true;
-    await tx
-      .update(userStrategySubscriptions)
-      .set({
-        status: "active",
-        accessValidUntil,
-        firstActivationAt: latestSub.firstActivationAt ?? now,
-        updatedAt: now,
-      })
-      .where(eq(userStrategySubscriptions.id, latestSub.id));
-    subscriptionId = latestSub.id;
-    await ensureRunReadyToActivate(tx, subscriptionId, now);
-  }
-
-  await tx
-    .update(payments)
-    .set({
-      status: "success",
-      subscriptionId,
+  const { billingPaymentSuccess } = await applyStrategySubscriptionFulfillmentTx(
+    tx,
+    lockedPayment,
+    now,
+    {
+      lastWebhookStatus: paymentStatus,
       externalPaymentId: externalPaymentId ?? lockedPayment.externalPaymentId,
-      updatedAt: now,
-      metadata: {
-        ...(lockedPayment.metadata ?? {}),
-        last_webhook_status: paymentStatus,
-      },
-    })
-    .where(eq(payments.id, lockedPayment.id));
-
-  const [existingInvoice] = await tx
-    .select({ id: invoices.id })
-    .from(invoices)
-    .where(eq(invoices.paymentId, lockedPayment.id))
-    .limit(1);
-
-  if (!existingInvoice) {
-    await tx.insert(invoices).values({
-      paymentId: lockedPayment.id,
-      invoiceNumber: invoiceNumberForPayment(lockedPayment.id),
-      amountInr: lockedPayment.amountInr,
-      taxAmountInr: "0",
-      lineDescription: strategyRow?.name
-        ? `Strategy subscription — ${strategyRow.name}`
-        : "Strategy subscription",
-      status: "paid",
-      issuedAt: now,
-    });
-  }
+    },
+  );
 
   return {
     handled: true,
-    billingPaymentSuccess: {
-      kind: "strategy_subscription",
-      userId: lockedPayment.userId,
-      paymentId: lockedPayment.id,
-      amountInr: String(lockedPayment.amountInr),
-      strategyName: strategyRow?.name ?? null,
-      accessValidUntil,
-      isRenewal,
-    },
+    billingPaymentSuccess,
   };
 }
