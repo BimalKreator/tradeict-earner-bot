@@ -9,6 +9,11 @@ import {
   chartPointsToDbValue,
   parsePerformanceChartJsonText,
 } from "@/lib/strategy-performance-chart";
+import {
+  isTrendArbitrageStrategySlug,
+  trendArbStrategyConfigSchema,
+  type TrendArbStrategyConfig,
+} from "@/lib/trend-arb-strategy-config";
 import { logAdminAction } from "@/server/audit/audit-logger";
 import { requireAdminId } from "@/server/auth/require-admin-id";
 import { strategies } from "@/server/db/schema";
@@ -91,6 +96,127 @@ export type StrategyFormState = {
   error?: string;
   fieldErrors?: Record<string, string[]>;
 };
+
+function parsePercentField(
+  raw: unknown,
+  fieldLabel: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  const s = String(raw ?? "").trim();
+  if (!s) return { ok: false, error: `${fieldLabel} is required.` };
+  const n = Number(s);
+  if (!Number.isFinite(n)) {
+    return { ok: false, error: `${fieldLabel} must be a valid number.` };
+  }
+  return { ok: true, value: n };
+}
+
+function parseTrendArbConfigFromForm(
+  formData: FormData,
+): { ok: true; value: TrendArbStrategyConfig } | { ok: false; fieldErrors: Record<string, string[]> } {
+  const symbol = String(formData.get("trend_arb_symbol") ?? "").trim();
+  const cap = parsePercentField(
+    formData.get("trend_arb_capital_allocation_pct"),
+    "Capital usage %",
+  );
+  const d1Qty = parsePercentField(
+    formData.get("trend_arb_d1_entry_qty_pct"),
+    "Delta 1 base qty %",
+  );
+  const d1Tp = parsePercentField(
+    formData.get("trend_arb_d1_target_profit_pct"),
+    "Delta 1 target profit %",
+  );
+  const d1Sl = parsePercentField(
+    formData.get("trend_arb_d1_stop_loss_pct"),
+    "Delta 1 stop loss %",
+  );
+  const d2StepQty = parsePercentField(
+    formData.get("trend_arb_d2_step_qty_pct"),
+    "Delta 2 step qty %",
+  );
+  const d2StepMove = parsePercentField(
+    formData.get("trend_arb_d2_step_move_pct"),
+    "Delta 2 step move %",
+  );
+  const d2Tp = parsePercentField(
+    formData.get("trend_arb_d2_target_profit_pct"),
+    "Delta 2 target profit %",
+  );
+  const d2Sl = parsePercentField(
+    formData.get("trend_arb_d2_stop_loss_pct"),
+    "Delta 2 stop loss %",
+  );
+
+  const indicatorRaw = String(
+    formData.get("trend_arb_indicator_settings_json") ?? "{}",
+  ).trim();
+  let indicatorParsed: unknown;
+  try {
+    indicatorParsed = indicatorRaw === "" ? {} : JSON.parse(indicatorRaw);
+  } catch {
+    return {
+      ok: false,
+      fieldErrors: {
+        trend_arb_indicator_settings_json: ["Indicator settings must be valid JSON."],
+      },
+    };
+  }
+
+  const parseErrors: Record<string, string[]> = {};
+  if (!cap.ok) parseErrors.trend_arb_capital_allocation_pct = [cap.error];
+  if (!d1Qty.ok) parseErrors.trend_arb_d1_entry_qty_pct = [d1Qty.error];
+  if (!d1Tp.ok) parseErrors.trend_arb_d1_target_profit_pct = [d1Tp.error];
+  if (!d1Sl.ok) parseErrors.trend_arb_d1_stop_loss_pct = [d1Sl.error];
+  if (!d2StepQty.ok) parseErrors.trend_arb_d2_step_qty_pct = [d2StepQty.error];
+  if (!d2StepMove.ok) parseErrors.trend_arb_d2_step_move_pct = [d2StepMove.error];
+  if (!d2Tp.ok) parseErrors.trend_arb_d2_target_profit_pct = [d2Tp.error];
+  if (!d2Sl.ok) parseErrors.trend_arb_d2_stop_loss_pct = [d2Sl.error];
+  if (Object.keys(parseErrors).length > 0) {
+    return { ok: false, fieldErrors: parseErrors };
+  }
+
+  const capValue = cap.ok ? cap.value : 0;
+  const d1QtyValue = d1Qty.ok ? d1Qty.value : 0;
+  const d1TpValue = d1Tp.ok ? d1Tp.value : 0;
+  const d1SlValue = d1Sl.ok ? d1Sl.value : 0;
+  const d2StepQtyValue = d2StepQty.ok ? d2StepQty.value : 0;
+  const d2StepMoveValue = d2StepMove.ok ? d2StepMove.value : 0;
+  const d2TpValue = d2Tp.ok ? d2Tp.value : 0;
+  const d2SlValue = d2Sl.ok ? d2Sl.value : 0;
+
+  const cfgParsed = trendArbStrategyConfigSchema.safeParse({
+    symbol,
+    capitalAllocationPct: capValue,
+    indicatorSettings: indicatorParsed,
+    delta1: {
+      entryQtyPct: d1QtyValue,
+      targetProfitPct: d1TpValue,
+      stopLossPct: d1SlValue,
+    },
+    delta2: {
+      stepQtyPct: d2StepQtyValue,
+      stepMovePct: d2StepMoveValue,
+      targetProfitPct: d2TpValue,
+      stopLossPct: d2SlValue,
+    },
+  });
+  if (!cfgParsed.success) {
+    const f = cfgParsed.error.flatten().fieldErrors;
+    const errs: Record<string, string[]> = {};
+    if (f.symbol?.length) errs.trend_arb_symbol = f.symbol;
+    if (f.capitalAllocationPct?.length) {
+      errs.trend_arb_capital_allocation_pct = f.capitalAllocationPct;
+    }
+    if (f.indicatorSettings?.length) {
+      errs.trend_arb_indicator_settings_json = f.indicatorSettings;
+    }
+    if (f.delta1?.length) errs.trend_arb_d1_entry_qty_pct = f.delta1;
+    if (f.delta2?.length) errs.trend_arb_d2_step_qty_pct = f.delta2;
+    return { ok: false, fieldErrors: errs };
+  }
+
+  return { ok: true, value: cfgParsed.data };
+}
 
 export async function createStrategyAction(
   _prev: StrategyFormState,
@@ -263,8 +389,17 @@ export async function updateStrategyAction(
     recommendedCapitalInr: cap.value,
     maxLeverage: lev.value,
     performanceChartJson: chartDb,
+    settingsJson: existing.settingsJson as Record<string, unknown> | null,
     updatedAt: now,
   };
+
+  if (isTrendArbitrageStrategySlug(existing.slug)) {
+    const parsedTrend = parseTrendArbConfigFromForm(formData);
+    if (!parsedTrend.ok) {
+      return { fieldErrors: parsedTrend.fieldErrors };
+    }
+    patch.settingsJson = parsedTrend.value;
+  }
 
   await database
     .update(strategies)

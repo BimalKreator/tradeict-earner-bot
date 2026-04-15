@@ -6,7 +6,6 @@ import { hasTradingJobForCorrelationId } from "@/server/trading/execution-queue"
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 import { tradingLog } from "@/server/trading/trading-log";
 
-import { TREND_ARB_SECONDARY_CLIP_QTY } from "./trend-arb-constants";
 import {
   dispatchTrendArbClosePrimary,
   dispatchTrendArbFlattenSecondary,
@@ -83,7 +82,7 @@ export async function pollTrendArbRiskAndHedges(params: {
 }): Promise<TrendArbPollResult> {
   const { env, scope, barTime, barClose } = params;
   const parts: string[] = [];
-  const clip = Number(TREND_ARB_SECONDARY_CLIP_QTY) || 100;
+  const clip = Number(env.runtime.d2StepQty) || 100;
 
   try {
     await throttlePrimaryPoll(scope.runId);
@@ -100,9 +99,12 @@ export async function pollTrendArbRiskAndHedges(params: {
       return { primaryFlat: true, detail: `primary_creds:${cred.error}` };
     }
 
-    const product = await resolveDeltaIndiaProductId(env.symbol);
+    const product = await resolveDeltaIndiaProductId(env.runtime.symbol);
     if (!product.ok) {
-      tradingLog("warn", "ta_trend_arb_product", { symbol: env.symbol, error: product.error });
+      tradingLog("warn", "ta_trend_arb_product", {
+        symbol: env.runtime.symbol,
+        error: product.error,
+      });
       return { primaryFlat: true, detail: `product:${product.error}` };
     }
 
@@ -130,7 +132,7 @@ export async function pollTrendArbRiskAndHedges(params: {
         const qty = String(Math.min(900, hedgeN * clip));
         const flat = await dispatchTrendArbFlattenSecondary({
           strategyId: env.strategyId,
-          symbol: env.symbol,
+          symbol: env.runtime.symbol,
           reason: "primary_flat_cleanup",
           nonce,
           markPrice: barClose,
@@ -160,7 +162,7 @@ export async function pollTrendArbRiskAndHedges(params: {
     if (mark == null || !(mark > 0)) {
       await throttleTicker(`${scope.runId}_ticker`);
       mark =
-        (await fetchDeltaIndiaTickerMarkPrice({ symbol: env.symbol })) ?? barClose;
+        (await fetchDeltaIndiaTickerMarkPrice({ symbol: env.runtime.symbol })) ?? barClose;
     }
     if (!(mark > 0)) mark = barClose;
 
@@ -176,17 +178,21 @@ export async function pollTrendArbRiskAndHedges(params: {
 
     const d1Side = pos.side;
 
-    const hardSlHit = urp <= -3;
-    const hardTpHit = urp >= 10;
-    const softBeHit = peak >= 5 && urp <= 0;
+    const hardSlHit = urp <= -env.runtime.d1StopLossPct;
+    const hardTpHit = urp >= env.runtime.d1TargetProfitPct;
+    const softBeHit = peak >= Math.max(0.1, env.runtime.d1TargetProfitPct / 2) && urp <= 0;
 
     if (hardSlHit || hardTpHit || softBeHit) {
-      const reason = hardSlHit ? "hard_sl_3pct" : hardTpHit ? "hard_tp_10pct" : "soft_be_trail";
+      const reason = hardSlHit
+        ? `hard_sl_${env.runtime.d1StopLossPct}pct`
+        : hardTpHit
+          ? `hard_tp_${env.runtime.d1TargetProfitPct}pct`
+          : "soft_be_trail";
       const nonce = `${reason}_${Date.now()}`;
       const closeSide = d1Side === "long" ? "sell" : "buy";
       const res = await dispatchTrendArbClosePrimary({
         strategyId: env.strategyId,
-        symbol: env.symbol,
+        symbol: env.runtime.symbol,
         quantity: String(pos.size),
         side: closeSide,
         markPrice: mark,
@@ -202,12 +208,66 @@ export async function pollTrendArbRiskAndHedges(params: {
         peak,
         jobs: res.ok ? res.jobsEnqueued : 0,
       });
+      if (hardSlHit) {
+        tradingLog("warn", "ta_trend_arb_stop_loss_hit", {
+          runId: scope.runId,
+          delta: 1,
+          message: `Stop Loss hit for Delta 1. Exiting position at ${mark}.`,
+        });
+      }
       parts.push(`close_d1:${reason}`);
       return { primaryFlat: false, detail: parts.join("|") };
     }
 
-    if (scope.secondaryExchangeConnectionId && urp >= 1) {
-      const maxStep = Math.min(9, Math.floor(urp));
+    if (scope.secondaryExchangeConnectionId) {
+      const secondaryCreds = await getDeltaCredentialsForConnection({
+        userId: scope.userId,
+        connectionId: scope.secondaryExchangeConnectionId,
+      });
+      if (secondaryCreds.ok) {
+        const d2PosRes = await fetchDeltaIndiaPosition({
+          apiKey: secondaryCreds.apiKey,
+          apiSecret: secondaryCreds.apiSecret,
+          productId: product.productId,
+        });
+        if (d2PosRes.ok && d2PosRes.position.open) {
+          const d2Mark = d2PosRes.position.markPrice ?? mark;
+          const d2Urp = unrealizedProfitPercent({
+            markPrice: d2Mark,
+            entryPrice: d2PosRes.position.entryPrice,
+            side: d2PosRes.position.side,
+          });
+          if (d2Urp <= -env.runtime.d2StopLossPct) {
+            const nonce = `d2_stop_loss_${Date.now()}`;
+            const flattenSide = d2PosRes.position.side === "long" ? "sell" : "buy";
+            const flat = await dispatchTrendArbFlattenSecondary({
+              strategyId: env.strategyId,
+              symbol: env.runtime.symbol,
+              reason: "secondary_stop_loss",
+              nonce,
+              markPrice: d2Mark,
+              targetUserIds: [scope.userId],
+              targetRunIds: [scope.runId],
+              flattenSide,
+              quantity: String(d2PosRes.position.size),
+            });
+            tradingLog("warn", "ta_trend_arb_stop_loss_hit", {
+              runId: scope.runId,
+              delta: 2,
+              message: `Stop Loss hit for Delta 2. Exiting position at ${d2Mark}.`,
+              jobs: flat.ok ? flat.jobsEnqueued : 0,
+            });
+            parts.push("close_d2:stop_loss");
+          }
+        }
+      }
+    }
+
+    if (scope.secondaryExchangeConnectionId && urp >= env.runtime.d2StepMovePct) {
+      const maxStep = Math.min(
+        9,
+        Math.floor(urp / Math.max(0.1, env.runtime.d2StepMovePct)),
+      );
       const candidates: number[] = [];
       for (let s = 1; s <= maxStep; s++) candidates.push(s);
       const pending = await filterUnhedgedSteps(scope.runId, candidates);
@@ -217,11 +277,13 @@ export async function pollTrendArbRiskAndHedges(params: {
 
         const clipRes = await dispatchTrendArbSecondaryHedgeClip({
           strategyId: env.strategyId,
-          symbol: env.symbol,
+          symbol: env.runtime.symbol,
           candleTime: barTime,
           stepIndex: step,
           d1Side,
           markPrice: mark,
+          quantity: env.runtime.d2StepQty,
+          targetProfitPct: env.runtime.d2TargetProfitPct / 100,
           targetUserIds: [scope.userId],
           targetRunIds: [scope.runId],
           correlationIdOverride: correlationId,

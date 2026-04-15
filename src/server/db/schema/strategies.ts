@@ -14,6 +14,23 @@ import {
   strategyVisibilityEnum,
 } from "./enums";
 
+export type TrendArbStrategyConfig = {
+  symbol: string;
+  capitalAllocationPct: number;
+  indicatorSettings: Record<string, number>;
+  delta1: {
+    entryQtyPct: number;
+    targetProfitPct: number;
+    stopLossPct: number;
+  };
+  delta2: {
+    stepQtyPct: number;
+    stepMovePct: number;
+    targetProfitPct: number;
+    stopLossPct: number;
+  };
+};
+
 export const strategies = pgTable(
   "strategies",
   {
@@ -47,6 +64,13 @@ export const strategies = pgTable(
     /** Admin-edited chart series: `[{ "date": "YYYY-MM-DD", "value": number }, ...]` */
     performanceChartJson: jsonb("performance_chart_json").$type<
       { date: string; value: number }[] | null
+    >(),
+    /**
+     * Admin-only strategy execution config (engine-specific).
+     * User-facing catalog/subscription UI must never render these internals.
+     */
+    settingsJson: jsonb("settings_json").$type<
+      Record<string, unknown> | TrendArbStrategyConfig | null
     >(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

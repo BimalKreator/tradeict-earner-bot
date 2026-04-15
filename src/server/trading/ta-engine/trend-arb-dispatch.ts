@@ -38,6 +38,7 @@ export async function dispatchTrendArbPrimaryEntry(
     strategyId: string;
     symbol: string;
     quantity?: string;
+    targetProfitPct?: number;
     side: TrendArbSide;
     candleTime: number;
     markPrice: number;
@@ -67,7 +68,7 @@ export async function dispatchTrendArbPrimaryEntry(
       half_trend: true,
       risk: {
         sl_pct: TREND_ARB_D1_SL_PCT,
-        tp_pct: TREND_ARB_D1_TP_PCT,
+        tp_pct: params.targetProfitPct ?? TREND_ARB_D1_TP_PCT,
         trail_sl_to_be_at_pct: TREND_ARB_D1_TRAIL_BE_AT_PCT,
       },
     },
@@ -82,6 +83,8 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     stepIndex: number;
     d1Side: TrendArbSide;
     markPrice: number;
+    quantity?: string;
+    targetProfitPct?: number;
     correlationIdOverride?: string;
   } & DispatchScope,
 ): Promise<StrategySignalIntakeResponse> {
@@ -94,7 +97,7 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     symbol: params.symbol,
     side: oppositeSide(params.d1Side),
     orderType: "market",
-    quantity: TREND_ARB_SECONDARY_CLIP_QTY,
+    quantity: params.quantity ?? TREND_ARB_SECONDARY_CLIP_QTY,
     actionType: "entry",
     exchangeVenue: "secondary",
     targetUserIds: params.targetUserIds,
@@ -104,7 +107,7 @@ export async function dispatchTrendArbSecondaryHedgeClip(
       leg: "delta2_hedge_clip",
       hedge_step: params.stepIndex,
       mark_price: params.markPrice,
-      risk: { tp_pct: TREND_ARB_D2_TP_PCT },
+      risk: { tp_pct: params.targetProfitPct ?? TREND_ARB_D2_TP_PCT },
     },
   });
 }

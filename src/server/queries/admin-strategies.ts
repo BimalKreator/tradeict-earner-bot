@@ -92,6 +92,7 @@ export type AdminStrategyDetail = {
     recommendedCapitalInr: string | null;
     maxLeverage: string | null;
     performanceChartJson: { date: string; value: number }[] | null;
+    settingsJson: Record<string, unknown> | null;
     createdAt: Date;
     updatedAt: Date;
   };
@@ -127,6 +128,7 @@ export async function getAdminStrategyDetail(
         recommendedCapitalInr: strategies.recommendedCapitalInr,
         maxLeverage: strategies.maxLeverage,
         performanceChartJson: strategies.performanceChartJson,
+        settingsJson: strategies.settingsJson,
         createdAt: strategies.createdAt,
         updatedAt: strategies.updatedAt,
       })
@@ -187,6 +189,7 @@ export async function getAdminStrategyDetail(
         : null,
       maxLeverage: s.maxLeverage ? String(s.maxLeverage) : null,
       performanceChartJson: s.performanceChartJson ?? null,
+      settingsJson: (s.settingsJson as Record<string, unknown> | null) ?? null,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
     },

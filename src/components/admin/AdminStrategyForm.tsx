@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import type { AdminStrategyFormDefaults } from "@/lib/admin-strategy-form-defaults";
+import { isTrendArbitrageStrategySlug } from "@/lib/trend-arb-strategy-config";
 import {
   type StrategyFormState,
   createStrategyAction,
@@ -47,7 +48,12 @@ export function AdminStrategyForm(props: Props) {
           recommendedCapitalInr: "",
           maxLeverage: "",
           performanceChartJsonText: "[]",
+          trendArb: null,
         } satisfies AdminStrategyFormDefaults);
+
+  const showTrendArbAdvanced =
+    props.mode === "edit" && isTrendArbitrageStrategySlug(d.slug) && d.trendArb != null;
+  const trendArbDefaults = showTrendArbAdvanced ? d.trendArb : null;
 
   return (
     <GlassPanel className="space-y-6">
@@ -278,6 +284,196 @@ export function AdminStrategyForm(props: Props) {
           />
           {fieldError(state.fieldErrors, "performance_chart_json")}
         </div>
+
+        {trendArbDefaults ? (
+          <div className="space-y-4 rounded-xl border border-[var(--border-glass)] bg-black/20 p-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+              Advanced strategy settings
+            </h3>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor={`${baseId}-trend-symbol`}
+                  className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                >
+                  Symbol
+                </label>
+                <input
+                  id={`${baseId}-trend-symbol`}
+                  name="trend_arb_symbol"
+                  required
+                  defaultValue={trendArbDefaults.symbol}
+                  className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                />
+                {fieldError(state.fieldErrors, "trend_arb_symbol")}
+              </div>
+
+              <div>
+                <label
+                  htmlFor={`${baseId}-trend-cap-pct`}
+                  className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                >
+                  Capital usage (%)
+                </label>
+                <input
+                  id={`${baseId}-trend-cap-pct`}
+                  name="trend_arb_capital_allocation_pct"
+                  required
+                  defaultValue={trendArbDefaults.capitalAllocationPct}
+                  className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                />
+                {fieldError(state.fieldErrors, "trend_arb_capital_allocation_pct")}
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor={`${baseId}-trend-indicator-settings`}
+                className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+              >
+                Indicator settings (JSON object)
+              </label>
+              <textarea
+                id={`${baseId}-trend-indicator-settings`}
+                name="trend_arb_indicator_settings_json"
+                rows={6}
+                spellCheck={false}
+                defaultValue={trendArbDefaults.indicatorSettingsJsonText}
+                className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/40 px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+              />
+              {fieldError(state.fieldErrors, "trend_arb_indicator_settings_json")}
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                Delta 1 configuration
+              </h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d1-qty`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Base qty (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d1-qty`}
+                    name="trend_arb_d1_entry_qty_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta1EntryQtyPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d1_entry_qty_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d1-tp`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Target profit (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d1-tp`}
+                    name="trend_arb_d1_target_profit_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta1TargetProfitPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d1_target_profit_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d1-sl`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Stop loss (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d1-sl`}
+                    name="trend_arb_d1_stop_loss_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta1StopLossPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d1_stop_loss_pct")}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                Delta 2 configuration
+              </h4>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d2-step-move`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Step move (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d2-step-move`}
+                    name="trend_arb_d2_step_move_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta2StepMovePct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d2_step_move_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d2-step-qty`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Step qty (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d2-step-qty`}
+                    name="trend_arb_d2_step_qty_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta2StepQtyPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d2_step_qty_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d2-tp`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Target profit (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d2-tp`}
+                    name="trend_arb_d2_target_profit_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta2TargetProfitPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d2_target_profit_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d2-sl`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Stop loss (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d2-sl`}
+                    name="trend_arb_d2_stop_loss_pct"
+                    required
+                    defaultValue={trendArbDefaults.delta2StopLossPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_d2_stop_loss_pct")}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap gap-3">
           <button
