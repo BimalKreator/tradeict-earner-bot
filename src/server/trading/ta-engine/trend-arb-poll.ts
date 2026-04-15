@@ -100,7 +100,7 @@ export async function pollTrendArbRiskAndHedges(params: {
       return { primaryFlat: true, detail: `primary_creds:${cred.error}` };
     }
 
-    const product = resolveDeltaIndiaProductId(env.symbol);
+    const product = await resolveDeltaIndiaProductId(env.symbol);
     if (!product.ok) {
       tradingLog("warn", "ta_trend_arb_product", { symbol: env.symbol, error: product.error });
       return { primaryFlat: true, detail: `product:${product.error}` };

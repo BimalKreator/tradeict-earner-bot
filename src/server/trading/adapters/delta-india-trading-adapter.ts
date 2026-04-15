@@ -187,8 +187,8 @@ function buildPlaceOrderJsonBody(
  * Live Delta India adapter: `POST /v2/orders`, `GET /v2/orders/{id}`,
  * `GET /v2/orders/client_order_id/{client_oid}` for idempotent recovery.
  *
- * Requires `DELTA_TRADING_ENABLED=true`, valid API keys, and symbol→product mapping
- * (`DELTA_INDIA_SYMBOL_TO_PRODUCT_ID` or numeric `symbol`).
+ * Requires `DELTA_TRADING_ENABLED=true`, valid API keys, and a resolvable symbol
+ * (live `GET /v2/products` catalog, optional `DELTA_INDIA_SYMBOL_TO_PRODUCT_ID`, or numeric `symbol`).
  */
 export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
   readonly providerId = "delta_india";
@@ -259,7 +259,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
   }
 
   async placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
-    const product = resolveDeltaIndiaProductId(input.symbol);
+    const product = await resolveDeltaIndiaProductId(input.symbol);
     if (!product.ok) {
       return { ok: false, error: product.error };
     }
