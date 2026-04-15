@@ -13,6 +13,7 @@ import { logAuditEvent } from "@/server/audit/audit-logger";
 import type { Database } from "@/server/db";
 import { strategies, userStrategyRuns, userStrategySubscriptions } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
+import { listUserDeltaIndiaExchangeConnections } from "@/server/queries/user-exchange-connection";
 
 export type UserStrategySettingsActionState = {
   ok: boolean | null;
@@ -52,6 +53,8 @@ const EDITABLE = new Set<string>([
   "active",
   "paused_by_user",
   "ready_to_activate",
+  "paused_insufficient_funds",
+  "paused_exchange_off",
 ]);
 
 export async function updateUserStrategySettingsAction(
@@ -80,6 +83,12 @@ export async function updateUserStrategySettingsAction(
 
   const capitalRaw = String(formData.get("capitalToUseInr") ?? "");
   const leverageRaw = String(formData.get("leverage") ?? "");
+  const primaryExRaw = String(
+    formData.get("primary_exchange_connection_id") ?? "",
+  ).trim();
+  const secondaryExRaw = String(
+    formData.get("secondary_exchange_connection_id") ?? "",
+  ).trim();
 
   const database = requireDb();
 
@@ -93,6 +102,8 @@ export async function updateUserStrategySettingsAction(
       runStatus: userStrategyRuns.status,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
+      primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
+      secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
     })
     .from(userStrategySubscriptions)
     .innerJoin(
@@ -166,8 +177,38 @@ export async function updateUserStrategySettingsAction(
     };
   }
 
+  const connections = await listUserDeltaIndiaExchangeConnections(userId);
+  const allowed = new Set(connections.map((c) => c.id));
+
+  const primaryNext = primaryExRaw.length > 0 ? primaryExRaw : null;
+  const secondaryNext = secondaryExRaw.length > 0 ? secondaryExRaw : null;
+
+  if (primaryNext && !allowed.has(primaryNext)) {
+    return {
+      ok: false,
+      message: "Invalid primary exchange selection.",
+      fieldErrors: { primary_exchange_connection_id: "Pick one of your saved Delta profiles." },
+    };
+  }
+  if (secondaryNext && !allowed.has(secondaryNext)) {
+    return {
+      ok: false,
+      message: "Invalid secondary exchange selection.",
+      fieldErrors: { secondary_exchange_connection_id: "Pick one of your saved Delta profiles." },
+    };
+  }
+  if (primaryNext && secondaryNext && primaryNext === secondaryNext) {
+    return {
+      ok: false,
+      message: "Primary and secondary must be different Delta profiles.",
+      fieldErrors: { secondary_exchange_connection_id: "Choose a different account." },
+    };
+  }
+
   const oldCapital = row.capitalToUseInr ? String(row.capitalToUseInr) : null;
   const oldLeverage = row.leverage ? String(row.leverage) : null;
+  const oldPrimary = row.primaryExchangeConnectionId;
+  const oldSecondary = row.secondaryExchangeConnectionId;
 
   let newCapitalStr = toNumericString(cap);
   let newLeverageStr: string | null;
@@ -194,6 +235,8 @@ export async function updateUserStrategySettingsAction(
       .set({
         capitalToUseInr: newCapitalStr,
         leverage: newLeverageStr,
+        primaryExchangeConnectionId: primaryNext,
+        secondaryExchangeConnectionId: secondaryNext,
         updatedAt: now,
       })
       .where(eq(userStrategyRuns.id, row.runId));
@@ -208,10 +251,14 @@ export async function updateUserStrategySettingsAction(
         old_values: {
           capital_to_use_inr: oldCapital,
           leverage: oldLeverage,
+          primary_exchange_connection_id: oldPrimary,
+          secondary_exchange_connection_id: oldSecondary,
         },
         new_values: {
           capital_to_use_inr: newCapitalStr,
           leverage: newLeverageStr,
+          primary_exchange_connection_id: primaryNext,
+          secondary_exchange_connection_id: secondaryNext,
         },
         strategy_slug: row.strategySlug,
         subscription_id: row.subscriptionId,

@@ -47,6 +47,12 @@ function TradeMobileCard({
           <p className="text-[var(--text-muted)]">Qty</p>
           <p className="tabular-nums text-[var(--text-primary)]">{r.quantity}</p>
         </div>
+        {mode === "bot" && r.exchangeAccountLabel ? (
+          <div className="col-span-2">
+            <p className="text-[var(--text-muted)]">Delta profile</p>
+            <p className="text-[var(--text-primary)]">{r.exchangeAccountLabel}</p>
+          </div>
+        ) : null}
         <div>
           <p className="text-[var(--text-muted)]">{mode === "bot" ? "Fill" : "Price"}</p>
           <p className="tabular-nums text-[var(--text-muted)]">{r.priceOrFill ?? "—"}</p>
@@ -130,6 +136,9 @@ export function DashboardTradeTable({
                     <th className="px-3 py-3 font-medium">Symbol</th>
                     <th className="px-3 py-3 font-medium">Side</th>
                     <th className="px-3 py-3 font-medium">Qty</th>
+                    {mode === "bot" ? (
+                      <th className="px-3 py-3 font-medium">Profile</th>
+                    ) : null}
                     <th className="px-3 py-3 font-medium">
                       {mode === "bot" ? "Fill" : "Price"}
                     </th>
@@ -156,6 +165,11 @@ export function DashboardTradeTable({
                       <td className="px-3 py-3 tabular-nums text-[var(--text-muted)]">
                         {r.quantity}
                       </td>
+                      {mode === "bot" ? (
+                        <td className="px-3 py-3 text-xs text-slate-400">
+                          {r.exchangeAccountLabel ?? "—"}
+                        </td>
+                      ) : null}
                       <td className="px-3 py-3 tabular-nums text-[var(--text-muted)]">
                         {r.priceOrFill ?? "—"}
                       </td>

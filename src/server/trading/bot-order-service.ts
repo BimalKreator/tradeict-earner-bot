@@ -16,6 +16,7 @@ function isPostgresUniqueViolation(e: unknown): boolean {
 async function findBotOrderByCorrelation(
   correlationId: string,
   subscriptionId: string,
+  exchangeConnectionId: string,
 ): Promise<{ id: string; internalClientOrderId: string } | null> {
   if (!db) return null;
   const [row] = await db
@@ -28,6 +29,7 @@ async function findBotOrderByCorrelation(
       and(
         eq(botOrders.correlationId, correlationId),
         eq(botOrders.subscriptionId, subscriptionId),
+        eq(botOrders.exchangeConnectionId, exchangeConnectionId),
       ),
     )
     .limit(1);
@@ -106,6 +108,7 @@ export async function insertBotOrderDraft(params: {
       const existing = await findBotOrderByCorrelation(
         params.correlationId,
         params.subscriptionId,
+        params.exchangeConnectionId,
       );
       if (existing) {
         tradingLog("info", "bot_order_draft_deduped_correlation", {

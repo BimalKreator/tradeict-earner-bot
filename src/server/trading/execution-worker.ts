@@ -19,6 +19,8 @@ import {
   assertRunStillEligibleForExecution,
   type EligibleStrategyRunRow,
 } from "./eligibility";
+import { assertVirtualRunStillEligibleForExecution } from "./virtual-eligibility";
+import { simulateVirtualOrder } from "./virtual-order-simulator";
 import {
   claimNextTradingJob,
   completeTradingJob,
@@ -70,6 +72,7 @@ async function runPostSubmitSync(
         userId: eligRow.userId,
         subscriptionId: eligRow.subscriptionId,
         strategyId: eligRow.strategyId,
+        exchangeConnectionId: eligRow.exchangeConnectionId,
         symbol: p.symbol,
         deltaQty: signed,
       });
@@ -121,8 +124,75 @@ export async function processOneTradingJob(
   }
 
   const signalAction = p.signalAction ?? "entry";
+
+  const isVirtual =
+    p.executionMode === "virtual" &&
+    typeof p.virtualRunId === "string" &&
+    p.virtualRunId.length > 0;
+
+  if (isVirtual) {
+    const virtualRunId = p.virtualRunId as string;
+    const vElig = await assertVirtualRunStillEligibleForExecution(virtualRunId, {
+      signalAction,
+    });
+    if (!vElig.ok) {
+      tradingLog("warn", "virtual_job_skipped_ineligible", {
+        jobId: job.id,
+        reason: vElig.reason,
+        virtualRunId,
+      });
+      await failTradingJobRetryOrDead(
+        job.id,
+        job.attempts,
+        job.maxAttempts,
+        `virtual_ineligible:${vElig.reason}`,
+      );
+      return { processed: true };
+    }
+
+    if (vElig.row.leverageCapped) {
+      tradingLog("info", "virtual_leverage_capped_to_strategy_max", {
+        virtualRunId: vElig.row.virtualRunId,
+        strategyId: vElig.row.strategyId,
+      });
+    }
+
+    const sim = await simulateVirtualOrder({
+      payload: p,
+      row: vElig.row,
+    });
+    if (!sim.ok) {
+      await failTradingJobRetryOrDead(
+        job.id,
+        job.attempts,
+        job.maxAttempts,
+        sim.error,
+      );
+      return { processed: true };
+    }
+
+    await completeTradingJob(job.id);
+    tradingLog("info", "virtual_job_completed", {
+      jobId: job.id,
+      virtualRunId,
+      correlationId: p.correlationId,
+    });
+    return { processed: true };
+  }
+
+  if (!p.subscriptionId || !p.runId) {
+    await failTradingJobRetryOrDead(
+      job.id,
+      job.attempts,
+      job.maxAttempts,
+      "live_payload_missing_subscription_or_run",
+    );
+    return { processed: true };
+  }
+
   const elig = await assertRunStillEligibleForExecution(p.runId, {
     signalAction,
+    exchangeConnectionId: p.exchangeConnectionId,
   });
   if (!elig.ok) {
     tradingLog("warn", "job_skipped_ineligible", {
@@ -201,6 +271,7 @@ export async function processOneTradingJob(
         and(
           eq(botOrders.correlationId, p.correlationId),
           eq(botOrders.subscriptionId, row.subscriptionId),
+          eq(botOrders.exchangeConnectionId, row.exchangeConnectionId),
         ),
       )
       .limit(1);
@@ -292,6 +363,7 @@ export async function processOneTradingJob(
         orderType: p.orderType,
         quantity: p.quantity,
         limitPrice: p.limitPrice ?? null,
+        reduceOnly: signalAction === "exit",
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

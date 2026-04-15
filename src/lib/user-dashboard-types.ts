@@ -11,6 +11,14 @@ export type UserDashboardTradeRow = {
   at: string;
   strategyName?: string;
   orderStatus?: string;
+  /** Delta profile label when multi-account bot orders are shown. */
+  exchangeAccountLabel?: string | null;
+};
+
+export type UserDashboardExchangePnlRow = {
+  connectionId: string;
+  accountLabel: string;
+  pnlInr: string;
 };
 
 export type UserDashboardData = {
@@ -30,6 +38,8 @@ export type UserDashboardData = {
   botEntriesPausedRevenueShare: boolean;
   chartBot: { date: string; pnlInr: string }[];
   chartAll: { date: string; pnlInr: string }[];
+  /** Realized bot PnL grouped by saved Delta profile (365d bot fills). */
+  botPnlByExchangeAccount: UserDashboardExchangePnlRow[];
   botTrades: UserDashboardTradeRow[];
   allTrades: UserDashboardTradeRow[];
 };

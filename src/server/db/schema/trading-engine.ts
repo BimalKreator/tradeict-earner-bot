@@ -40,6 +40,7 @@ export const botOrders = pgTable(
     runId: uuid("run_id")
       .notNull()
       .references(() => userStrategyRuns.id, { onDelete: "cascade" }),
+    /** Venue account that executed or will execute this order (multi-account runs). */
     exchangeConnectionId: uuid("exchange_connection_id")
       .notNull()
       .references(() => exchangeConnections.id, { onDelete: "restrict" }),
@@ -81,8 +82,8 @@ export const botOrders = pgTable(
     index("bot_orders_subscription_idx").on(t.subscriptionId),
     index("bot_orders_correlation_idx").on(t.correlationId),
     index("bot_orders_user_pnl_day_idx").on(t.userId, t.lastSyncedAt),
-    uniqueIndex("bot_orders_correlation_subscription_uidx")
-      .on(t.correlationId, t.subscriptionId)
+    uniqueIndex("bot_orders_correlation_subscription_exchange_uidx")
+      .on(t.correlationId, t.subscriptionId, t.exchangeConnectionId)
       .where(sql`${t.correlationId} IS NOT NULL`),
   ],
 );
@@ -119,6 +120,9 @@ export const botPositions = pgTable(
     strategyId: uuid("strategy_id")
       .notNull()
       .references(() => strategies.id, { onDelete: "restrict" }),
+    exchangeConnectionId: uuid("exchange_connection_id")
+      .notNull()
+      .references(() => exchangeConnections.id, { onDelete: "restrict" }),
     symbol: text("symbol").notNull(),
     netQuantity: numeric("net_quantity", { precision: 24, scale: 8 })
       .notNull()
@@ -138,11 +142,13 @@ export const botPositions = pgTable(
       .notNull(),
   },
   (t) => [
-    uniqueIndex("bot_positions_subscription_symbol_uidx").on(
+    uniqueIndex("bot_positions_subscription_symbol_exchange_uidx").on(
       t.subscriptionId,
       t.symbol,
+      t.exchangeConnectionId,
     ),
     index("bot_positions_user_idx").on(t.userId),
+    index("bot_positions_exchange_idx").on(t.exchangeConnectionId),
   ],
 );
 
@@ -156,8 +162,19 @@ export type TradingExecutionJobPayload = {
   quantity: string;
   limitPrice?: string | null;
   targetUserId: string;
-  subscriptionId: string;
-  runId: string;
+  /**
+   * `virtual` = paper trade (`virtualRunId`); live execution uses `subscriptionId` + `runId`.
+   * Omitted or `live` for legacy rows.
+   */
+  executionMode?: "live" | "virtual";
+  subscriptionId?: string;
+  runId?: string;
+  virtualRunId?: string;
+  /**
+   * Live venue routing: must match the user's saved Delta connection for this run
+   * (primary, secondary, or legacy fallback). Omitted → primary (or latest) at enqueue.
+   */
+  exchangeConnectionId?: string;
   /** Mirrors intake signal; omitted in legacy jobs → worker defaults to `entry`. */
   signalAction?: "entry" | "exit";
   signalMetadata?: Record<string, unknown>;

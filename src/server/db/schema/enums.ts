@@ -181,3 +181,9 @@ export const tradingJobStatusEnum = pgEnum("trading_job_status", [
 
 /** Origin of an exchange order row (bot vs manual mirror in future). */
 export const botTradeSourceEnum = pgEnum("bot_trade_source", ["bot", "manual"]);
+
+/** Paper-trading run — no subscription or exchange; isolated from revenue ledgers. */
+export const virtualStrategyRunStatusEnum = pgEnum("virtual_strategy_run_status", [
+  "active",
+  "paused",
+]);

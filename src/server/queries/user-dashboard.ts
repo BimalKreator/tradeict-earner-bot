@@ -11,6 +11,7 @@ import {
 
 import type {
   UserDashboardData,
+  UserDashboardExchangePnlRow,
   UserDashboardTradeRow,
 } from "@/lib/user-dashboard-types";
 
@@ -25,7 +26,11 @@ import {
   weeklyRevenueShareLedgers,
 } from "@/server/db/schema";
 
-export type { UserDashboardData, UserDashboardTradeRow };
+export type {
+  UserDashboardData,
+  UserDashboardExchangePnlRow,
+  UserDashboardTradeRow,
+};
 
 /** YYYY-MM-DD in Asia/Kolkata for the given instant (server uses this for “today” boundaries). */
 export function calendarDateIST(d: Date = new Date()): string {
@@ -93,6 +98,35 @@ function exchangeBadge(
     connectionStatus: row.status,
     lastTestStatus: row.lastTestStatus,
   };
+}
+
+async function botPnlGroupedByExchangeAccount(userId: string) {
+  if (!db) return [];
+  const rows = await db
+    .select({
+      connectionId: botOrders.exchangeConnectionId,
+      accountLabel: exchangeConnections.accountLabel,
+      pnl: sql<string>`coalesce(sum(cast(${botOrders.realizedPnlInr} as numeric)), 0)::text`,
+    })
+    .from(botOrders)
+    .innerJoin(
+      exchangeConnections,
+      eq(botOrders.exchangeConnectionId, exchangeConnections.id),
+    )
+    .where(
+      and(
+        eq(botOrders.userId, userId),
+        eq(botOrders.tradeSource, "bot"),
+        inArray(botOrders.status, ["filled", "partial_fill"]),
+      ),
+    )
+    .groupBy(botOrders.exchangeConnectionId, exchangeConnections.accountLabel);
+
+  return rows.map((r) => ({
+    connectionId: r.connectionId,
+    accountLabel: r.accountLabel,
+    pnlInr: r.pnl,
+  }));
 }
 
 async function pnlSeriesBotOrders(userId: string) {
@@ -239,9 +273,11 @@ export async function getUserDashboardData(
       ),
     );
 
-  const [chartBot, chartAll, botTradesRaw, allTradesRaw] = await Promise.all([
+  const [chartBot, chartAll, botPnlByExchange, botTradesRaw, allTradesRaw] =
+    await Promise.all([
     pnlSeriesBotOrders(userId),
     pnlSeriesTrades(userId),
+    botPnlGroupedByExchangeAccount(userId),
     db
       .select({
         id: botOrders.id,
@@ -253,9 +289,14 @@ export async function getUserDashboardData(
         updatedAt: botOrders.updatedAt,
         status: botOrders.status,
         strategyName: strategies.name,
+        exchangeAccountLabel: exchangeConnections.accountLabel,
       })
       .from(botOrders)
       .innerJoin(strategies, eq(botOrders.strategyId, strategies.id))
+      .innerJoin(
+        exchangeConnections,
+        eq(botOrders.exchangeConnectionId, exchangeConnections.id),
+      )
       .where(and(eq(botOrders.userId, userId), eq(botOrders.tradeSource, "bot")))
       .orderBy(desc(botOrders.updatedAt))
       .limit(5),
@@ -289,6 +330,7 @@ export async function getUserDashboardData(
     botEntriesPausedRevenueShare,
     chartBot,
     chartAll,
+    botPnlByExchangeAccount: botPnlByExchange,
     botTrades: botTradesRaw.map((t) => ({
       id: t.id,
       symbol: t.symbol,
@@ -299,6 +341,7 @@ export async function getUserDashboardData(
       at: t.updatedAt.toISOString(),
       strategyName: t.strategyName,
       orderStatus: t.status,
+      exchangeAccountLabel: t.exchangeAccountLabel,
     })),
     allTrades: allTradesRaw.map((t) => ({
       id: t.id,

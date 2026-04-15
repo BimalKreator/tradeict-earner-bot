@@ -173,6 +173,31 @@ export function UserDashboardClient({ initial }: { initial: UserDashboardData })
         series={scope === "bot" ? data.chartBot : data.chartAll}
       />
 
+      {scope === "bot" && data.botPnlByExchangeAccount.length > 0 ? (
+        <div className="rounded-2xl border border-[var(--border-glass)] bg-black/20 p-4">
+          <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+            Bot PnL by Delta profile
+          </h2>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            Aggregated realized PnL from bot orders, split by the API account that executed
+            each fill.
+          </p>
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {data.botPnlByExchangeAccount.map((r) => (
+              <li
+                key={r.connectionId}
+                className="flex items-center justify-between rounded-lg border border-white/[0.06] bg-black/30 px-3 py-2 text-sm"
+              >
+                <span className="text-[var(--text-muted)]">{r.accountLabel}</span>
+                <span className="tabular-nums font-medium text-[var(--text-primary)]">
+                  {formatUsdAmount(r.pnlInr)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <DashboardTradeTable
         title={scope === "bot" ? "Latest bot orders" : "Latest transactions"}
         rows={scope === "bot" ? data.botTrades : data.allTrades}

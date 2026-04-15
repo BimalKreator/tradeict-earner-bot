@@ -13,6 +13,7 @@ import {
   userStrategyRunStatusEnum,
   userStrategySubscriptionStatusEnum,
 } from "./enums";
+import { exchangeConnections } from "./exchange";
 import { strategies } from "./strategies";
 import { users } from "./users";
 
@@ -71,6 +72,14 @@ export const userStrategyRuns = pgTable(
       scale: 2,
     }),
     leverage: numeric("leverage", { precision: 10, scale: 2 }),
+    primaryExchangeConnectionId: uuid("primary_exchange_connection_id").references(
+      () => exchangeConnections.id,
+      { onDelete: "set null" },
+    ),
+    secondaryExchangeConnectionId: uuid("secondary_exchange_connection_id").references(
+      () => exchangeConnections.id,
+      { onDelete: "set null" },
+    ),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     lastStateReason: text("last_state_reason"),

@@ -30,6 +30,9 @@ export function UserStrategySettingsForm({
   constraints,
   initialCapitalToUseInr,
   initialLeverage,
+  initialPrimaryExchangeId,
+  initialSecondaryExchangeId,
+  deltaConnections,
   runStatus,
   canEditSettings,
 }: {
@@ -37,6 +40,9 @@ export function UserStrategySettingsForm({
   constraints: UserStrategySettingsConstraints;
   initialCapitalToUseInr: string;
   initialLeverage: string;
+  initialPrimaryExchangeId: string | null;
+  initialSecondaryExchangeId: string | null;
+  deltaConnections: { id: string; accountLabel: string }[];
   runStatus: string;
   canEditSettings: boolean;
 }) {
@@ -134,6 +140,84 @@ export function UserStrategySettingsForm({
           New settings will apply to future trades only.
         </p>
       ) : null}
+
+      <GlassPanel className="space-y-4 border border-white/[0.08]">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          Delta venues (multi-account)
+        </h2>
+        <p className="text-xs text-[var(--text-muted)]">
+          Pick which saved Delta API profile is <strong className="text-[var(--text-primary)]">primary</strong>{" "}
+          (default for broadcast signals) and an optional{" "}
+          <strong className="text-[var(--text-primary)]">secondary</strong> for hedging / arb
+          workers. Manage keys on{" "}
+          <a href="/user/exchange" className="text-[var(--accent)] underline">
+            Exchange
+          </a>
+          .
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label
+              htmlFor="primary_exchange_connection_id"
+              className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+            >
+              Primary (Delta 1)
+            </label>
+            <select
+              id="primary_exchange_connection_id"
+              name="primary_exchange_connection_id"
+              defaultValue={initialPrimaryExchangeId ?? ""}
+              disabled={pending || deltaConnections.length === 0}
+              className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
+            >
+              <option value="">— Auto (latest tested profile) —</option>
+              {deltaConnections.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.accountLabel}
+                </option>
+              ))}
+            </select>
+            {state.fieldErrors.primary_exchange_connection_id ? (
+              <p className="mt-1 text-sm text-amber-200" role="alert">
+                {state.fieldErrors.primary_exchange_connection_id}
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label
+              htmlFor="secondary_exchange_connection_id"
+              className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+            >
+              Secondary (Delta 2)
+            </label>
+            <select
+              id="secondary_exchange_connection_id"
+              name="secondary_exchange_connection_id"
+              defaultValue={initialSecondaryExchangeId ?? ""}
+              disabled={pending || deltaConnections.length === 0}
+              className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
+            >
+              <option value="">— None —</option>
+              {deltaConnections.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.accountLabel}
+                </option>
+              ))}
+            </select>
+            {state.fieldErrors.secondary_exchange_connection_id ? (
+              <p className="mt-1 text-sm text-amber-200" role="alert">
+                {state.fieldErrors.secondary_exchange_connection_id}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {deltaConnections.length === 0 ? (
+          <p className="text-xs text-amber-100/90">
+            Save at least one Delta profile under Exchange before you can pin primary /
+            secondary here.
+          </p>
+        ) : null}
+      </GlassPanel>
 
       <GlassPanel className="space-y-4 border border-white/[0.08]">
         <div>

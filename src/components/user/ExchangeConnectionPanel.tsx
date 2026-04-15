@@ -4,6 +4,8 @@ import { useActionState, useEffect, useId, useRef } from "react";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import {
+  type DeleteDeltaIndiaExchangeState,
+  deleteDeltaIndiaExchangeAction,
   type SaveDeltaIndiaExchangeState,
   saveDeltaIndiaExchangeAction,
   type TestDeltaIndiaExchangeState,
@@ -21,6 +23,7 @@ import {
 const saveInitial: SaveDeltaIndiaExchangeState = {};
 const testInitial: TestDeltaIndiaExchangeState = {};
 const toggleInitial: ToggleDeltaIndiaExchangeState = {};
+const deleteInitial: DeleteDeltaIndiaExchangeState = {};
 
 function statusTone(ui: string): string {
   switch (ui) {
@@ -39,10 +42,19 @@ function statusTone(ui: string): string {
 }
 
 export type ExchangeConnectionPanelProps = {
-  connection: ExchangeConnectionDisplayInput & { id: string | null };
+  connection: ExchangeConnectionDisplayInput & {
+    id: string | null;
+    accountLabel?: string;
+  };
+  panelId?: string;
+  title?: string;
 };
 
-export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelProps) {
+export function ExchangeConnectionPanel({
+  connection,
+  panelId,
+  title,
+}: ExchangeConnectionPanelProps) {
   const baseId = useId();
   const sharedFormRef = useRef<HTMLFormElement>(null);
   const [saveState, saveAction, savePending] = useActionState(
@@ -56,6 +68,10 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
   const [toggleState, toggleAction, togglePending] = useActionState(
     toggleDeltaIndiaExchangeAction,
     toggleInitial,
+  );
+  const [deleteState, deleteAction, deletePending] = useActionState(
+    deleteDeltaIndiaExchangeAction,
+    deleteInitial,
   );
 
   useEffect(() => {
@@ -83,35 +99,54 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
     connection.hasStoredCredentials &&
     !adminLocked;
 
+  const titleSuffix =
+    connection.id && connection.accountLabel
+      ? ` · ${connection.accountLabel}`
+      : connection.id
+        ? ""
+        : " · New profile";
+
   return (
     <div className="space-y-6">
-      <GlassPanel className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-          Connection status
-        </h2>
-        <p
-          className={`rounded-xl border px-3 py-2 text-sm ${statusTone(derived.ui)}`}
-          role="status"
-        >
-          <span className="font-medium text-[var(--text-primary)]">
-            {exchangeConnectionUiLabel(derived.ui)}
-          </span>
-          {derived.detail ? (
-            <span className="mt-1 block text-xs opacity-90">{derived.detail}</span>
-          ) : null}
-        </p>
-        {connection.lastTestAt ? (
-          <p className="text-xs text-[var(--text-muted)]">
-            Last test:{" "}
-            {new Intl.DateTimeFormat("en-IN", {
-              dateStyle: "medium",
-              timeStyle: "short",
-              timeZone: "Asia/Kolkata",
-            }).format(connection.lastTestAt)}{" "}
-            IST
+      {connection.id ? (
+        <GlassPanel className="space-y-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+            {title ?? `Connection status${titleSuffix}`}
+          </h2>
+          <p
+            className={`rounded-xl border px-3 py-2 text-sm ${statusTone(derived.ui)}`}
+            role="status"
+          >
+            <span className="font-medium text-[var(--text-primary)]">
+              {exchangeConnectionUiLabel(derived.ui)}
+            </span>
+            {derived.detail ? (
+              <span className="mt-1 block text-xs opacity-90">{derived.detail}</span>
+            ) : null}
           </p>
-        ) : null}
-      </GlassPanel>
+          {connection.lastTestAt ? (
+            <p className="text-xs text-[var(--text-muted)]">
+              Last test:{" "}
+              {new Intl.DateTimeFormat("en-IN", {
+                dateStyle: "medium",
+                timeStyle: "short",
+                timeZone: "Asia/Kolkata",
+              }).format(connection.lastTestAt)}{" "}
+              IST
+            </p>
+          ) : null}
+        </GlassPanel>
+      ) : (
+        <GlassPanel className="space-y-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+            Add Delta India profile
+          </h2>
+          <p className="text-xs text-[var(--text-muted)]">
+            Save a unique account label and API keys. You can add multiple Delta accounts
+            for multi-account strategies.
+          </p>
+        </GlassPanel>
+      )}
 
       <GlassPanel className="space-y-4 border-amber-500/20 bg-amber-500/5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-amber-100/90">
@@ -131,9 +166,9 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
         </ul>
       </GlassPanel>
 
-      <GlassPanel className="space-y-4">
+      <GlassPanel className="space-y-4" id={panelId}>
         <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-          Delta Exchange India
+          {connection.id ? "Edit Delta Exchange India profile" : "Delta Exchange India"}
         </h2>
         <p className="text-xs text-[var(--text-muted)]">
           Connect your Delta India account. We validate access with a read-only
@@ -175,6 +210,29 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
         ) : null}
 
         <form ref={sharedFormRef} className="space-y-4">
+          {connection.id ? (
+            <input type="hidden" name="connection_id" value={connection.id} />
+          ) : null}
+          <div>
+            <label
+              htmlFor={`${baseId}-account-label`}
+              className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+            >
+              Account label
+            </label>
+            <input
+              id={`${baseId}-account-label`}
+              name="account_label"
+              type="text"
+              required
+              defaultValue={connection.accountLabel ?? "Account 1"}
+              placeholder="e.g. Delta 1 / Delta 2"
+              className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Labels must be unique per Delta profile so strategies can pick the right API.
+            </p>
+          </div>
           <div>
             <label
               htmlFor={`${baseId}-api-key`}
@@ -222,7 +280,7 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
               disabled={savePending || testPending}
               className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
             >
-              {savePending ? "Saving…" : "Save"}
+              {savePending ? "Saving…" : connection.id ? "Save changes" : "Save profile"}
             </button>
             <button
               type="submit"
@@ -232,6 +290,16 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
             >
               {testPending ? "Testing…" : "Test connection"}
             </button>
+            {connection.id ? (
+              <button
+                type="submit"
+                formAction={deleteAction}
+                disabled={savePending || testPending || deletePending}
+                className="rounded-xl border border-red-500/35 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-100 disabled:opacity-50"
+              >
+                {deletePending ? "Removing…" : "Delete profile"}
+              </button>
+            ) : null}
           </div>
           <p className="text-xs text-[var(--text-muted)]">
             Test uses the fields above when both are filled; otherwise it uses your
@@ -240,6 +308,7 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
         </form>
       </GlassPanel>
 
+      {connection.id ? (
       <GlassPanel className="space-y-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
           Enable for automation
@@ -264,6 +333,22 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
             {toggleState.message}
           </p>
         ) : null}
+        {deleteState.error ? (
+          <p
+            className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100"
+            role="alert"
+          >
+            {deleteState.error}
+          </p>
+        ) : null}
+        {deleteState.ok && deleteState.message ? (
+          <p
+            className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100"
+            role="status"
+          >
+            {deleteState.message}
+          </p>
+        ) : null}
         {adminLocked ? (
           <p className="text-sm text-amber-100/90">
             This connection was disabled by an administrator. Contact support to
@@ -271,6 +356,9 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
           </p>
         ) : (
           <form action={toggleAction} className="flex flex-wrap items-center gap-3">
+            {connection.id ? (
+              <input type="hidden" name="connection_id" value={connection.id} />
+            ) : null}
             <input
               type="hidden"
               name="enable"
@@ -299,6 +387,7 @@ export function ExchangeConnectionPanel({ connection }: ExchangeConnectionPanelP
           </form>
         )}
       </GlassPanel>
+      ) : null}
     </div>
   );
 }

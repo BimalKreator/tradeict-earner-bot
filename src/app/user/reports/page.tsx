@@ -199,6 +199,30 @@ export default async function UserReportsPage() {
         </GlassPanel>
       </section>
 
+      {data.exchangeBotPnl.length > 0 ? (
+        <GlassPanel className="p-5">
+          <p className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+            Bot PnL by Delta profile
+          </p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Realized bot PnL grouped by the saved Delta API profile that executed each order.
+          </p>
+          <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {data.exchangeBotPnl.map((r) => (
+              <li
+                key={r.connectionId}
+                className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-black/25 px-4 py-3 text-sm"
+              >
+                <span className="text-[var(--text-muted)]">{r.accountLabel}</span>
+                <span className="tabular-nums font-semibold text-[var(--text-primary)]">
+                  {formatUsdAmount(r.pnlInr)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </GlassPanel>
+      ) : null}
+
       <section className="space-y-4" id="payments">
         <h2 className="text-lg font-semibold text-[var(--text-primary)]">
           Payment history

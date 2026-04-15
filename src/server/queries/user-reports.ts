@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/server/db";
 import {
   botOrders,
+  exchangeConnections,
   payments,
   strategies,
   weeklyRevenueShareLedgers,
@@ -26,6 +27,12 @@ export type UserFixedFeePaymentRow = {
   subscriptionId: string | null;
   status: string;
   externalPaymentId: string | null;
+};
+
+export type UserExchangePnlBreakdownRow = {
+  connectionId: string;
+  accountLabel: string;
+  pnlInr: string;
 };
 
 export type UserRevenueSharePaymentRow = {
@@ -237,6 +244,37 @@ export async function getUserRevenueSharePayments(
   }));
 }
 
+export async function getUserBotPnlByExchangeBreakdown(
+  userId: string,
+): Promise<UserExchangePnlBreakdownRow[]> {
+  if (!db) return [];
+  const rows = await db
+    .select({
+      connectionId: botOrders.exchangeConnectionId,
+      accountLabel: exchangeConnections.accountLabel,
+      pnl: sql<string>`coalesce(sum(cast(${botOrders.realizedPnlInr} as numeric)), 0)::text`,
+    })
+    .from(botOrders)
+    .innerJoin(
+      exchangeConnections,
+      eq(botOrders.exchangeConnectionId, exchangeConnections.id),
+    )
+    .where(
+      and(
+        eq(botOrders.userId, userId),
+        eq(botOrders.tradeSource, "bot"),
+        inArray(botOrders.status, ["filled", "partial_fill"]),
+      ),
+    )
+    .groupBy(botOrders.exchangeConnectionId, exchangeConnections.accountLabel);
+
+  return rows.map((r) => ({
+    connectionId: r.connectionId,
+    accountLabel: r.accountLabel,
+    pnlInr: r.pnl,
+  }));
+}
+
 export async function getUserReportsBundle(userId: string) {
   if (!db) return null;
   const [
@@ -246,6 +284,7 @@ export async function getUserReportsBundle(userId: string) {
     strategyPnl,
     fixedFees,
     revShare,
+    exchangeBotPnl,
   ] = await Promise.all([
     getUserDailyPnlSeries(userId, 90),
     getUserWeeklyPnlSeries(userId, 13),
@@ -253,6 +292,7 @@ export async function getUserReportsBundle(userId: string) {
     getUserPnlByStrategy(userId, 365),
     getUserFixedFeePayments(userId),
     getUserRevenueSharePayments(userId),
+    getUserBotPnlByExchangeBreakdown(userId),
   ]);
 
   const sumSeries = (s: ReportSeriesPoint[]) =>
@@ -265,6 +305,7 @@ export async function getUserReportsBundle(userId: string) {
     strategyPnl,
     fixedFees,
     revShare,
+    exchangeBotPnl,
     totals: {
       dailyWindowPnlInr: String(sumSeries(dailyPnl)),
       weeklyWindowPnlInr: String(sumSeries(weeklyPnl)),

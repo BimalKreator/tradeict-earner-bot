@@ -8,6 +8,10 @@
  * Mon–Sun IST window, apply effective revenue share % **frozen at end of that Sunday**,
  * and insert `weekly_revenue_share_ledgers` (idempotent per subscription × week).
  *
+ * **Virtual / paper trading** (`virtual_strategy_runs`, `virtual_bot_orders`) is intentionally
+ * excluded: this engine only reads `bot_orders` and `daily_pnl_snapshots` tied to real
+ * subscriptions — no invoices for simulated balances.
+ *
  * IST boundaries: every filter uses `timezone('Asia/Kolkata', ts)::date` so an order
  * finalized at 23:59 IST Sunday lands on Sunday’s IST date and therefore inside the
  * week that ends that Sunday — not Monday’s week.
@@ -114,6 +118,8 @@ export type DailyPnlJobResult = {
  * Snapshot **targetIstDate** (YYYY-MM-DD): sum realized PnL from bot_orders whose
  * settlement timestamp falls on that IST date. Unrealized is the **current** book
  * on `bot_positions` at run time (job runs just after midnight; good enough for v1).
+ *
+ * Paper fills in `virtual_bot_orders` are never included.
  */
 export async function runDailyPnlSnapshotForIstDate(
   targetIstDate: string,

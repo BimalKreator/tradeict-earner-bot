@@ -5,6 +5,7 @@ import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import type { UserStrategyCardModel } from "@/server/queries/user-strategy-catalog";
 
 import { UserStrategySparkline } from "./UserStrategySparkline";
+import { VirtualPaperCta } from "./VirtualPaperCta";
 
 function riskStyles(label: string): { badge: string; dot: string } {
   switch (label) {
@@ -26,7 +27,13 @@ function riskStyles(label: string): { badge: string; dot: string } {
   }
 }
 
-export function UserStrategyCatalogCard({ strategy }: { strategy: UserStrategyCardModel }) {
+export function UserStrategyCatalogCard({
+  strategy,
+  sessionUserId,
+}: {
+  strategy: UserStrategyCardModel;
+  sessionUserId: string | null;
+}) {
   const risk = riskStyles(strategy.riskLabel);
   const checkoutHref = `/user/strategies/${encodeURIComponent(strategy.slug)}/checkout`;
 
@@ -91,7 +98,8 @@ export function UserStrategyCatalogCard({ strategy }: { strategy: UserStrategyCa
           </p>
         ) : null}
 
-        <div className="mt-auto pt-1">
+        <div className="mt-auto flex flex-col gap-2 pt-1">
+          <VirtualPaperCta strategyId={strategy.id} sessionUserId={sessionUserId} />
           {strategy.subscriptionUx === "subscribed" ? (
             <span className="inline-flex w-full items-center justify-center rounded-xl border border-emerald-500/35 bg-emerald-500/10 py-2.5 text-sm font-medium text-emerald-100">
               Subscribed

@@ -1,0 +1,411 @@
+import { and, eq } from "drizzle-orm";
+
+import { db } from "@/server/db";
+import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
+import type { TradingExecutionJobPayload } from "@/server/db/schema";
+
+import { fetchDeltaExchangeCandles, filterClosedCandles } from "./ta-engine/rsi-scalper";
+import type { EligibleVirtualRunRow } from "./virtual-eligibility";
+import { generateInternalClientOrderId } from "./ids";
+import { tradingLog } from "./trading-log";
+
+const EPS = 1e-8;
+
+function num(raw: string | number | null | undefined): number {
+  const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function extractMarkPriceFromPayload(
+  p: TradingExecutionJobPayload,
+): number | null {
+  const m = p.signalMetadata;
+  if (!m || typeof m !== "object") return null;
+  const rec = m as Record<string, unknown>;
+  const candidates = [
+    rec.mark_price,
+    rec.markPrice,
+    rec.last_price,
+    rec.lastPrice,
+    rec.close,
+    rec.reference_price,
+  ];
+  for (const c of candidates) {
+    const v =
+      typeof c === "number"
+        ? c
+        : typeof c === "string"
+          ? Number(c.trim())
+          : NaN;
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  if (p.orderType === "limit" && p.limitPrice) {
+    const lp = num(p.limitPrice);
+    if (lp > 0) return lp;
+  }
+  return null;
+}
+
+async function resolveFillPriceUsd(
+  p: TradingExecutionJobPayload,
+): Promise<number | null> {
+  const direct = extractMarkPriceFromPayload(p);
+  if (direct != null) return direct;
+
+  const base =
+    process.env.DELTA_PUBLIC_BASE_URL?.trim() || "https://api.delta.exchange";
+  try {
+    const candles = await fetchDeltaExchangeCandles({
+      baseUrl: base,
+      symbol: p.symbol,
+      resolution: "1m",
+      lookbackSec: 7200,
+    });
+    const closed = filterClosedCandles(candles, 60);
+    const last = closed[closed.length - 1];
+    if (last && Number.isFinite(last.close) && last.close > 0) {
+      return last.close;
+    }
+  } catch {
+    /* handled below */
+  }
+  return null;
+}
+
+type SimResult = {
+  newQ: number;
+  newAvg: number | null;
+  newUsedMargin: number;
+  newCash: number;
+  newRealized: number;
+  /** PnL realized in this job only (USD). */
+  fillRealizedPnl: number;
+  /** For exit leg reporting. */
+  profitPercent: number | null;
+  simulation: Record<string, unknown>;
+};
+
+function applyVirtualFill(params: {
+  Q: number;
+  avg: number | null;
+  usedMargin: number;
+  cash: number;
+  realized: number;
+  lev: number;
+  signedDelta: number;
+  price: number;
+  symbol: string;
+  openSymbol: string | null;
+}): { ok: true; out: SimResult } | { ok: false; error: string } {
+  let { Q, avg, usedMargin, cash, realized, lev } = params;
+  const { signedDelta, price, symbol, openSymbol } = params;
+
+  if (Math.abs(signedDelta) < EPS) {
+    return { ok: false, error: "virtual_zero_quantity" };
+  }
+
+  if (Q !== 0 && openSymbol && openSymbol !== symbol) {
+    return {
+      ok: false,
+      error: `virtual_symbol_mismatch_open=${openSymbol}_signal=${symbol}`,
+    };
+  }
+
+  if (!(price > 0) || !(lev > 0)) {
+    return { ok: false, error: "virtual_invalid_price_or_leverage" };
+  }
+
+  const steps: Record<string, unknown>[] = [];
+  let rem = signedDelta;
+  let fillRealizedPnl = 0;
+  let closedEntryNotionalForPct = 0;
+
+  while (Math.abs(rem) > EPS) {
+    if (Math.abs(Q) < EPS) {
+      const im = (Math.abs(rem) * price) / lev;
+      if (im > cash + 1e-6) {
+        return {
+          ok: false,
+          error: `virtual_insufficient_margin need=${im.toFixed(2)} have=${cash.toFixed(2)}`,
+        };
+      }
+      cash -= im;
+      Q = rem;
+      avg = price;
+      usedMargin = im;
+      steps.push({ kind: "open", qty: rem, price, im });
+      rem = 0;
+      continue;
+    }
+
+    const qSign = Math.sign(Q);
+
+    if (qSign === Math.sign(rem)) {
+      const addAbs = Math.abs(rem);
+      const oldAbs = Math.abs(Q);
+      const newAbs = oldAbs + addAbs;
+      const newAvg =
+        (oldAbs * (avg ?? price) + addAbs * price) / newAbs;
+      const newUsed = (newAbs * newAvg) / lev;
+      const deltaIm = newUsed - usedMargin;
+      if (deltaIm > cash + 1e-6) {
+        return {
+          ok: false,
+          error: `virtual_insufficient_margin_add need=${deltaIm.toFixed(2)} have=${cash.toFixed(2)}`,
+        };
+      }
+      cash -= deltaIm;
+      Q = qSign * newAbs;
+      avg = newAvg;
+      usedMargin = newUsed;
+      steps.push({ kind: "scale_in", add: rem, price, newAvg });
+      rem = 0;
+      continue;
+    }
+
+    const closeAbs = Math.min(Math.abs(Q), Math.abs(rem));
+    const entryPx = avg ?? price;
+    const pnl = closeAbs * qSign * (price - entryPx);
+    const released = usedMargin * (closeAbs / Math.abs(Q));
+    cash += released + pnl;
+    realized += pnl;
+    fillRealizedPnl += pnl;
+    closedEntryNotionalForPct += closeAbs * entryPx;
+    usedMargin -= released;
+    Q = qSign * (Math.abs(Q) - closeAbs);
+    if (Math.abs(Q) < EPS) {
+      Q = 0;
+      avg = null;
+      usedMargin = 0;
+    }
+    steps.push({ kind: "close", closeAbs, price, pnl, released });
+    rem += qSign * closeAbs;
+  }
+
+  const profitPercent =
+    closedEntryNotionalForPct > 0 && Math.abs(fillRealizedPnl) > EPS
+      ? (fillRealizedPnl / closedEntryNotionalForPct) * 100
+      : fillRealizedPnl !== 0
+        ? 0
+        : null;
+
+  return {
+    ok: true,
+    out: {
+      newQ: Q,
+      newAvg: avg,
+      newUsedMargin: Math.max(0, usedMargin),
+      newCash: cash,
+      newRealized: realized,
+      fillRealizedPnl,
+      profitPercent,
+      simulation: { steps },
+    },
+  };
+}
+
+/**
+ * Instant paper fill: no exchange adapter. Persists `virtual_bot_orders` and updates the run row.
+ */
+export async function simulateVirtualOrder(params: {
+  payload: TradingExecutionJobPayload;
+  row: EligibleVirtualRunRow;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!db) return { ok: false, error: "db_unavailable" };
+
+  const p = params.payload;
+  const { row } = params;
+
+  if (p.strategyId !== row.strategyId || p.targetUserId !== row.userId) {
+    return { ok: false, error: "virtual_payload_user_mismatch" };
+  }
+
+  const qtyNum = num(p.quantity);
+  if (!(qtyNum > 0)) {
+    return { ok: false, error: "virtual_invalid_quantity" };
+  }
+
+  const signedDelta = p.side === "buy" ? qtyNum : -qtyNum;
+  const price = await resolveFillPriceUsd(p);
+  if (price == null || !(price > 0)) {
+    return { ok: false, error: "virtual_mark_price_unavailable" };
+  }
+
+  const now = new Date();
+  const internalClientOrderId = generateInternalClientOrderId();
+
+  try {
+    const result = await db.transaction(async (tx) => {
+      if (p.correlationId) {
+        const [existing] = await tx
+          .select({
+            id: virtualBotOrders.id,
+            status: virtualBotOrders.status,
+          })
+          .from(virtualBotOrders)
+          .where(
+            and(
+              eq(virtualBotOrders.correlationId, p.correlationId),
+              eq(virtualBotOrders.virtualRunId, row.virtualRunId),
+            ),
+          )
+          .limit(1);
+
+        if (
+          existing &&
+          (existing.status === "filled" ||
+            existing.status === "partial_fill" ||
+            existing.status === "failed" ||
+            existing.status === "rejected")
+        ) {
+          return { ok: true as const, skipped: true };
+        }
+      }
+
+      const [run] = await tx
+        .select()
+        .from(virtualStrategyRuns)
+        .where(eq(virtualStrategyRuns.id, row.virtualRunId))
+        .limit(1);
+
+      if (!run) {
+        return { ok: false as const, error: "virtual_run_missing" };
+      }
+
+      const lev = num(row.leverage);
+      const Q = num(run.openNetQty);
+      const usedMargin = num(run.virtualUsedMarginUsd);
+      const cash = num(run.virtualAvailableCashUsd);
+      const realized = num(run.virtualRealizedPnlUsd);
+
+      const avgForSim =
+        run.openAvgEntryPrice != null
+          ? (Number.isFinite(num(run.openAvgEntryPrice))
+              ? num(run.openAvgEntryPrice)
+              : null)
+          : null;
+
+      const sim = applyVirtualFill({
+        Q: Number.isFinite(Q) ? Q : 0,
+        avg: avgForSim,
+        usedMargin: Number.isFinite(usedMargin) ? usedMargin : 0,
+        cash: Number.isFinite(cash) ? cash : 0,
+        realized: Number.isFinite(realized) ? realized : 0,
+        lev: Number.isFinite(lev) && lev > 0 ? lev : 1,
+        signedDelta,
+        price,
+        symbol: p.symbol,
+        openSymbol: run.openSymbol,
+      });
+
+      if (!sim.ok) {
+        await tx.insert(virtualBotOrders).values({
+          internalClientOrderId,
+          correlationId: p.correlationId ?? null,
+          virtualRunId: row.virtualRunId,
+          userId: row.userId,
+          strategyId: row.strategyId,
+          symbol: p.symbol,
+          side: p.side,
+          orderType: p.orderType,
+          quantity: String(Math.abs(qtyNum)),
+          limitPrice: p.limitPrice ?? null,
+          status: "failed",
+          lastSyncedAt: now,
+          tradeSource: "bot",
+          venueOrderState: "simulated",
+          fillPrice: String(price),
+          filledQty: "0",
+          signalAction: p.signalAction ?? "entry",
+          rawSubmitResponse: {
+            error: sim.error,
+            mark_price: price,
+          },
+          errorMessage: sim.error,
+          updatedAt: now,
+        });
+        return { ok: true as const, skipped: false, recordedFailure: sim.error };
+      }
+
+      const { out } = sim;
+
+      await tx.insert(virtualBotOrders).values({
+        internalClientOrderId,
+        correlationId: p.correlationId ?? null,
+        virtualRunId: row.virtualRunId,
+        userId: row.userId,
+        strategyId: row.strategyId,
+        symbol: p.symbol,
+        side: p.side,
+        orderType: p.orderType,
+        quantity: String(Math.abs(qtyNum)),
+        limitPrice: p.limitPrice ?? null,
+        status: "filled",
+        lastSyncedAt: now,
+        tradeSource: "bot",
+        venueOrderState: "simulated",
+        fillPrice: String(price),
+        filledQty: String(Math.abs(qtyNum)),
+        realizedPnlUsd:
+          Math.abs(out.fillRealizedPnl) > EPS
+            ? String(out.fillRealizedPnl.toFixed(2))
+            : null,
+        profitPercent:
+          out.profitPercent != null
+            ? String(out.profitPercent.toFixed(6))
+            : null,
+        signalAction: p.signalAction ?? "entry",
+        rawSubmitResponse: {
+          mark_price: price,
+          leverage: row.leverage,
+          ...out.simulation,
+        },
+        updatedAt: now,
+      });
+
+      await tx
+        .update(virtualStrategyRuns)
+        .set({
+          openNetQty: String(out.newQ),
+          openAvgEntryPrice:
+            out.newAvg != null && Math.abs(out.newQ) > EPS
+              ? String(out.newAvg)
+              : null,
+          openSymbol:
+            Math.abs(out.newQ) > EPS ? p.symbol : null,
+          virtualAvailableCashUsd: String(out.newCash.toFixed(2)),
+          virtualUsedMarginUsd: String(out.newUsedMargin.toFixed(2)),
+          virtualRealizedPnlUsd: String(out.newRealized.toFixed(2)),
+          updatedAt: now,
+        })
+        .where(eq(virtualStrategyRuns.id, row.virtualRunId));
+
+      return { ok: true as const, skipped: false };
+    });
+
+    if ("skipped" in result && result.skipped) {
+      tradingLog("info", "virtual_order_deduped", {
+        virtualRunId: row.virtualRunId,
+        correlationId: p.correlationId,
+      });
+    }
+
+    if (result.ok === false) {
+      return { ok: false, error: result.error };
+    }
+    if ("recordedFailure" in result && result.recordedFailure) {
+      tradingLog("warn", "virtual_order_recorded_failure", {
+        virtualRunId: row.virtualRunId,
+        error: result.recordedFailure,
+      });
+    }
+    return { ok: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tradingLog("error", "virtual_order_sim_failed", {
+      virtualRunId: row.virtualRunId,
+      error: msg,
+    });
+    return { ok: false, error: msg.slice(0, 500) };
+  }
+}

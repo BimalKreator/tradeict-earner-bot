@@ -15,7 +15,10 @@ export type EligibleStrategyRunRow = {
   subscriptionId: string;
   runId: string;
   strategyId: string;
+  /** Resolved venue for this execution (primary, explicit secondary via job payload, or legacy latest). */
   exchangeConnectionId: string;
+  primaryExchangeConnectionId: string | null;
+  secondaryExchangeConnectionId: string | null;
   capitalToUseInr: string;
   /** Effective leverage for execution (capped to `strategies.max_leverage` when set). */
   leverage: string;
@@ -57,16 +60,14 @@ const hasKeysExpr = sql`(
 
 /**
  * Runs that may execute trades for a strategy: approved user, active subscription,
- * strategy `active`, latest Delta connection on + tested + keys, capital/leverage set.
- *
- * Run status:
- * - `signalAction === "entry"` (default): only `active` runs.
- * - `signalAction === "exit"`: `active` or `blocked_revenue_due` (close positions while billing block is on).
+ * strategy `active`, primary (or fallback latest) Delta connection on + tested + keys,
+ * capital/leverage set.
  */
 export async function findEligibleRunsForStrategyExecution(
   strategyId: string,
   options?: {
     targetUserIds?: string[];
+    targetRunIds?: string[];
     signalAction?: "entry" | "exit";
   },
 ): Promise<EligibleStrategyRunRow[]> {
@@ -117,10 +118,18 @@ export async function findEligibleRunsForStrategyExecution(
     isNull(strategies.deletedAt),
     sql`${userStrategyRuns.capitalToUseInr} is not null`,
     sql`${userStrategyRuns.leverage} is not null`,
+    eq(exchangeConnections.provider, "delta_india"),
+    isNull(exchangeConnections.deletedAt),
+    eq(exchangeConnections.status, "active"),
+    eq(exchangeConnections.lastTestStatus, "success"),
+    hasKeysExpr,
   ];
 
   if (options?.targetUserIds?.length) {
     filters.push(inArray(users.id, options.targetUserIds));
+  }
+  if (options?.targetRunIds?.length) {
+    filters.push(inArray(userStrategyRuns.id, options.targetRunIds));
   }
 
   const rows = await db
@@ -130,6 +139,8 @@ export async function findEligibleRunsForStrategyExecution(
       runId: userStrategyRuns.id,
       strategyId: strategies.id,
       exchangeConnectionId: exchangeConnections.id,
+      primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
+      secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       strategyMaxLeverage: strategies.maxLeverage,
@@ -150,7 +161,7 @@ export async function findEligibleRunsForStrategyExecution(
     )
     .innerJoin(
       exchangeConnections,
-      eq(exchangeConnections.id, latestDeltaEc.connectionId),
+      sql`${exchangeConnections.id} = COALESCE(${userStrategyRuns.primaryExchangeConnectionId}, ${userStrategyRuns.secondaryExchangeConnectionId}, ${latestDeltaEc.connectionId})`,
     )
     .where(and(...filters));
 
@@ -165,6 +176,8 @@ export async function findEligibleRunsForStrategyExecution(
       runId: r.runId,
       strategyId: r.strategyId,
       exchangeConnectionId: r.exchangeConnectionId,
+      primaryExchangeConnectionId: r.primaryExchangeConnectionId,
+      secondaryExchangeConnectionId: r.secondaryExchangeConnectionId,
       capitalToUseInr: String(r.capitalToUseInr),
       leverage,
       ...(capped ? { leverageCapped: true } : {}),
@@ -181,6 +194,7 @@ export type ExecutionEligibilityFailure =
   | "revenue_or_pause_block"
   | "blocked_revenue_entry"
   | "exchange_not_ready"
+  | "exchange_not_allowed_for_run"
   | "settings_incomplete"
   | "global_emergency_stop";
 
@@ -189,7 +203,11 @@ export type ExecutionEligibilityFailure =
  */
 export async function assertRunStillEligibleForExecution(
   runId: string,
-  opts?: { signalAction?: "entry" | "exit" },
+  opts?: {
+    signalAction?: "entry" | "exit";
+    /** When set (e.g. secondary Delta), must match run primary/secondary or legacy fallback. */
+    exchangeConnectionId?: string;
+  },
 ): Promise<{ ok: true; row: EligibleStrategyRunRow } | { ok: false; reason: ExecutionEligibilityFailure }> {
   if (!db) return { ok: false, reason: "run_not_found" };
 
@@ -211,6 +229,8 @@ export async function assertRunStillEligibleForExecution(
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       strategyMaxLeverage: strategies.maxLeverage,
+      primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
+      secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
     })
     .from(userStrategyRuns)
     .innerJoin(
@@ -266,11 +286,9 @@ export async function assertRunStillEligibleForExecution(
     return { ok: false, reason: "settings_incomplete" };
   }
 
-  const [ec] = await db
+  const [latestEc] = await db
     .selectDistinctOn([exchangeConnections.userId], {
       id: exchangeConnections.id,
-      status: exchangeConnections.status,
-      lastTestStatus: exchangeConnections.lastTestStatus,
     })
     .from(exchangeConnections)
     .where(
@@ -286,6 +304,54 @@ export async function assertRunStillEligibleForExecution(
     .orderBy(
       exchangeConnections.userId,
       desc(exchangeConnections.updatedAt),
+    )
+    .limit(1);
+
+  const defaultVenueId =
+    r.primaryExchangeConnectionId ??
+    r.secondaryExchangeConnectionId ??
+    latestEc?.id ??
+    null;
+
+  if (!defaultVenueId) {
+    return { ok: false, reason: "exchange_not_ready" };
+  }
+
+  const requested = opts?.exchangeConnectionId?.trim() || null;
+  const effectiveVenueId = requested ?? defaultVenueId;
+
+  const allowed = new Set<string>();
+  if (r.primaryExchangeConnectionId) {
+    allowed.add(r.primaryExchangeConnectionId);
+  }
+  if (r.secondaryExchangeConnectionId) {
+    allowed.add(r.secondaryExchangeConnectionId);
+  }
+  if (allowed.size === 0 && latestEc) {
+    allowed.add(latestEc.id);
+  }
+
+  if (!allowed.has(effectiveVenueId)) {
+    return { ok: false, reason: "exchange_not_allowed_for_run" };
+  }
+
+  const [ec] = await db
+    .select({
+      id: exchangeConnections.id,
+      status: exchangeConnections.status,
+      lastTestStatus: exchangeConnections.lastTestStatus,
+    })
+    .from(exchangeConnections)
+    .where(
+      and(
+        eq(exchangeConnections.id, effectiveVenueId),
+        eq(exchangeConnections.userId, r.userId),
+        eq(exchangeConnections.provider, "delta_india"),
+        isNull(exchangeConnections.deletedAt),
+        eq(exchangeConnections.status, "active"),
+        eq(exchangeConnections.lastTestStatus, "success"),
+        hasKeysExpr,
+      ),
     )
     .limit(1);
 
@@ -306,6 +372,8 @@ export async function assertRunStillEligibleForExecution(
       runId: r.runId,
       strategyId: r.strategyId,
       exchangeConnectionId: ec.id,
+      primaryExchangeConnectionId: r.primaryExchangeConnectionId,
+      secondaryExchangeConnectionId: r.secondaryExchangeConnectionId,
       capitalToUseInr: String(r.capitalToUseInr),
       leverage: levEff.leverage,
       ...(levEff.capped ? { leverageCapped: true } : {}),

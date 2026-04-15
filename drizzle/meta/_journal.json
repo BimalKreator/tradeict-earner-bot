@@ -141,6 +141,27 @@
       "when": 1775266854671,
       "tag": "0019_flippant_arachne",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1775390000000,
+      "tag": "0020_phase37_virtual_trading",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1775400000000,
+      "tag": "0021_multi_exchange_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1775410000000,
+      "tag": "0022_trend_arb_hedge_state",
+      "breakpoints": true
     }
   ]
 }

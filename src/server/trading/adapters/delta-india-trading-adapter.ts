@@ -172,6 +172,10 @@ function buildPlaceOrderJsonBody(
     client_order_id: input.internalClientOrderId,
   };
 
+  if (input.reduceOnly) {
+    payload.reduce_only = "true";
+  }
+
   if (order_type === "limit_order") {
     payload.limit_price = input.limitPrice!.trim();
   }

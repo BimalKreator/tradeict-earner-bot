@@ -20,6 +20,15 @@ export type StrategyExecutionSignal = {
   actionType?: "entry" | "exit";
   /** Optional filter — omit to broadcast to all eligible subscribers. */
   targetUserIds?: string[];
+  /** Optional filter — only these `user_strategy_runs.id` values receive live jobs. */
+  targetRunIds?: string[];
+  /**
+   * Which saved Delta connection receives the job for each run.
+   * - `auto` — legacy behavior: COALESCE(primary, secondary, latest tested).
+   * - `primary` — `user_strategy_runs.primary_exchange_connection_id`, or auto if unset.
+   * - `secondary` — secondary only; runs without a secondary are skipped (0 jobs).
+   */
+  exchangeVenue?: "auto" | "primary" | "secondary";
   metadata?: Record<string, unknown>;
 };
 

@@ -64,7 +64,7 @@ export default async function UserStrategiesPage() {
         <ul className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
           {cards.map((s) => (
             <li key={s.id} className="min-w-0 list-none">
-              <UserStrategyCatalogCard strategy={s} />
+              <UserStrategyCatalogCard strategy={s} sessionUserId={userId} />
             </li>
           ))}
         </ul>

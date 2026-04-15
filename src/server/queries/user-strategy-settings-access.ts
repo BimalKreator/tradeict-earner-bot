@@ -8,6 +8,8 @@ import {
   userStrategySubscriptions,
 } from "@/server/db/schema";
 
+import { listUserDeltaIndiaExchangeConnections } from "./user-exchange-connection";
+
 type RunRow = InferSelectModel<typeof userStrategyRuns>;
 
 export type UserStrategySettingsPageData = {
@@ -21,6 +23,9 @@ export type UserStrategySettingsPageData = {
   runStatus: RunRow["status"];
   capitalToUseInr: string | null;
   leverage: string | null;
+  primaryExchangeConnectionId: string | null;
+  secondaryExchangeConnectionId: string | null;
+  deltaConnections: { id: string; accountLabel: string }[];
   canEditSettings: boolean;
 };
 
@@ -52,6 +57,8 @@ export async function getUserStrategySettingsPageData(
       runStatus: userStrategyRuns.status,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
+      primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
+      secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
     })
     .from(userStrategySubscriptions)
     .innerJoin(
@@ -75,6 +82,8 @@ export async function getUserStrategySettingsPageData(
 
   const canEditSettings = EDITABLE_RUN_STATUSES.has(row.runStatus);
 
+  const deltaConnections = await listUserDeltaIndiaExchangeConnections(userId);
+
   return {
     strategyId: row.strategyId,
     strategySlug: row.strategySlug,
@@ -90,6 +99,12 @@ export async function getUserStrategySettingsPageData(
       ? String(row.capitalToUseInr)
       : null,
     leverage: row.leverage ? String(row.leverage) : null,
+    primaryExchangeConnectionId: row.primaryExchangeConnectionId,
+    secondaryExchangeConnectionId: row.secondaryExchangeConnectionId,
+    deltaConnections: deltaConnections.map((c) => ({
+      id: c.id,
+      accountLabel: c.accountLabel,
+    })),
     canEditSettings,
   };
 }

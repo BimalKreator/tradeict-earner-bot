@@ -5,6 +5,8 @@ export type PlaceOrderInput = {
   orderType: "market" | "limit";
   quantity: string;
   limitPrice?: string | null;
+  /** Delta `reduce_only` — required for reliable position closes. */
+  reduceOnly?: boolean;
 };
 
 export type PlaceOrderSuccess = {

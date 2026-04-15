@@ -1,11 +1,11 @@
 "use server";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { requireUserId } from "@/server/auth/require-user";
-import { exchangeConnections } from "@/server/db/schema";
+import { exchangeConnections, userStrategyRuns } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 import {
   assertExchangeSecretsKeyConfigured,
@@ -24,8 +24,24 @@ function statusAfterSave(
   return "active";
 }
 
-async function loadRowForUser(userId: string) {
+async function loadExchangeRow(userId: string, connectionId?: string | null) {
   const db = requireDb();
+  const cid = connectionId?.trim();
+  if (cid) {
+    const [row] = await db
+      .select()
+      .from(exchangeConnections)
+      .where(
+        and(
+          eq(exchangeConnections.id, cid),
+          eq(exchangeConnections.userId, userId),
+          eq(exchangeConnections.provider, PROVIDER),
+          isNull(exchangeConnections.deletedAt),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
   const [row] = await db
     .select()
     .from(exchangeConnections)
@@ -36,6 +52,7 @@ async function loadRowForUser(userId: string) {
         isNull(exchangeConnections.deletedAt),
       ),
     )
+    .orderBy(desc(exchangeConnections.updatedAt))
     .limit(1);
   return row ?? null;
 }
@@ -68,6 +85,11 @@ const saveSchema = z.object({
     .string()
     .min(1, "API secret is required")
     .max(512, "API secret is too long"),
+  account_label: z
+    .string()
+    .trim()
+    .min(1, "Account label is required")
+    .max(80, "Account label is too long"),
 });
 
 export async function saveDeltaIndiaExchangeAction(
@@ -81,15 +103,20 @@ export async function saveDeltaIndiaExchangeAction(
     return { error: "Please sign in again." };
   }
 
+  const connectionIdRaw = String(formData.get("connection_id") ?? "").trim();
+  const labelRaw = String(formData.get("account_label") ?? "").trim();
+
   const parsed = saveSchema.safeParse({
     api_key: formData.get("api_key"),
     api_secret: formData.get("api_secret"),
+    account_label: labelRaw || "Account 1",
   });
   if (!parsed.success) {
     const first = parsed.error.flatten().fieldErrors;
     const msg =
       first.api_key?.[0] ??
       first.api_secret?.[0] ??
+      first.account_label?.[0] ??
       "Check API key and secret.";
     return { error: msg };
   }
@@ -112,13 +139,17 @@ export async function saveDeltaIndiaExchangeAction(
 
   const db = requireDb();
   const now = new Date();
-  const existing = await loadRowForUser(userId);
+  const existing =
+    connectionIdRaw.length > 0
+      ? await loadExchangeRow(userId, connectionIdRaw)
+      : null;
 
   try {
     if (existing) {
       await db
         .update(exchangeConnections)
         .set({
+          accountLabel: parsed.data.account_label,
           apiKeyCiphertext: keyCipher,
           apiSecretCiphertext: secretCipher,
           status: statusAfterSave(existing.status),
@@ -132,6 +163,7 @@ export async function saveDeltaIndiaExchangeAction(
       await db.insert(exchangeConnections).values({
         userId,
         provider: PROVIDER,
+        accountLabel: parsed.data.account_label,
         status: "active",
         apiKeyCiphertext: keyCipher,
         apiSecretCiphertext: secretCipher,
@@ -140,15 +172,25 @@ export async function saveDeltaIndiaExchangeAction(
         updatedAt: now,
       });
     }
-  } catch (e) {
+  } catch (e: unknown) {
+    const err = e as { code?: string };
+    if (err?.code === "23505") {
+      return {
+        error:
+          "That account label is already used for another Delta profile. Pick a different label.",
+      };
+    }
     const msg = e instanceof Error ? e.message : String(e);
     return { error: `Could not save: ${msg}` };
   }
 
   revalidatePath("/user/exchange");
+  revalidatePath("/user/my-strategies");
   return {
     ok: true,
-    message: "Delta India credentials saved. Run a connection test before trading.",
+    message: existing
+      ? "Credentials updated. Run a connection test before trading."
+      : "Delta India profile saved. Run a connection test before trading.",
   };
 }
 
@@ -169,10 +211,11 @@ export async function testDeltaIndiaExchangeAction(
     return { error: "Please sign in again." };
   }
 
+  const connectionId = String(formData.get("connection_id") ?? "").trim();
   const rawKey = formData.get("api_key");
   const rawSecret = formData.get("api_secret");
   const formKey = typeof rawKey === "string" ? rawKey.trim() : "";
-  const formSecret = typeof rawSecret === "string" ? rawSecret : "";
+  const formSecret = typeof rawSecret === "string" ? rawSecret.trim() : "";
 
   let apiKey: string;
   let apiSecret: string;
@@ -181,7 +224,10 @@ export async function testDeltaIndiaExchangeAction(
     apiKey = formKey;
     apiSecret = formSecret;
   } else {
-    const row = await loadRowForUser(userId);
+    const row = await loadExchangeRow(
+      userId,
+      connectionId.length > 0 ? connectionId : null,
+    );
     if (
       !row ||
       !row.apiKeyCiphertext.trim() ||
@@ -213,7 +259,10 @@ export async function testDeltaIndiaExchangeAction(
 
   const db = requireDb();
   const now = new Date();
-  const row = await loadRowForUser(userId);
+  const row = await loadExchangeRow(
+    userId,
+    connectionId.length > 0 ? connectionId : null,
+  );
 
   if (row) {
     const lastStatus = result.ok
@@ -263,17 +312,19 @@ export async function toggleDeltaIndiaExchangeAction(
     return { error: "Please sign in again." };
   }
 
+  const connectionId = String(formData.get("connection_id") ?? "").trim();
+  if (!connectionId) {
+    return { error: "Missing connection." };
+  }
+
   const raw = formData.get("enable");
   const wantEnable = raw === "true" || raw === "1";
 
-  const row = await loadRowForUser(userId);
+  const row = await loadExchangeRow(userId, connectionId);
   if (!row) {
-    return { error: "Save Delta India credentials before enabling." };
+    return { error: "Connection not found." };
   }
-  if (
-    !row.apiKeyCiphertext.trim() ||
-    !row.apiSecretCiphertext.trim()
-  ) {
+  if (!row.apiKeyCiphertext.trim() || !row.apiSecretCiphertext.trim()) {
     return { error: "Save Delta India credentials before enabling." };
   }
 
@@ -309,4 +360,60 @@ export async function toggleDeltaIndiaExchangeAction(
     .where(eq(exchangeConnections.id, row.id));
   revalidatePath("/user/exchange");
   return { ok: true, enabled: false, message: "Delta India connection disabled." };
+}
+
+export type DeleteDeltaIndiaExchangeState = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+};
+
+export async function deleteDeltaIndiaExchangeAction(
+  _prev: DeleteDeltaIndiaExchangeState,
+  formData: FormData,
+): Promise<DeleteDeltaIndiaExchangeState> {
+  let userId: string;
+  try {
+    userId = await requireUserId();
+  } catch {
+    return { error: "Please sign in again." };
+  }
+
+  const connectionId = String(formData.get("connection_id") ?? "").trim();
+  if (!connectionId) {
+    return { error: "Missing connection." };
+  }
+
+  const row = await loadExchangeRow(userId, connectionId);
+  if (!row) {
+    return { error: "Connection not found." };
+  }
+
+  const db = requireDb();
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(userStrategyRuns)
+      .set({ primaryExchangeConnectionId: null, updatedAt: now })
+      .where(eq(userStrategyRuns.primaryExchangeConnectionId, connectionId));
+    await tx
+      .update(userStrategyRuns)
+      .set({ secondaryExchangeConnectionId: null, updatedAt: now })
+      .where(eq(userStrategyRuns.secondaryExchangeConnectionId, connectionId));
+
+    await tx
+      .update(exchangeConnections)
+      .set({ deletedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(exchangeConnections.id, connectionId),
+          eq(exchangeConnections.userId, userId),
+        ),
+      );
+  });
+
+  revalidatePath("/user/exchange");
+  revalidatePath("/user/my-strategies");
+  return { ok: true, message: "Delta profile removed." };
 }

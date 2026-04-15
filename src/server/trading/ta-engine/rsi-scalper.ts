@@ -38,7 +38,7 @@ export type OhlcvCandle = {
   volume: number;
 };
 
-function resolutionToSeconds(resolution: string): number {
+export function resolutionToSeconds(resolution: string): number {
   const r = resolution.trim().toLowerCase();
   const m = r.match(/^(\d+)(m|h|d|w)$/);
   if (!m) return 300;
@@ -332,6 +332,8 @@ export async function runRsiScalperShortOnce(
       rsi_level: c.rsiLevel,
       candle_open_time: bar.time,
       resolution: c.resolution,
+      /** Last closed bar close — used for paper fills without venue submission. */
+      mark_price: bar.close,
       /** SL/TP are not applied by the execution worker yet; reserved for risk modules. */
       dynamic_risk: { note: "sl_tp_not_wired_execution_layer" },
     },

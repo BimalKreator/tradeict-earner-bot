@@ -99,6 +99,9 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
         constraints={constraints}
         initialCapitalToUseInr={initialCapital}
         initialLeverage={initialLeverage}
+        initialPrimaryExchangeId={data.primaryExchangeConnectionId}
+        initialSecondaryExchangeId={data.secondaryExchangeConnectionId}
+        deltaConnections={data.deltaConnections}
         runStatus={data.runStatus}
         canEditSettings={data.canEditSettings}
       />
