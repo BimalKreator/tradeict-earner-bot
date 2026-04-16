@@ -415,7 +415,13 @@ export async function runTrendArbitrageOnce(
       },
     };
   }
-  const d1Side: TrendArbSide = half.trend === 0 ? "short" : "long";
+  const d1Side: TrendArbSide = half.sellSignal
+    ? "short"
+    : half.buySignal
+      ? "long"
+      : half.trend === 0
+        ? "long"
+        : "short";
   const d2Side: TrendArbSide = d1Side === "long" ? "short" : "long";
 
   if (c.executionScope && !primaryFlat) {
