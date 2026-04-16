@@ -1,9 +1,12 @@
 import { z } from "zod";
 
-export const trendArbIndicatorSettingsSchema = z.record(
-  z.string().min(1),
-  z.number().finite(),
-);
+export const trendArbTimeframeSchema = z.enum(["1m", "15m", "1h", "4h", "1d"]);
+
+export const trendArbIndicatorSettingsSchema = z.object({
+  amplitude: z.number().finite().min(2).default(9),
+  channelDeviation: z.number().finite().min(1).default(2),
+  timeframe: trendArbTimeframeSchema.default("4h"),
+});
 
 export const trendArbStrategyConfigSchema = z.object({
   symbol: z.string().trim().min(1, "Symbol is required."),
@@ -64,7 +67,22 @@ export function isTrendArbitrageStrategySlug(slug: string): boolean {
 }
 
 export function formatTrendArbIndicatorSettings(
-  input: Record<string, number> | null | undefined,
+  input:
+    | {
+        amplitude?: number;
+        channelDeviation?: number;
+        timeframe?: z.infer<typeof trendArbTimeframeSchema>;
+      }
+    | null
+    | undefined,
 ): string {
-  return JSON.stringify(input ?? {}, null, 2);
+  return JSON.stringify(
+    {
+      amplitude: input?.amplitude ?? 9,
+      channelDeviation: input?.channelDeviation ?? 2,
+      timeframe: input?.timeframe ?? "4h",
+    },
+    null,
+    2,
+  );
 }

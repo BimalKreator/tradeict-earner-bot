@@ -14,9 +14,11 @@ import { strategies } from "@/server/db/schema";
 import { hasTradingJobForCorrelationId } from "../execution-queue";
 import { tradingLog } from "../trading-log";
 import {
+  computeTrendArbLookbackSeconds,
   fetchDeltaExchangeCandles,
   filterClosedCandles,
   resolutionToSeconds,
+  TREND_ARB_TARGET_CLOSED_BARS,
   type OhlcvCandle,
 } from "./rsi-scalper";
 import { calculateHalfTrend } from "./indicators/halftrend";
@@ -32,6 +34,20 @@ import {
 import { pollTrendArbRiskAndHedges } from "./trend-arb-poll";
 import { loadTrendArbExecutionScope, type TrendArbExecutionScope } from "./trend-arb-scope";
 import type { TrendArbitrageEnv, TrendArbRuntimeSettings } from "./trend-arb-types";
+
+function fmtHt(n: number): string {
+  if (!Number.isFinite(n)) return "N/A";
+  return n.toFixed(2);
+}
+
+function halfTrendSignalLabel(h: {
+  buySignal: boolean;
+  sellSignal: boolean;
+}): "LONG" | "SHORT" | "WAIT" {
+  if (h.buySignal) return "LONG";
+  if (h.sellSignal) return "SHORT";
+  return "WAIT";
+}
 
 export {
   TREND_ARB_PRIMARY_QTY,
@@ -98,11 +114,14 @@ const DEFAULT_TREND_ARB_RUNTIME: TrendArbRuntimeSettings = {
   d2TargetProfitPct: 1,
   d1StopLossPct: 3,
   d2StopLossPct: 3,
-  indicatorAmplitude: 9,
-  indicatorChannelDeviation: 2,
+  indicatorSettings: {
+    amplitude: 9,
+    channelDeviation: 2,
+    timeframe: "4h",
+  },
 };
 
-async function resolveTrendArbRuntimeSettings(
+export async function resolveTrendArbRuntimeSettings(
   strategyId: string,
 ): Promise<TrendArbRuntimeSettings> {
   if (!db) return DEFAULT_TREND_ARB_RUNTIME;
@@ -131,11 +150,14 @@ async function resolveTrendArbRuntimeSettings(
   const indicatorAmplitude =
     cfg.indicatorSettings.amplitude != null
       ? Math.max(2, Math.round(cfg.indicatorSettings.amplitude))
-      : DEFAULT_TREND_ARB_RUNTIME.indicatorAmplitude;
+      : DEFAULT_TREND_ARB_RUNTIME.indicatorSettings.amplitude;
   const indicatorChannelDeviation =
     cfg.indicatorSettings.channelDeviation != null
       ? Math.max(1, Math.round(cfg.indicatorSettings.channelDeviation))
-      : DEFAULT_TREND_ARB_RUNTIME.indicatorChannelDeviation;
+      : DEFAULT_TREND_ARB_RUNTIME.indicatorSettings.channelDeviation;
+  const indicatorTimeframe =
+    cfg.indicatorSettings.timeframe ??
+    DEFAULT_TREND_ARB_RUNTIME.indicatorSettings.timeframe;
 
   return {
     symbol: cfg.symbol,
@@ -146,8 +168,11 @@ async function resolveTrendArbRuntimeSettings(
     d2TargetProfitPct: Math.max(0.1, cfg.delta2.targetProfitPct),
     d1StopLossPct: Math.max(0.1, cfg.delta1.stopLossPct),
     d2StopLossPct: Math.max(0.1, cfg.delta2.stopLossPct),
-    indicatorAmplitude,
-    indicatorChannelDeviation,
+    indicatorSettings: {
+      amplitude: indicatorAmplitude,
+      channelDeviation: indicatorChannelDeviation,
+      timeframe: indicatorTimeframe,
+    },
   };
 }
 
@@ -211,8 +236,8 @@ export async function readTrendArbitrageEnv(): Promise<ReadTrendArbitrageEnvResu
       baseUrl,
       resolution,
       lookbackSec,
-      amplitude: runtime.indicatorAmplitude || amplitude,
-      channelDeviation: runtime.indicatorChannelDeviation || channelDeviation,
+      amplitude: runtime.indicatorSettings.amplitude || amplitude,
+      channelDeviation: runtime.indicatorSettings.channelDeviation || channelDeviation,
       runtime,
       executionScope,
     },
@@ -249,15 +274,21 @@ export async function runTrendArbitrageOnce(
     c = parsed.config;
   }
 
-  const resSec = resolutionToSeconds(c.resolution);
+  const indicatorResolution = c.runtime.indicatorSettings.timeframe || "4h";
+  const resSec = resolutionToSeconds(indicatorResolution);
+  const minHistorySec = computeTrendArbLookbackSeconds(resSec, TREND_ARB_TARGET_CLOSED_BARS);
+  const lookbackSec = Math.max(c.lookbackSec, minHistorySec);
   let candles: OhlcvCandle[];
   try {
     candles = await fetchDeltaExchangeCandles({
       baseUrl: c.baseUrl,
       symbol: c.symbol,
-      resolution: c.resolution,
-      lookbackSec: c.lookbackSec,
+      resolution: indicatorResolution,
+      lookbackSec,
     });
+    console.log(
+      `[SCANNING] Fetched ${candles.length} OHLCV bars for ${c.symbol} @ ${indicatorResolution} (lookback ${lookbackSec}s, min for ${TREND_ARB_TARGET_CLOSED_BARS}+ closed bars: ${minHistorySec}s)`,
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     tradingLog("warn", "ta_trend_arb_candles_failed", { error: msg });
@@ -265,8 +296,11 @@ export async function runTrendArbitrageOnce(
   }
 
   const closed = filterClosedCandles(candles, resSec);
-  const minBars = Math.max(101, c.amplitude + 2);
+  const minBars = Math.max(TREND_ARB_TARGET_CLOSED_BARS, 101, c.amplitude + 2);
   if (closed.length < minBars) {
+    console.log(
+      `[SCANNING] ${c.symbol}: only ${closed.length} closed bars @ ${indicatorResolution} (need ${minBars}) — skipping indicator`,
+    );
     return {
       ok: true,
       fired: false,
@@ -276,6 +310,10 @@ export async function runTrendArbitrageOnce(
 
   const half = calculateHalfTrend(closed, c.amplitude, c.channelDeviation);
   const bar = closed[closed.length - 1]!;
+  const scanSignal = halfTrendSignalLabel(half);
+  console.log(
+    `[SCANNING] ${c.symbol}: HalfTrend is ${fmtHt(half.htValue)}, Previous ${fmtHt(half.prevHtValue)}, Price is ${fmtHt(bar.close)}, Signal: ${scanSignal}`,
+  );
 
   let primaryFlat = !c.executionScope;
   let pollDetail = "";
@@ -304,6 +342,9 @@ export async function runTrendArbitrageOnce(
       : null;
 
   if (side == null) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"})`,
+    );
     return {
       ok: true,
       fired: false,
@@ -319,6 +360,9 @@ export async function runTrendArbitrageOnce(
   }
 
   if (c.executionScope && !primaryFlat) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: primary (D1) still open for run ${c.executionScope.runId} — skip new HalfTrend entry`,
+    );
     return {
       ok: true,
       fired: false,
@@ -334,6 +378,9 @@ export async function runTrendArbitrageOnce(
   const correlationId = trendArbPrimaryCorrelationId(c.strategyId, bar.time, side);
   const exists = await hasTradingJobForCorrelationId(correlationId);
   if (exists) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: primary entry already queued for this candle (${correlationId})`,
+    );
     return {
       ok: true,
       fired: false,
@@ -348,6 +395,10 @@ export async function runTrendArbitrageOnce(
       correlationId,
     };
   }
+
+  console.log(
+    `[ENTRY-CHECK] ${c.symbol}: evaluating primary ${side.toUpperCase()} entry @ ${fmtHt(bar.close)} (mark) correlation ${correlationId}`,
+  );
 
   const dispatch = await dispatchTrendArbPrimaryEntry({
     strategyId: c.strategyId,
@@ -366,10 +417,14 @@ export async function runTrendArbitrageOnce(
   });
 
   if (!dispatch.ok) {
+    console.log(`[ENTRY-CHECK] ${c.symbol}: primary dispatch failed — ${dispatch.error}`);
     return { ok: false, error: dispatch.error };
   }
 
   if (dispatch.jobsEnqueued === 0) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: dispatch returned 0 jobs — no eligible runs for primary entry`,
+    );
     tradingLog("info", "ta_trend_arb_no_eligible_runs", {
       strategyId: c.strategyId,
       correlationId,
@@ -393,6 +448,9 @@ export async function runTrendArbitrageOnce(
     correlationId,
     side,
   });
+  console.log(
+    `[ENTRY-CHECK] ${c.symbol}: enqueued ${dispatch.jobsEnqueued} primary ${side.toUpperCase()} job(s) (${correlationId})`,
+  );
 
   return {
     ok: true,

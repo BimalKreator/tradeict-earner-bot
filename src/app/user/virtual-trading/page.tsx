@@ -1,9 +1,11 @@
 import Link from "next/link";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
+import { UserActivePositionsSection } from "@/components/user/UserActivePositionsSection";
 import { VirtualRunSection } from "@/components/user/VirtualRunSection";
 import { requireUserIdForPage } from "@/server/auth/require-user";
 import { db } from "@/server/db";
+import { getUserVirtualActivePositionGroups } from "@/server/queries/active-positions-dashboard";
 import {
   listVirtualOrdersForRun,
   listVirtualRunsOverviewForUser,
@@ -42,7 +44,10 @@ export default async function VirtualTradingPage() {
     );
   }
 
-  const runs = await listVirtualRunsOverviewForUser(userId);
+  const [runs, activeGroups] = await Promise.all([
+    listVirtualRunsOverviewForUser(userId),
+    getUserVirtualActivePositionGroups(userId),
+  ]);
   const ordersByRun = await Promise.all(
     runs.map((r) =>
       listVirtualOrdersForRun({
@@ -55,6 +60,8 @@ export default async function VirtualTradingPage() {
 
   return (
     <div className="space-y-8">
+      <UserActivePositionsSection initialGroups={activeGroups} />
+
       <div>
         <h1 className="font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
           Virtual trading hub

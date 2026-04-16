@@ -49,6 +49,21 @@ export function resolutionToSeconds(resolution: string): number {
   return n * mult;
 }
 
+/** Delta returns up to ~2000 candles per range; ensure the window spans enough bars after `filterClosedCandles`. */
+export const TREND_ARB_TARGET_CLOSED_BARS = 200;
+
+/**
+ * Seconds of history to request so we retain ≥ `minClosedBars` fully closed candles (current bar excluded)
+ * plus slack for ATR(100) and rounding.
+ */
+export function computeTrendArbLookbackSeconds(
+  resolutionSec: number,
+  minClosedBars = TREND_ARB_TARGET_CLOSED_BARS,
+): number {
+  const slackBars = 35;
+  return Math.ceil((minClosedBars + slackBars) * resolutionSec);
+}
+
 /**
  * Delta Exchange public REST — `GET /v2/history/candles` (no auth).
  * @see https://docs.delta.exchange/#get-historical-candles
@@ -94,7 +109,10 @@ export async function fetchDeltaExchangeCandles(params: {
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const o = row as Record<string, unknown>;
-    const time = Number(o.time);
+    let time = Number(o.time);
+    if (time > 1e12) {
+      time = Math.floor(time / 1000);
+    }
     const open = Number(o.open);
     const high = Number(o.high);
     const low = Number(o.low);

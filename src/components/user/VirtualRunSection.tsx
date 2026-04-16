@@ -1,4 +1,10 @@
 import { formatUsdAmount } from "@/lib/format-inr";
+import {
+  classifyTrendArbAccount,
+  deriveLedgerMetrics,
+  isTrendArbSlug,
+  num,
+} from "@/lib/virtual-ledger-metrics";
 import type {
   VirtualOrderLedgerRow,
   VirtualRunOverview,
@@ -11,23 +17,6 @@ import {
   updateVirtualRunSettingsAction,
 } from "@/server/actions/virtualTrading";
 
-function num(s: string): number {
-  const n = Number.parseFloat(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-type AccountKey = "primary" | "secondary";
-
-function isFilledOrder(status: string): boolean {
-  return status === "filled" || status === "partial_fill";
-}
-
-function classifyOrderAccount(order: VirtualOrderLedgerRow): AccountKey {
-  const cid = (order.correlationId ?? "").toLowerCase();
-  if (cid.includes("_d2_") || cid.includes("delta2")) return "secondary";
-  return "primary";
-}
-
 function deriveAccountMetrics(
   orders: VirtualOrderLedgerRow[],
   baseCapitalUsd: number,
@@ -39,64 +28,14 @@ function deriveAccountMetrics(
   openNetQty: number;
   openSymbol: string | null;
 } {
-  let q = 0;
-  let avg: number | null = null;
-  let realized = 0;
-  let latestMark: number | null = null;
-  let openSymbol: string | null = null;
-
-  const ordered = [...orders]
-    .filter((o) => isFilledOrder(o.status))
-    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-
-  for (const o of ordered) {
-    const qty = num(o.quantity);
-    const fill = o.fillPrice != null ? num(o.fillPrice) : 0;
-    if (qty <= 0 || fill <= 0) continue;
-    latestMark = fill;
-
-    const delta = o.side === "buy" ? qty : -qty;
-    if (q === 0) {
-      q = delta;
-      avg = fill;
-      openSymbol = o.symbol;
-      continue;
-    }
-
-    const sameDirection = Math.sign(q) === Math.sign(delta);
-    if (sameDirection) {
-      const oldAbs = Math.abs(q);
-      const addAbs = Math.abs(delta);
-      const newAbs = oldAbs + addAbs;
-      avg = avg == null ? fill : (oldAbs * avg + addAbs * fill) / newAbs;
-      q += delta;
-      openSymbol = o.symbol;
-      continue;
-    }
-
-    const closeAbs = Math.min(Math.abs(q), Math.abs(delta));
-    const entry = avg ?? fill;
-    realized += closeAbs * Math.sign(q) * (fill - entry);
-    q += delta;
-    if (Math.abs(q) < 1e-8) {
-      q = 0;
-      avg = null;
-      openSymbol = null;
-    } else {
-      openSymbol = o.symbol;
-    }
-  }
-
-  const unrealized =
-    q !== 0 && avg != null && latestMark != null ? q * (latestMark - avg) : 0;
-
+  const d = deriveLedgerMetrics(orders, null);
   return {
     virtualCapitalUsd: baseCapitalUsd,
-    virtualBalanceUsd: baseCapitalUsd + realized + unrealized,
-    realizedPnlUsd: realized,
-    unrealizedPnlUsd: unrealized,
-    openNetQty: q,
-    openSymbol,
+    virtualBalanceUsd: baseCapitalUsd + d.realizedPnlUsd + d.unrealizedPnlUsd,
+    realizedPnlUsd: d.realizedPnlUsd,
+    unrealizedPnlUsd: d.unrealizedPnlUsd,
+    openNetQty: d.openNetQty,
+    openSymbol: d.openSymbol,
   };
 }
 
@@ -169,12 +108,9 @@ export function VirtualRunSection({
   orders: VirtualOrderLedgerRow[];
 }) {
   const equity = num(run.virtualAvailableCashUsd) + num(run.virtualUsedMarginUsd);
-  const isMultiAccountTrendArb = run.strategySlug
-    .trim()
-    .toLowerCase()
-    .includes("trend-arb");
-  const primaryOrders = orders.filter((o) => classifyOrderAccount(o) === "primary");
-  const secondaryOrders = orders.filter((o) => classifyOrderAccount(o) === "secondary");
+  const isMultiAccountTrendArb = isTrendArbSlug(run.strategySlug);
+  const primaryOrders = orders.filter((o) => classifyTrendArbAccount(o) === "primary");
+  const secondaryOrders = orders.filter((o) => classifyTrendArbAccount(o) === "secondary");
   const splitCapital = num(run.virtualCapitalUsd) / 2;
   const primaryMetrics = deriveAccountMetrics(primaryOrders, splitCapital);
   const secondaryMetrics = deriveAccountMetrics(secondaryOrders, splitCapital);

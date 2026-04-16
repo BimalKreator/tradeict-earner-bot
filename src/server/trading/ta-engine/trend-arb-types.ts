@@ -3,7 +3,11 @@ import type { TrendArbExecutionScope } from "./trend-arb-scope";
 export type TrendArbAdvancedStrategySettings = {
   symbol: string;
   capitalAllocationPct: number;
-  indicatorSettings: Record<string, number>;
+  indicatorSettings: {
+    amplitude: number;
+    channelDeviation: number;
+    timeframe: "1m" | "15m" | "1h" | "4h" | "1d";
+  };
   delta1: {
     entryQtyPct: number;
     targetProfitPct: number;
@@ -26,8 +30,11 @@ export type TrendArbRuntimeSettings = {
   d2TargetProfitPct: number;
   d1StopLossPct: number;
   d2StopLossPct: number;
-  indicatorAmplitude: number;
-  indicatorChannelDeviation: number;
+  indicatorSettings: {
+    amplitude: number;
+    channelDeviation: number;
+    timeframe: "1m" | "15m" | "1h" | "4h" | "1d";
+  };
 };
 
 export type TrendArbitrageEnv = {

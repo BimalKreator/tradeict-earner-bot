@@ -17,7 +17,11 @@ import {
 export type TrendArbStrategyConfig = {
   symbol: string;
   capitalAllocationPct: number;
-  indicatorSettings: Record<string, number>;
+  indicatorSettings: {
+    amplitude: number;
+    channelDeviation: number;
+    timeframe: "1m" | "15m" | "1h" | "4h" | "1d";
+  };
   delta1: {
     entryQtyPct: number;
     targetProfitPct: number;

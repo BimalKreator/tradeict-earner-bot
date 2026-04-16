@@ -1,12 +1,14 @@
 import { AdminActivityFeed } from "@/components/admin/AdminActivityFeed";
 import { AdminAttentionPanel } from "@/components/admin/AdminAttentionPanel";
 import { AdminEmergencyStopBanner } from "@/components/admin/AdminEmergencyStopBanner";
+import { AdminLiveTradeMonitor } from "@/components/admin/AdminLiveTradeMonitor";
 import { AdminMetricCards } from "@/components/admin/AdminMetricCards";
 import { AdminRegistrationsChart } from "@/components/admin/AdminRegistrationsChart";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { formatInrAmount, formatIntCount, formatUsdAmount } from "@/lib/format-inr";
 import { getGlobalEmergencyStopActive } from "@/server/platform/global-emergency-stop";
 import { getAdminDashboardPageData } from "@/server/queries/admin-dashboard";
+import { getAdminLiveTradeMonitorRows } from "@/server/queries/active-positions-dashboard";
 
 export const metadata = {
   title: "Admin",
@@ -15,9 +17,10 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function AdminDashboardPage() {
-  const [data, globalEmergencyStopActive] = await Promise.all([
+  const [data, globalEmergencyStopActive, liveTradeRows] = await Promise.all([
     getAdminDashboardPageData(),
     getGlobalEmergencyStopActive(),
+    getAdminLiveTradeMonitorRows(),
   ]);
 
   if (!data) {
@@ -101,6 +104,10 @@ export default async function AdminDashboardPage() {
       <AdminEmergencyStopBanner active={globalEmergencyStopActive} />
 
       <AdminMetricCards metrics={kpiCards} />
+
+      <GlassPanel className="border-white/[0.07]">
+        <AdminLiveTradeMonitor initialRows={liveTradeRows} />
+      </GlassPanel>
 
       <AdminAttentionPanel
         runs={data.attentionRuns}

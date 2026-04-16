@@ -26,15 +26,15 @@ function issuesToMap(issues: ZodIssue[]): Record<string, string> {
 }
 
 export function UserStrategySettingsForm({
-  strategySlug,
+  strategySlug = "",
   constraints,
-  initialCapitalToUseInr,
-  initialLeverage,
-  initialPrimaryExchangeId,
-  initialSecondaryExchangeId,
-  deltaConnections,
-  runStatus,
-  canEditSettings,
+  initialCapitalToUseInr = "",
+  initialLeverage = "",
+  initialPrimaryExchangeId = null,
+  initialSecondaryExchangeId = null,
+  deltaConnections = [],
+  runStatus = "ready_to_activate",
+  canEditSettings = false,
 }: {
   strategySlug?: string;
   constraints?: UserStrategySettingsConstraints;
@@ -53,12 +53,6 @@ export function UserStrategySettingsForm({
     }),
     [constraints?.recommendedCapitalInr, constraints?.maxLeverage],
   );
-  const safeStrategySlug = strategySlug ?? "";
-  const safeDeltaConnections = deltaConnections ?? [];
-  const safeRunStatus = runStatus ?? "ready_to_activate";
-  const safeCanEditSettings = canEditSettings ?? false;
-  const safeInitialPrimaryExchangeId = initialPrimaryExchangeId ?? null;
-  const safeInitialSecondaryExchangeId = initialSecondaryExchangeId ?? null;
 
   const schema = useMemo(
     () => createUserStrategyRunSettingsSchema(safeConstraints),
@@ -72,8 +66,8 @@ export function UserStrategySettingsForm({
     return Number.isFinite(n) ? n : null;
   }, [safeConstraints.maxLeverage]);
 
-  const [capital, setCapital] = useState(initialCapitalToUseInr ?? "");
-  const [leverage, setLeverage] = useState(initialLeverage ?? "");
+  const [capital, setCapital] = useState(initialCapitalToUseInr);
+  const [leverage, setLeverage] = useState(initialLeverage);
   const [liveErrors, setLiveErrors] = useState<Record<string, string>>({});
 
   const [state, formAction, pending] = useActionState<
@@ -105,12 +99,12 @@ export function UserStrategySettingsForm({
     setLeverage(String(Math.round(v * 100) / 100));
   }
 
-  if (!safeCanEditSettings) {
+  if (!canEditSettings) {
     return (
       <GlassPanel className="border border-amber-500/25 bg-amber-500/5">
         <p className="text-sm text-amber-100">
           Capital and leverage cannot be edited while the run is in the
-          &quot;{safeRunStatus}&quot; state. Use My strategies to activate or resolve
+          &quot;{runStatus}&quot; state. Use My strategies to activate or resolve
           blocks first.
         </p>
       </GlassPanel>
@@ -119,7 +113,7 @@ export function UserStrategySettingsForm({
 
   return (
     <form action={formAction} className="space-y-6">
-      <input type="hidden" name="strategySlug" value={safeStrategySlug} />
+      <input type="hidden" name="strategySlug" value={strategySlug} />
 
       <GlassPanel className="border border-white/[0.08] bg-gradient-to-b from-white/[0.05] to-transparent">
         <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -149,7 +143,7 @@ export function UserStrategySettingsForm({
         ) : null}
       </GlassPanel>
 
-      {safeRunStatus === "active" ? (
+      {runStatus === "active" ? (
         <p className="text-sm text-sky-200/90">
           New settings will apply to future trades only.
         </p>
@@ -180,12 +174,12 @@ export function UserStrategySettingsForm({
             <select
               id="primary_exchange_connection_id"
               name="primary_exchange_connection_id"
-              defaultValue={safeInitialPrimaryExchangeId ?? ""}
-              disabled={pending || safeDeltaConnections.length === 0}
+              defaultValue={initialPrimaryExchangeId ?? ""}
+              disabled={pending || deltaConnections.length === 0}
               className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
             >
               <option value="">— Auto (latest tested profile) —</option>
-              {safeDeltaConnections.map((c) => (
+              {deltaConnections.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.accountLabel}
                 </option>
@@ -207,12 +201,12 @@ export function UserStrategySettingsForm({
             <select
               id="secondary_exchange_connection_id"
               name="secondary_exchange_connection_id"
-              defaultValue={safeInitialSecondaryExchangeId ?? ""}
-              disabled={pending || safeDeltaConnections.length === 0}
+              defaultValue={initialSecondaryExchangeId ?? ""}
+              disabled={pending || deltaConnections.length === 0}
               className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
             >
               <option value="">— None —</option>
-              {safeDeltaConnections.map((c) => (
+              {deltaConnections.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.accountLabel}
                 </option>
@@ -225,7 +219,7 @@ export function UserStrategySettingsForm({
             ) : null}
           </div>
         </div>
-        {safeDeltaConnections.length === 0 ? (
+        {deltaConnections.length === 0 ? (
           <p className="text-xs text-amber-100/90">
             Save at least one Delta profile under Exchange before you can pin primary /
             secondary here.

@@ -19,11 +19,13 @@ describe("calculateHalfTrend", () => {
     expect(typeof r.buySignal).toBe("boolean");
     expect(typeof r.sellSignal).toBe("boolean");
     expect(typeof r.htValue).toBe("number");
+    expect(typeof r.prevHtValue).toBe("number");
   });
 
   it("returns neutral object for empty input", () => {
     const r = calculateHalfTrend([], 9, 2);
     expect(r.buySignal).toBe(false);
     expect(r.sellSignal).toBe(false);
+    expect(Number.isNaN(r.prevHtValue)).toBe(true);
   });
 });

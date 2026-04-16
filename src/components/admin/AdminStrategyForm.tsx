@@ -369,6 +369,28 @@ export function AdminStrategyForm(props: Props) {
                   />
                   {fieldError(state.fieldErrors, "trend_arb_indicator_channel_deviation")}
                 </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-indicator-timeframe`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Indicator timeframe
+                  </label>
+                  <select
+                    id={`${baseId}-trend-indicator-timeframe`}
+                    name="trend_arb_indicator_timeframe"
+                    required
+                    defaultValue={trendArbDefaults.indicatorTimeframe}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  >
+                    <option value="1m">1m</option>
+                    <option value="15m">15m</option>
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                    <option value="1d">1d</option>
+                  </select>
+                  {fieldError(state.fieldErrors, "trend_arb_indicator_timeframe")}
+                </div>
               </div>
             </div>
 

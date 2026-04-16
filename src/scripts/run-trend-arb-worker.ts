@@ -9,4 +9,8 @@ import "dotenv/config";
 
 import { startTrendArbWorkerLoop } from "../server/trading/ta-engine/trend-arbitrage";
 
+console.log(
+  "[trend-arb] Worker boot: PM2-friendly log prefixes — [SCANNING], [ENTRY-CHECK], [MONITORING], [EXIT-CHECK]",
+);
+
 startTrendArbWorkerLoop();

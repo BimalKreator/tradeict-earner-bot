@@ -10,6 +10,37 @@ export const dynamic = "force-dynamic";
 
 type PageProps = { params: Promise<{ slug: string }> };
 
+function InitializeSettingsCTA() {
+  return (
+    <div className="space-y-6">
+      <Link
+        href="/user/my-strategies"
+        className="text-sm text-[var(--accent)] hover:underline"
+      >
+        ← My strategies
+      </Link>
+      <h1 className="font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
+        Strategy settings
+      </h1>
+      <GlassPanel className="space-y-3">
+        <p className="text-sm text-[var(--text-muted)]">
+          This strategy does not have initialized settings for your account yet.
+        </p>
+        <p className="text-xs text-slate-400">
+          Click initialize to create your settings context, then configure capital,
+          leverage, and exchange accounts.
+        </p>
+        <Link
+          href="/user/my-strategies"
+          className="inline-flex rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-100 hover:bg-sky-500/20"
+        >
+          Initialize Settings
+        </Link>
+      </GlassPanel>
+    </div>
+  );
+}
+
 export async function generateMetadata({ params }: PageProps) {
   const { slug } = await params;
   return { title: `Strategy settings · ${decodeURIComponent(slug)}` };
@@ -58,48 +89,7 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
   }
 
   const data = await getUserStrategySettingsPageData(userId, slug);
-  if (!data) {
-    return (
-      <div className="space-y-6">
-        <Link
-          href="/user/my-strategies"
-          className="text-sm text-[var(--accent)] hover:underline"
-        >
-          ← My strategies
-        </Link>
-        <h1 className="font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
-          Strategy settings
-        </h1>
-        <GlassPanel className="space-y-3">
-          <p className="text-sm text-[var(--text-muted)]">
-            This strategy does not have initialized settings for your account yet.
-          </p>
-          <p className="text-xs text-slate-400">
-            Click initialize to create your settings context, then configure capital,
-            leverage, and exchange accounts.
-          </p>
-          <Link
-            href="/user/my-strategies"
-            className="inline-flex rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-100 hover:bg-sky-500/20"
-          >
-            Initialize Settings
-          </Link>
-        </GlassPanel>
-      </div>
-    );
-  }
-
-  const constraints = {
-    recommendedCapitalInr: data.recommendedCapitalInr ?? null,
-    maxLeverage: data.maxLeverage ?? null,
-  };
-
-  const maxLevN =
-    data.maxLeverage != null && String(data.maxLeverage).trim() !== ""
-      ? Number(data.maxLeverage)
-      : null;
-  const initialCapital = data.capitalToUseInr ?? "";
-  const initialLeverage = data.leverage ?? (maxLevN != null && Number.isFinite(maxLevN) ? "1" : "");
+  if (!data) return <InitializeSettingsCTA />;
 
   return (
     <div className="space-y-8">
@@ -111,7 +101,7 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
           ← My strategies
         </Link>
         <h1 className="mt-2 font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
-          {data.strategyName ?? "Strategy"}
+          {data?.strategyName ?? "Strategy"}
         </h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Capital and leverage for your bot run on this strategy.
@@ -119,15 +109,23 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
       </div>
 
       <UserStrategySettingsForm
-        strategySlug={data.strategySlug ?? slug}
-        constraints={constraints}
-        initialCapitalToUseInr={initialCapital}
-        initialLeverage={initialLeverage}
-        initialPrimaryExchangeId={data.primaryExchangeConnectionId ?? null}
-        initialSecondaryExchangeId={data.secondaryExchangeConnectionId ?? null}
-        deltaConnections={data.deltaConnections ?? []}
-        runStatus={data.runStatus ?? "ready_to_activate"}
-        canEditSettings={data.canEditSettings ?? false}
+        strategySlug={data?.strategySlug ?? slug}
+        constraints={{
+          recommendedCapitalInr: data?.recommendedCapitalInr ?? null,
+          maxLeverage: data?.maxLeverage ?? null,
+        }}
+        initialCapitalToUseInr={data?.capitalToUseInr ?? ""}
+        initialLeverage={
+          data?.leverage ??
+          (data?.maxLeverage != null && Number.isFinite(Number(data?.maxLeverage))
+            ? "1"
+            : "")
+        }
+        initialPrimaryExchangeId={data?.primaryExchangeConnectionId ?? null}
+        initialSecondaryExchangeId={data?.secondaryExchangeConnectionId ?? null}
+        deltaConnections={data?.deltaConnections ?? []}
+        runStatus={data?.runStatus ?? "ready_to_activate"}
+        canEditSettings={data?.canEditSettings ?? false}
       />
     </div>
   );

@@ -10,6 +10,7 @@ import {
   parsePerformanceChartJsonText,
 } from "@/lib/strategy-performance-chart";
 import {
+  trendArbTimeframeSchema,
   trendArbStrategyConfigSchema,
   type TrendArbStrategyConfig,
 } from "@/lib/trend-arb-strategy-config";
@@ -153,6 +154,10 @@ function parseTrendArbConfigFromForm(
     formData.get("trend_arb_indicator_channel_deviation"),
     "Channel deviation",
   );
+  const indicatorTimeframeRaw = String(
+    formData.get("trend_arb_indicator_timeframe") ?? "",
+  ).trim();
+  const indicatorTimeframe = trendArbTimeframeSchema.safeParse(indicatorTimeframeRaw);
 
   const parseErrors: Record<string, string[]> = {};
   if (!cap.ok) parseErrors.trend_arb_capital_allocation_pct = [cap.error];
@@ -170,6 +175,9 @@ function parseTrendArbConfigFromForm(
     parseErrors.trend_arb_indicator_channel_deviation = [
       indicatorChannelDeviation.error,
     ];
+  }
+  if (!indicatorTimeframe.success) {
+    parseErrors.trend_arb_indicator_timeframe = ["Indicator timeframe is invalid."];
   }
   if (Object.keys(parseErrors).length > 0) {
     return { ok: false, fieldErrors: parseErrors };
@@ -194,6 +202,7 @@ function parseTrendArbConfigFromForm(
     indicatorSettings: {
       amplitude: indicatorAmplitudeValue,
       channelDeviation: indicatorChannelDeviationValue,
+      timeframe: indicatorTimeframe.success ? indicatorTimeframe.data : "4h",
     },
     delta1: {
       entryQtyPct: d1QtyValue,

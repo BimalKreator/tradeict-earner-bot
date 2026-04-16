@@ -177,16 +177,45 @@ export async function pollTrendArbRiskAndHedges(params: {
     d1PeakUrpPct.set(scope.runId, peak);
 
     const d1Side = pos.side;
+    const d1Sl = env.runtime.d1StopLossPct;
+    const d1Tp = env.runtime.d1TargetProfitPct;
 
-    const hardSlHit = urp <= -env.runtime.d1StopLossPct;
-    const hardTpHit = urp >= env.runtime.d1TargetProfitPct;
-    const softBeHit = peak >= Math.max(0.1, env.runtime.d1TargetProfitPct / 2) && urp <= 0;
+    const hardSlHit = urp <= -d1Sl;
+    const hardTpHit = urp >= d1Tp;
+    const softBeHit = peak >= Math.max(0.1, d1Tp / 2) && urp <= 0;
+
+    let monD2 = "D2: n/a (no secondary exchange)";
+    if (scope.secondaryExchangeConnectionId) {
+      const stepMove = env.runtime.d2StepMovePct;
+      const pendingSteps = await filterUnhedgedSteps(scope.runId, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      if (pendingSteps.length === 0) {
+        monD2 = "D2: all hedge steps (1–9) recorded";
+      } else {
+        const nextStep = Math.min(...pendingSteps);
+        const needUrp = nextStep * stepMove;
+        const dist = needUrp - urp;
+        const px =
+          pos.side === "long"
+            ? pos.entryPrice * (1 + needUrp / 100)
+            : pos.entryPrice * (1 - needUrp / 100);
+        monD2 = `next D2 step ${nextStep} at ~${px.toFixed(2)} (${needUrp}% URP, ${dist >= 0 ? "+" : ""}${dist.toFixed(2)}% to next hedge)`;
+      }
+    }
+
+    const toTgt = d1Tp - urp;
+    console.log(
+      `[MONITORING] Trade #${scope.runId}: ${d1Side.toUpperCase()} mark ${mark.toFixed(2)}, entry ${pos.entryPrice.toFixed(2)}, Current PnL: ${urp >= 0 ? "+" : ""}${urp.toFixed(2)}%, D1 target +${d1Tp}% (${toTgt >= 0 ? "+" : ""}${toTgt.toFixed(2)}% to target), ${monD2}`,
+    );
+
+    console.log(
+      `[EXIT-CHECK] Trade #${scope.runId}: D1 — URP ${urp.toFixed(2)}% (SL ≤-${d1Sl}%, TP +${d1Tp}%, peak ${peak.toFixed(2)}%) | hard_sl=${hardSlHit} hard_tp=${hardTpHit} soft_be=${softBeHit}`,
+    );
 
     if (hardSlHit || hardTpHit || softBeHit) {
       const reason = hardSlHit
-        ? `hard_sl_${env.runtime.d1StopLossPct}pct`
+        ? `hard_sl_${d1Sl}pct`
         : hardTpHit
-          ? `hard_tp_${env.runtime.d1TargetProfitPct}pct`
+          ? `hard_tp_${d1Tp}pct`
           : "soft_be_trail";
       const nonce = `${reason}_${Date.now()}`;
       const closeSide = d1Side === "long" ? "sell" : "buy";
@@ -237,7 +266,11 @@ export async function pollTrendArbRiskAndHedges(params: {
             entryPrice: d2PosRes.position.entryPrice,
             side: d2PosRes.position.side,
           });
-          if (d2Urp <= -env.runtime.d2StopLossPct) {
+          const d2Sl = env.runtime.d2StopLossPct;
+          console.log(
+            `[EXIT-CHECK] Trade #${scope.runId}: D2 — URP ${d2Urp.toFixed(2)}% vs stop −${d2Sl}% (mark ${d2Mark.toFixed(2)})`,
+          );
+          if (d2Urp <= -d2Sl) {
             const nonce = `d2_stop_loss_${Date.now()}`;
             const flattenSide = d2PosRes.position.side === "long" ? "sell" : "buy";
             const flat = await dispatchTrendArbFlattenSecondary({

@@ -22,13 +22,11 @@ export type HalfTrendResult = {
   sellSignal: boolean;
   /** HalfTrend line: Pine `ht = trend == 0 ? up : down`. */
   htValue: number;
+  /** HalfTrend line on the previous closed bar (for scan logging). */
+  prevHtValue: number;
 };
 
 const ATR_PERIOD = 100;
-
-function nzPrev<T>(prev: T | undefined, current: T): T {
-  return prev === undefined ? current : prev;
-}
 
 /** Pine `ta.highestbars(length)`: bars since highest `high` in the window (0 = this bar); tie → most recent bar. */
 function highestBarsOffset(highs: number[], i: number, length: number): number {
@@ -63,6 +61,9 @@ function lowestBarsOffset(lows: number[], i: number, length: number): number {
 /**
  * HalfTrend indicator — bar-by-bar state machine aligned to Pine execution order.
  *
+ * Swing levels and trend flip conditions use **close** prices only (not wick highs/lows),
+ * per product requirement; ATR still uses full OHLC for volatility.
+ *
  * @param candles ascending time, full OHLC
  * @param amplitude Pine `amplitude` (SMA length + highest/lowest bars window)
  * @param channelDeviation Pine `channelDeviation` (multiplier on `ATR(100)/2`)
@@ -80,6 +81,7 @@ export function calculateHalfTrend(
       buySignal: false,
       sellSignal: false,
       htValue: NaN,
+      prevHtValue: NaN,
     };
   }
 
@@ -114,8 +116,8 @@ export function calculateHalfTrend(
 
   let trend: 0 | 1 = 0;
   let nextTrend: 0 | 1 = 0;
-  let maxLowPrice = candles[0]!.low;
-  let minHighPrice = candles[0]!.high;
+  let maxLowPrice = closes[0]!;
+  let minHighPrice = closes[0]!;
   let up = 0;
   let down = 0;
   /** Pine `up[1]` / `down[1]` — `undefined` means `na`. */
@@ -123,6 +125,7 @@ export function calculateHalfTrend(
   let prevDown: number | undefined = undefined;
 
   let lastHt = closes[n - 1]!;
+  let lastPrevHt = NaN;
   let lastBuy = false;
   let lastSell = false;
   let lastOpenTrend: 0 | 1 = 0;
@@ -131,32 +134,41 @@ export function calculateHalfTrend(
   for (let i = 0; i < n; i++) {
     const trendPrevBar = trend;
 
-    const high = highs[i]!;
-    const low = lows[i]!;
     const close = closes[i]!;
-    const prevLow = nzPrev(i > 0 ? lows[i - 1] : undefined, low);
-    const prevHigh = nzPrev(i > 0 ? highs[i - 1] : undefined, high);
 
-    const hb = highestBarsOffset(highs, i, amplitude);
-    const lb = lowestBarsOffset(lows, i, amplitude);
-    const highPrice = highs[i - hb]!;
-    const lowPrice = lows[i - lb]!;
+    const hb = highestBarsOffset(closes, i, amplitude);
+    const lb = lowestBarsOffset(closes, i, amplitude);
+    const highPrice = closes[i - hb]!;
+    const lowPrice = closes[i - lb]!;
 
     const highma = smaHighAt(i);
     const lowma = smaLowAt(i);
     const atr2 = atrAt(i) / 2;
-    const dev = channelDeviation * atr2;
+    const _dev = channelDeviation * atr2;
+
+    const prevCloseForFlip =
+      i > 0 ? closes[i - 1]! : close;
 
     if (nextTrend === 1) {
       maxLowPrice = Math.max(lowPrice, maxLowPrice);
-      if (!Number.isNaN(highma) && highma < maxLowPrice && close < prevLow) {
+      if (
+        !Number.isNaN(highma) &&
+        highma < maxLowPrice &&
+        i > 0 &&
+        close < prevCloseForFlip
+      ) {
         trend = 1;
         nextTrend = 0;
         minHighPrice = highPrice;
       }
     } else {
       minHighPrice = Math.min(highPrice, minHighPrice);
-      if (!Number.isNaN(lowma) && lowma > minHighPrice && close > prevHigh) {
+      if (
+        !Number.isNaN(lowma) &&
+        lowma > minHighPrice &&
+        i > 0 &&
+        close > prevCloseForFlip
+      ) {
         trend = 0;
         nextTrend = 1;
         maxLowPrice = lowPrice;
@@ -181,6 +193,9 @@ export function calculateHalfTrend(
     prevDown = down;
 
     const ht = trend === 0 ? up : down;
+    if (i === n - 2) {
+      lastPrevHt = ht;
+    }
     lastHt = ht;
 
     lastOpenTrend = trendPrevBar;
@@ -196,5 +211,6 @@ export function calculateHalfTrend(
     buySignal: lastBuy,
     sellSignal: lastSell,
     htValue: lastHt,
+    prevHtValue: lastPrevHt,
   };
 }

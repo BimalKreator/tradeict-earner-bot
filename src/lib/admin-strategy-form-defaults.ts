@@ -21,6 +21,7 @@ export type AdminStrategyFormDefaults = {
     capitalAllocationPct: string;
     indicatorAmplitude: string;
     indicatorChannelDeviation: string;
+    indicatorTimeframe: "1m" | "15m" | "1h" | "4h" | "1d";
     delta1EntryQtyPct: string;
     delta1TargetProfitPct: string;
     delta1StopLossPct: string;
@@ -106,6 +107,16 @@ export function strategyDefaultsFromRow(row: {
               ? (trendArbParsed.data.indicatorSettings.channelDeviation ?? 2)
               : ((rawIndicatorSettings.channelDeviation as number | undefined) ?? 2),
           ),
+          indicatorTimeframe:
+            trendArbParsed?.success
+              ? trendArbParsed.data.indicatorSettings.timeframe
+              : ((rawIndicatorSettings.timeframe as
+                    | "1m"
+                    | "15m"
+                    | "1h"
+                    | "4h"
+                    | "1d"
+                    | undefined) ?? "4h"),
           delta1EntryQtyPct: String(
             trendArbParsed?.success
               ? trendArbParsed.data.delta1.entryQtyPct
