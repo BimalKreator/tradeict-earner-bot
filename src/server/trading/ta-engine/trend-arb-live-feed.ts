@@ -1,7 +1,6 @@
 import WebSocket from "ws";
 
 import {
-  fetchDeltaExchangeCandles,
   normalizeDeltaCandlesSymbol,
   resolutionToSeconds,
   type OhlcvCandle,
@@ -19,7 +18,6 @@ type FeedState = {
   ws: WebSocket | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<() => void>;
-  seeded: boolean;
 };
 
 const feeds = new Map<FeedKey, FeedState>();
@@ -64,20 +62,6 @@ function rollTickIntoCandle(state: FeedState, params: { price: number; qty: numb
     state.candles.splice(0, state.candles.length - 2500);
   }
   state.lastPrice = price;
-}
-
-async function seedFromRest(state: FeedState, baseUrl: string, lookbackSec: number): Promise<void> {
-  if (state.seeded) return;
-  const candles = await fetchDeltaExchangeCandles({
-    baseUrl,
-    symbol: state.symbol,
-    resolution: state.resolution,
-    lookbackSec,
-  });
-  state.candles = candles;
-  const last = candles[candles.length - 1];
-  state.lastPrice = last?.close ?? null;
-  state.seeded = true;
 }
 
 function notify(state: FeedState): void {
@@ -137,11 +121,11 @@ export async function ensureTrendArbLiveFeed(params: {
       ws: null,
       reconnectTimer: null,
       subscribers: new Set(),
-      seeded: false,
     };
     feeds.set(key, state);
   }
-  await seedFromRest(state, params.baseUrl, params.lookbackSec);
+  void params.baseUrl;
+  void params.lookbackSec;
   if (!state.ws) connect(state);
 }
 

@@ -16,7 +16,6 @@ import { tradingLog } from "../trading-log";
 import {
   computeTrendArbLookbackSeconds,
   filterClosedCandles,
-  normalizeDeltaCandlesSymbol,
   resolutionToSeconds,
   TREND_ARB_TARGET_CLOSED_BARS,
   type OhlcvCandle,
@@ -341,10 +340,8 @@ export async function runTrendArbitrageOnce(
       console.log("[WAITING] WebSocket feed initializing...");
       return { ok: true, fired: false, detail: "Waiting for websocket feed snapshot." };
     }
-    const symApi = normalizeDeltaCandlesSymbol(c.baseUrl, c.symbol);
-    const nowSecLog = Math.floor(Date.now() / 1000);
     console.log(
-      `[SCANNING] Fetched ${candles.length} OHLCV bars for ${c.symbol} → API symbol ${symApi} @ ${indicatorResolution} (from=${nowSecLog - lookbackSec} to=${nowSecLog} lookback ${lookbackSec}s, min ${TREND_ARB_TARGET_CLOSED_BARS}+ closed: ${minHistorySec}s)`,
+      `[SCANNING] WebSocket snapshot ready for ${c.symbol} @ ${indicatorResolution} with ${candles.length} bars in memory`,
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
