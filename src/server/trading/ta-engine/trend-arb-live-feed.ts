@@ -1,3 +1,5 @@
+import WebSocket from "ws";
+
 import {
   fetchDeltaExchangeCandles,
   normalizeDeltaCandlesSymbol,
@@ -86,9 +88,10 @@ function connect(state: FeedState): void {
   const ws = new WebSocket(websocketUrlFor(state.symbol));
   state.ws = ws;
 
-  ws.onmessage = (event) => {
+  ws.on("message", (raw) => {
     try {
-      const data = JSON.parse(String(event.data)) as { p?: string; q?: string; T?: number };
+      const text = typeof raw === "string" ? raw : raw.toString();
+      const data = JSON.parse(text) as { p?: string; q?: string; T?: number };
       const price = Number(data.p ?? "");
       const qty = Number(data.q ?? "");
       const tsMs = Number(data.T ?? Date.now());
@@ -98,21 +101,21 @@ function connect(state: FeedState): void {
     } catch {
       // ignore malformed messages
     }
-  };
+  });
 
-  ws.onclose = () => {
+  ws.on("close", () => {
     state.ws = null;
     if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
     state.reconnectTimer = setTimeout(() => connect(state), 2000);
-  };
+  });
 
-  ws.onerror = () => {
+  ws.on("error", () => {
     try {
       ws.close();
     } catch {
       // noop
     }
-  };
+  });
 }
 
 export async function ensureTrendArbLiveFeed(params: {
