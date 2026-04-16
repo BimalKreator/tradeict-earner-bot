@@ -86,6 +86,44 @@ async function fetchAllProductsPages(): Promise<Map<string, number>> {
 }
 
 /**
+ * Single-product lookup when the paginated catalog map misses or catalog fetch failed.
+ * `GET /v2/products/{symbol}` returns `{ result: { id, symbol, ... } }`.
+ */
+export async function fetchDeltaIndiaProductIdDirect(symbol: string): Promise<number | null> {
+  const s = symbol.trim();
+  if (!s) return null;
+  const base = deltaIndiaDefaultBaseUrl().replace(/\/$/, "");
+  const url = `${base}/v2/products/${encodeURIComponent(s.toUpperCase())}`;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text();
+    let json: Record<string, unknown> = {};
+    try {
+      json = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    if (!res.ok || json.success !== true) return null;
+    const result = json.result;
+    if (!result || typeof result !== "object") return null;
+    const idRaw = (result as Record<string, unknown>).id;
+    const id =
+      typeof idRaw === "number"
+        ? idRaw
+        : typeof idRaw === "string"
+          ? Number(idRaw)
+          : NaN;
+    return Number.isFinite(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetches `GET /v2/products` (Delta India public REST) and caches symbol → id for {@link cacheTtlMs}.
  *
  * @see https://docs.delta.exchange/ — Products list + cursor pagination (`meta.after`).

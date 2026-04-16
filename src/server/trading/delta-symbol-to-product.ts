@@ -1,4 +1,8 @@
-import { resolveProductId } from "@/server/exchange/delta-product-resolver";
+import { normalizeDeltaIndiaApiSymbol } from "@/server/exchange/delta-india-symbol";
+import {
+  fetchDeltaIndiaProductIdDirect,
+  resolveProductId,
+} from "@/server/exchange/delta-product-resolver";
 
 /**
  * Maps strategy `symbol` strings to Delta India `product_id`.
@@ -13,23 +17,26 @@ export async function resolveDeltaIndiaProductId(
 ): Promise<
   { ok: true; productId: number } | { ok: false; error: string }
 > {
-  const s = symbol.trim();
-  if (!s) return { ok: false, error: "empty_symbol" };
+  const raw = symbol.trim();
+  if (!raw) return { ok: false, error: "empty_symbol" };
 
-  if (/^\d+$/.test(s)) {
-    const n = Number(s);
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
     return Number.isFinite(n) && n > 0
       ? { ok: true, productId: n }
       : { ok: false, error: "invalid_numeric_product_id" };
   }
 
-  const alias = s.match(/^product[_:-](\d+)$/i);
+  const alias = raw.match(/^product[_:-](\d+)$/i);
   if (alias) {
     const n = Number(alias[1]);
     return Number.isFinite(n) && n > 0
       ? { ok: true, productId: n }
       : { ok: false, error: "invalid_product_alias" };
   }
+
+  const s = normalizeDeltaIndiaApiSymbol(raw);
+  if (!s) return { ok: false, error: "empty_symbol" };
 
   const dyn = await resolveProductId(s);
   if (typeof dyn === "number" && dyn > 0) {
@@ -40,17 +47,24 @@ export async function resolveDeltaIndiaProductId(
     if (Number.isFinite(n) && n > 0) return { ok: true, productId: n };
   }
 
-  const raw = process.env.DELTA_INDIA_SYMBOL_TO_PRODUCT_ID?.trim();
-  if (raw) {
+  const directId = await fetchDeltaIndiaProductIdDirect(s);
+  if (directId != null && directId > 0) {
+    return { ok: true, productId: directId };
+  }
+
+  const envMapJson = process.env.DELTA_INDIA_SYMBOL_TO_PRODUCT_ID?.trim();
+  if (envMapJson) {
     try {
-      const map = JSON.parse(raw) as Record<string, number>;
-      const key = Object.keys(map).find((k) => k.toUpperCase() === s.toUpperCase());
+      const map = JSON.parse(envMapJson) as Record<string, number>;
+      const key = Object.keys(map).find(
+        (k) => normalizeDeltaIndiaApiSymbol(k).toUpperCase() === s.toUpperCase(),
+      );
       if (key !== undefined) {
         const pid = Number(map[key]);
         if (Number.isFinite(pid) && pid > 0) {
           return { ok: true, productId: pid };
         }
-        return { ok: false, error: `Invalid product_id for symbol "${s}" in env map.` };
+        return { ok: false, error: `Invalid product_id for symbol "${symbol.trim()}" in env map.` };
       }
     } catch {
       return { ok: false, error: "DELTA_INDIA_SYMBOL_TO_PRODUCT_ID is not valid JSON." };
@@ -59,6 +73,6 @@ export async function resolveDeltaIndiaProductId(
 
   return {
     ok: false,
-    error: `Unknown Delta India symbol "${s}". Check the symbol on Delta India or set DELTA_INDIA_SYMBOL_TO_PRODUCT_ID as a temporary override.`,
+    error: `Unknown Delta India symbol "${raw}" (API: "${s}"). Check the symbol on Delta India or set DELTA_INDIA_SYMBOL_TO_PRODUCT_ID as a temporary override.`,
   };
 }

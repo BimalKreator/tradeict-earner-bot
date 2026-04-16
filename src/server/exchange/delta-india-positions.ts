@@ -1,3 +1,4 @@
+import { normalizeDeltaIndiaApiSymbol } from "./delta-india-symbol";
 import { deltaIndiaDefaultBaseUrl, signDeltaIndiaRequest } from "./delta-india-sign";
 
 export type DeltaIndiaSignedFetchResult = {
@@ -149,7 +150,7 @@ export async function fetchDeltaIndiaTickerMarkPrice(params: {
   baseUrl?: string;
 }): Promise<number | null> {
   const base = (params.baseUrl ?? deltaIndiaDefaultBaseUrl()).replace(/\/$/, "");
-  const sym = encodeURIComponent(params.symbol.trim());
+  const sym = encodeURIComponent(normalizeDeltaIndiaApiSymbol(params.symbol));
   const url = `${base}/v2/tickers/${sym}`;
   try {
     const res = await fetch(url, {

@@ -8,7 +8,7 @@ import { GlassPanel } from "@/components/ui/GlassPanel";
 import { formatInrAmount, formatIntCount, formatUsdAmount } from "@/lib/format-inr";
 import { getGlobalEmergencyStopActive } from "@/server/platform/global-emergency-stop";
 import { getAdminDashboardPageData } from "@/server/queries/admin-dashboard";
-import { getAdminLiveTradeMonitorRows } from "@/server/queries/active-positions-dashboard";
+import { getAdminLiveTradeMonitorData } from "@/server/queries/active-positions-dashboard";
 
 export const metadata = {
   title: "Admin",
@@ -17,10 +17,10 @@ export const metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function AdminDashboardPage() {
-  const [data, globalEmergencyStopActive, liveTradeRows] = await Promise.all([
+  const [data, globalEmergencyStopActive, liveTradeData] = await Promise.all([
     getAdminDashboardPageData(),
     getGlobalEmergencyStopActive(),
-    getAdminLiveTradeMonitorRows(),
+    getAdminLiveTradeMonitorData(),
   ]);
 
   if (!data) {
@@ -106,7 +106,10 @@ export default async function AdminDashboardPage() {
       <AdminMetricCards metrics={kpiCards} />
 
       <GlassPanel className="border-white/[0.07]">
-        <AdminLiveTradeMonitor initialRows={liveTradeRows} />
+        <AdminLiveTradeMonitor
+          initialRows={liveTradeData.rows}
+          initialStatusRows={liveTradeData.statusRows}
+        />
       </GlassPanel>
 
       <AdminAttentionPanel

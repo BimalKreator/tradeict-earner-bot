@@ -61,8 +61,10 @@ function lowestBarsOffset(lows: number[], i: number, length: number): number {
 /**
  * HalfTrend indicator — bar-by-bar state machine aligned to Pine execution order.
  *
- * Swing levels and trend flip conditions use **close** prices only (not wick highs/lows),
- * per product requirement; ATR still uses full OHLC for volatility.
+ * **Close-only (product rule):** trend *flip* conditions compare `close` to the previous bar’s `close`;
+ * swing levels (`highPrice` / `lowPrice`) use the **close** series for highest/lowest offsets.
+ * SMA(high) / SMA(low) and ATR still use full OHLC for the channel envelope and volatility.
+ * **Signals** (`buySignal` / `sellSignal`) are emitted on trend state changes driven by that state machine.
  *
  * @param candles ascending time, full OHLC
  * @param amplitude Pine `amplitude` (SMA length + highest/lowest bars window)

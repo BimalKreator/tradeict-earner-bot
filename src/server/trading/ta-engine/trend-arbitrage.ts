@@ -17,6 +17,7 @@ import {
   computeTrendArbLookbackSeconds,
   fetchDeltaExchangeCandles,
   filterClosedCandles,
+  normalizeDeltaCandlesSymbol,
   resolutionToSeconds,
   TREND_ARB_TARGET_CLOSED_BARS,
   type OhlcvCandle,
@@ -38,6 +39,16 @@ import type { TrendArbitrageEnv, TrendArbRuntimeSettings } from "./trend-arb-typ
 function fmtHt(n: number): string {
   if (!Number.isFinite(n)) return "N/A";
   return n.toFixed(2);
+}
+
+function fmtCloseVsHt(close: number, ht: number): string {
+  if (!Number.isFinite(close) || !Number.isFinite(ht)) {
+    return `Close=${fmtHt(close)} HT=${fmtHt(ht)}`;
+  }
+  const d = close - ht;
+  const pct = ht !== 0 ? (d / ht) * 100 : NaN;
+  const pctStr = Number.isFinite(pct) ? `${pct >= 0 ? "+" : ""}${pct.toFixed(3)}%` : "—";
+  return `Close=${fmtHt(close)} vs HT=${fmtHt(ht)} (Δ=${fmtHt(d)}, ${pctStr} of HT line)`;
 }
 
 function halfTrendSignalLabel(h: {
@@ -286,8 +297,10 @@ export async function runTrendArbitrageOnce(
       resolution: indicatorResolution,
       lookbackSec,
     });
+    const symApi = normalizeDeltaCandlesSymbol(c.baseUrl, c.symbol);
+    const nowSecLog = Math.floor(Date.now() / 1000);
     console.log(
-      `[SCANNING] Fetched ${candles.length} OHLCV bars for ${c.symbol} @ ${indicatorResolution} (lookback ${lookbackSec}s, min for ${TREND_ARB_TARGET_CLOSED_BARS}+ closed bars: ${minHistorySec}s)`,
+      `[SCANNING] Fetched ${candles.length} OHLCV bars for ${c.symbol} → API symbol ${symApi} @ ${indicatorResolution} (from=${nowSecLog - lookbackSec} to=${nowSecLog} lookback ${lookbackSec}s, min ${TREND_ARB_TARGET_CLOSED_BARS}+ closed: ${minHistorySec}s)`,
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -343,7 +356,7 @@ export async function runTrendArbitrageOnce(
 
   if (side == null) {
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"})`,
+      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"}) | ${fmtCloseVsHt(bar.close, half.htValue)}`,
     );
     return {
       ok: true,
@@ -397,7 +410,7 @@ export async function runTrendArbitrageOnce(
   }
 
   console.log(
-    `[ENTRY-CHECK] ${c.symbol}: evaluating primary ${side.toUpperCase()} entry @ ${fmtHt(bar.close)} (mark) correlation ${correlationId}`,
+    `[ENTRY-CHECK] ${c.symbol}: evaluating primary ${side.toUpperCase()} entry @ ${fmtHt(bar.close)} (mark) correlation ${correlationId} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
   );
 
   const dispatch = await dispatchTrendArbPrimaryEntry({
@@ -417,7 +430,9 @@ export async function runTrendArbitrageOnce(
   });
 
   if (!dispatch.ok) {
-    console.log(`[ENTRY-CHECK] ${c.symbol}: primary dispatch failed — ${dispatch.error}`);
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: primary dispatch failed — ${dispatch.error} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
+    );
     return { ok: false, error: dispatch.error };
   }
 

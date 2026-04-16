@@ -4,7 +4,7 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { verifySessionToken } from "@/lib/session";
 import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
 import { db } from "@/server/db";
-import { getAdminLiveTradeMonitorRows } from "@/server/queries/active-positions-dashboard";
+import { getAdminLiveTradeMonitorData } from "@/server/queries/active-positions-dashboard";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +29,6 @@ export async function GET() {
     return Response.json({ error: "no_database" }, { status: 503 });
   }
 
-  const rows = await getAdminLiveTradeMonitorRows();
-  return Response.json({ rows, updatedAt: new Date().toISOString() });
+  const data = await getAdminLiveTradeMonitorData();
+  return Response.json({ ...data, updatedAt: new Date().toISOString() });
 }

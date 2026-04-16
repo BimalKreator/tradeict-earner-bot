@@ -1,5 +1,7 @@
 import { RSI } from "technicalindicators";
 
+import { normalizeDeltaIndiaApiSymbol } from "@/server/exchange/delta-india-symbol";
+
 import { hasTradingJobForCorrelationId } from "../execution-queue";
 import { dispatchStrategyExecutionSignal } from "../strategy-signal-dispatcher";
 import { tradingLog } from "../trading-log";
@@ -49,8 +51,24 @@ export function resolutionToSeconds(resolution: string): number {
   return n * mult;
 }
 
-/** Delta returns up to ~2000 candles per range; ensure the window spans enough bars after `filterClosedCandles`. */
-export const TREND_ARB_TARGET_CLOSED_BARS = 200;
+/** Minimum closed bars we aim for after `filterClosedCandles` (worker + pulse). */
+export const TREND_ARB_TARGET_CLOSED_BARS = 300;
+
+/**
+ * Delta product symbols are usually **no underscore** (e.g. `BTCUSDT`). `BTC_USDT` often returns an empty
+ * or single-candle result. India (`api.india.delta.exchange`) uses `BTCUSD` / `ETHUSD` style symbols for
+ * major USD perpetuals — map common USDT names when needed.
+ */
+export function normalizeDeltaCandlesSymbol(baseUrl: string, rawSymbol: string): string {
+  const t = rawSymbol.trim();
+  if (!t) return t;
+  const host = baseUrl.replace(/\/$/, "").toLowerCase();
+  const isIndia = host.includes("india.delta.exchange");
+  if (isIndia) {
+    return normalizeDeltaIndiaApiSymbol(t);
+  }
+  return t.replace(/_/g, "").toUpperCase();
+}
 
 /**
  * Seconds of history to request so we retain ≥ `minClosedBars` fully closed candles (current bar excluded)
@@ -60,7 +78,7 @@ export function computeTrendArbLookbackSeconds(
   resolutionSec: number,
   minClosedBars = TREND_ARB_TARGET_CLOSED_BARS,
 ): number {
-  const slackBars = 35;
+  const slackBars = 50;
   return Math.ceil((minClosedBars + slackBars) * resolutionSec);
 }
 
@@ -74,14 +92,16 @@ export async function fetchDeltaExchangeCandles(params: {
   resolution: string;
   lookbackSec: number;
 }): Promise<OhlcvCandle[]> {
-  const end = Math.floor(Date.now() / 1000);
-  const start = end - params.lookbackSec;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const fromSec = nowSec - Math.max(1, Math.floor(params.lookbackSec));
+  const symbol = normalizeDeltaCandlesSymbol(params.baseUrl, params.symbol);
   const base = params.baseUrl.replace(/\/$/, "");
   const url = new URL(`${base}/v2/history/candles`);
   url.searchParams.set("resolution", params.resolution);
-  url.searchParams.set("symbol", params.symbol);
-  url.searchParams.set("start", String(start));
-  url.searchParams.set("end", String(end));
+  url.searchParams.set("symbol", symbol);
+  /** Delta docs: `start` / `end` are unix seconds (same semantics as `from` / `to` on some clients). */
+  url.searchParams.set("start", String(fromSec));
+  url.searchParams.set("end", String(nowSec));
 
   const res = await fetch(url.toString(), {
     headers: { Accept: "application/json" },
@@ -110,7 +130,10 @@ export async function fetchDeltaExchangeCandles(params: {
     if (!row || typeof row !== "object") continue;
     const o = row as Record<string, unknown>;
     let time = Number(o.time);
-    if (time > 1e12) {
+    /** API may return ms, s, or μs — normalize to unix seconds for comparisons. */
+    if (time > 1e15) {
+      time = Math.floor(time / 1_000_000);
+    } else if (time > 1e12) {
       time = Math.floor(time / 1000);
     }
     const open = Number(o.open);
@@ -132,13 +155,17 @@ export async function fetchDeltaExchangeCandles(params: {
   return out;
 }
 
-/** Keep only fully closed candles (exclude the bar still forming). */
+/** Keep only fully closed candles (exclude the bar still forming). `c.time` = bar open time in unix seconds. */
 export function filterClosedCandles(
   candles: OhlcvCandle[],
   resolutionSec: number,
   nowSec: number = Math.floor(Date.now() / 1000),
 ): OhlcvCandle[] {
-  return candles.filter((c) => c.time + resolutionSec <= nowSec);
+  return candles.filter((c) => {
+    const t = c.time;
+    if (!(typeof t === "number" && Number.isFinite(t))) return false;
+    return t + resolutionSec <= nowSec;
+  });
 }
 
 /**

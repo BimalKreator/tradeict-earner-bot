@@ -11,6 +11,7 @@ import {
   botOrders,
   botPositions,
   strategies,
+  userStrategySubscriptions,
   users,
   userStrategyRuns,
   virtualBotOrders,
@@ -21,6 +22,10 @@ import {
   getTrendArbMarketPulse,
   type TrendArbMarketPulse,
 } from "@/server/trading/ta-engine/trend-arb-strategy-pulse";
+import {
+  normalizeDeltaCandlesSymbol,
+  TREND_ARB_TARGET_CLOSED_BARS,
+} from "@/server/trading/ta-engine/rsi-scalper";
 
 const QTY_EPS = 1e-8;
 
@@ -61,6 +66,22 @@ export type AdminLivePositionRow = ActivePositionLeg & {
   participatingUsers: string;
   /** Trend arbitrage only — market + per-user D1 snapshot. */
   strategyPulse?: StrategyPulseChecklist;
+};
+
+export type AdminStrategyStatusRow = {
+  key: string;
+  strategyId: string;
+  strategyName: string;
+  strategySlug: string;
+  mode: "virtual" | "real";
+  userLabel: string;
+  participatingUsers: string;
+  strategyPulse: StrategyPulseChecklist;
+};
+
+export type AdminLiveTradeMonitorData = {
+  rows: AdminLivePositionRow[];
+  statusRows: AdminStrategyStatusRow[];
 };
 
 function userDisplayName(email: string, name: string | null): string {
@@ -629,16 +650,25 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     if (p) pulseByStrat.set(sid, p);
   }
 
-  const fallbackPulse: TrendArbMarketPulse = {
-    barsReady: "Pending",
-    trendDirection: "Long",
-    priceVsHt: "Below",
-  };
+  const pulseBaseUrl = process.env.TA_TREND_ARB_DELTA_BASE_URL?.trim() || "https://api.delta.exchange";
 
   return legs.map((row) => {
     const participatingUsers = partMap.get(row.strategyId) ?? "—";
     let strategyPulse: StrategyPulseChecklist | undefined;
     if (isTrendArbSlug(row.strategySlug)) {
+      const fallbackPulse: TrendArbMarketPulse = {
+        barsReady: "Pending",
+        trendDirection: "Long",
+        priceVsHt: "Below",
+        hasEntrySignalBar: false,
+        history: {
+          targetBars: TREND_ARB_TARGET_CLOSED_BARS,
+          rawBars: 0,
+          closedBars: 0,
+          symbolRequested: row.symbol,
+          symbolFetched: normalizeDeltaCandlesSymbol(pulseBaseUrl, row.symbol),
+        },
+      };
       const m = pulseByStrat.get(row.strategyId) ?? fallbackPulse;
       const d1Status = d1OpenByRun.get(d1RunStatusKey(row)) ? "Active" : "Waiting";
       strategyPulse = { ...m, d1Status };
@@ -649,4 +679,142 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       strategyPulse,
     };
   });
+}
+
+async function getAdminStrategyStatusRows(
+  openLegRows: AdminLivePositionRow[],
+): Promise<AdminStrategyStatusRow[]> {
+  if (!db) return [];
+
+  const trendLegByStrategy = new Map<string, AdminLivePositionRow>();
+  for (const row of openLegRows) {
+    if (isTrendArbSlug(row.strategySlug)) {
+      if (!trendLegByStrategy.has(row.strategyId)) trendLegByStrategy.set(row.strategyId, row);
+    }
+  }
+
+  const virtualRuns = await db
+    .select({
+      runId: virtualStrategyRuns.id,
+      strategyId: virtualStrategyRuns.strategyId,
+      strategyName: strategies.name,
+      strategySlug: strategies.slug,
+      userId: users.id,
+      userEmail: users.email,
+      userName: users.name,
+    })
+    .from(virtualStrategyRuns)
+    .innerJoin(strategies, eq(virtualStrategyRuns.strategyId, strategies.id))
+    .innerJoin(users, eq(virtualStrategyRuns.userId, users.id))
+    .where(
+      and(eq(virtualStrategyRuns.status, "active"), isNull(strategies.deletedAt), isNull(users.deletedAt)),
+    );
+
+  const realRuns = await db
+    .select({
+      runId: userStrategyRuns.id,
+      strategyId: userStrategySubscriptions.strategyId,
+      strategyName: strategies.name,
+      strategySlug: strategies.slug,
+      userId: userStrategySubscriptions.userId,
+      userEmail: users.email,
+      userName: users.name,
+    })
+    .from(userStrategyRuns)
+    .innerJoin(
+      userStrategySubscriptions,
+      eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+    )
+    .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
+    .innerJoin(users, eq(userStrategySubscriptions.userId, users.id))
+    .where(and(eq(userStrategyRuns.status, "active"), isNull(strategies.deletedAt), isNull(users.deletedAt)));
+
+  const trendVirtual = virtualRuns.filter((r) => isTrendArbSlug(r.strategySlug));
+  const trendReal = realRuns.filter((r) => isTrendArbSlug(r.strategySlug));
+  const trendStratIds = [...new Set([...trendVirtual, ...trendReal].map((r) => r.strategyId))];
+  if (trendStratIds.length === 0) return [];
+
+  const pulseByStrat = new Map<string, TrendArbMarketPulse>();
+  const pulseBaseUrl = process.env.TA_TREND_ARB_DELTA_BASE_URL?.trim() || "https://api.delta.exchange";
+  for (const sid of trendStratIds) {
+    const p = await getTrendArbMarketPulse(sid);
+    if (p) {
+      pulseByStrat.set(sid, p);
+      continue;
+    }
+    pulseByStrat.set(sid, {
+      barsReady: "Pending",
+      trendDirection: "Long",
+      priceVsHt: "Below",
+      hasEntrySignalBar: false,
+      history: {
+        targetBars: TREND_ARB_TARGET_CLOSED_BARS,
+        rawBars: 0,
+        closedBars: 0,
+        symbolRequested: "BTC_USDT",
+        symbolFetched: normalizeDeltaCandlesSymbol(pulseBaseUrl, "BTC_USDT"),
+      },
+    });
+  }
+
+  const participantsByStrategy = new Map<string, Set<string>>();
+  for (const run of trendVirtual) {
+    const first = participationShortLabel(run.userName, run.userEmail);
+    const set = participantsByStrategy.get(run.strategyId) ?? new Set<string>();
+    set.add(`${first} (Virtual)`);
+    participantsByStrategy.set(run.strategyId, set);
+  }
+  for (const run of trendReal) {
+    const first = participationShortLabel(run.userName, run.userEmail);
+    const set = participantsByStrategy.get(run.strategyId) ?? new Set<string>();
+    set.add(`${first} (Real)`);
+    participantsByStrategy.set(run.strategyId, set);
+  }
+
+  const out: AdminStrategyStatusRow[] = [];
+  for (const run of trendVirtual) {
+    const pulse = pulseByStrat.get(run.strategyId);
+    if (!pulse) continue;
+    out.push({
+      key: `status:v:${run.runId}`,
+      strategyId: run.strategyId,
+      strategyName: run.strategyName,
+      strategySlug: run.strategySlug,
+      mode: "virtual",
+      userLabel: userDisplayName(run.userEmail, run.userName),
+      participatingUsers: [...(participantsByStrategy.get(run.strategyId) ?? new Set<string>())]
+        .sort()
+        .join(", "),
+      strategyPulse: {
+        ...pulse,
+        d1Status: trendLegByStrategy.get(run.strategyId)?.strategyPulse?.d1Status ?? "Waiting",
+      },
+    });
+  }
+  for (const run of trendReal) {
+    const pulse = pulseByStrat.get(run.strategyId);
+    if (!pulse) continue;
+    out.push({
+      key: `status:r:${run.runId}`,
+      strategyId: run.strategyId,
+      strategyName: run.strategyName,
+      strategySlug: run.strategySlug,
+      mode: "real",
+      userLabel: userDisplayName(run.userEmail, run.userName),
+      participatingUsers: [...(participantsByStrategy.get(run.strategyId) ?? new Set<string>())]
+        .sort()
+        .join(", "),
+      strategyPulse: {
+        ...pulse,
+        d1Status: trendLegByStrategy.get(run.strategyId)?.strategyPulse?.d1Status ?? "Waiting",
+      },
+    });
+  }
+  return out;
+}
+
+export async function getAdminLiveTradeMonitorData(): Promise<AdminLiveTradeMonitorData> {
+  const rows = await getAdminLiveTradeMonitorRows();
+  const statusRows = await getAdminStrategyStatusRows(rows);
+  return { rows, statusRows };
 }

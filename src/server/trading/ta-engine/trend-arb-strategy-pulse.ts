@@ -9,14 +9,26 @@ import {
   computeTrendArbLookbackSeconds,
   fetchDeltaExchangeCandles,
   filterClosedCandles,
+  normalizeDeltaCandlesSymbol,
   resolutionToSeconds,
   TREND_ARB_TARGET_CLOSED_BARS,
 } from "./rsi-scalper";
+
+export type TrendArbPulseHistory = {
+  targetBars: number;
+  rawBars: number;
+  closedBars: number;
+  symbolRequested: string;
+  symbolFetched: string;
+};
 
 export type TrendArbMarketPulse = {
   barsReady: "OK" | "Pending";
   trendDirection: "Long" | "Short";
   priceVsHt: "Above" | "Below";
+  /** Latest closed bar had a HalfTrend buy or sell signal (worker entry gate). */
+  hasEntrySignalBar: boolean;
+  history: TrendArbPulseHistory;
 };
 
 const pulseCache = new Map<string, { at: number; value: TrendArbMarketPulse | null }>();
@@ -49,6 +61,16 @@ async function loadTrendArbSymbolAndIndicator(strategyId: string): Promise<{
   };
 }
 
+function emptyHistory(symbolRequested: string, baseUrl: string): TrendArbPulseHistory {
+  return {
+    targetBars: Math.max(TREND_ARB_TARGET_CLOSED_BARS, 101),
+    rawBars: 0,
+    closedBars: 0,
+    symbolRequested,
+    symbolFetched: normalizeDeltaCandlesSymbol(baseUrl, symbolRequested),
+  };
+}
+
 /**
  * Market-level HalfTrend snapshot for admin “Strategy Pulse” (cached briefly per strategy).
  */
@@ -65,19 +87,33 @@ export async function getTrendArbMarketPulse(strategyId: string): Promise<TrendA
     return null;
   }
 
+  const baseUrl = defaultBaseUrl();
+  const symbolRequested = cfg.symbol;
+  const symbolFetched = normalizeDeltaCandlesSymbol(baseUrl, symbolRequested);
   const resSec = resolutionToSeconds(cfg.timeframe);
   const lookbackSec = computeTrendArbLookbackSeconds(resSec, TREND_ARB_TARGET_CLOSED_BARS);
+  const minBars = Math.max(TREND_ARB_TARGET_CLOSED_BARS, 101, cfg.amplitude + 2);
+
+  const historyBase: TrendArbPulseHistory = {
+    targetBars: minBars,
+    rawBars: 0,
+    closedBars: 0,
+    symbolRequested,
+    symbolFetched,
+  };
 
   let value: TrendArbMarketPulse | null = null;
   try {
     const candles = await fetchDeltaExchangeCandles({
-      baseUrl: defaultBaseUrl(),
-      symbol: cfg.symbol,
+      baseUrl,
+      symbol: symbolRequested,
       resolution: cfg.timeframe,
       lookbackSec,
     });
     const closed = filterClosedCandles(candles, resSec);
-    const minBars = Math.max(TREND_ARB_TARGET_CLOSED_BARS, 101, cfg.amplitude + 2);
+    historyBase.rawBars = candles.length;
+    historyBase.closedBars = closed.length;
+
     if (closed.length < minBars) {
       const warm = Math.max(101, cfg.amplitude + 2);
       if (closed.length >= warm) {
@@ -94,12 +130,16 @@ export async function getTrendArbMarketPulse(strategyId: string): Promise<TrendA
                 ? "Above"
                 : "Below"
               : "Below",
+          hasEntrySignalBar: half.buySignal || half.sellSignal,
+          history: { ...historyBase },
         };
       } else {
         value = {
           barsReady: "Pending",
           trendDirection: "Long",
           priceVsHt: "Below",
+          hasEntrySignalBar: false,
+          history: { ...historyBase },
         };
       }
     } else {
@@ -116,13 +156,17 @@ export async function getTrendArbMarketPulse(strategyId: string): Promise<TrendA
         barsReady: "OK",
         trendDirection,
         priceVsHt,
+        hasEntrySignalBar: half.buySignal || half.sellSignal,
+        history: { ...historyBase },
       };
     }
   } catch {
     value = {
       barsReady: "Pending",
-      trendDirection: "Short",
+      trendDirection: "Long",
       priceVsHt: "Below",
+      hasEntrySignalBar: false,
+      history: emptyHistory(symbolRequested, baseUrl),
     };
   }
 

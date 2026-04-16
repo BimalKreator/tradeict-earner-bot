@@ -3,35 +3,73 @@
 import { useEffect, useState } from "react";
 
 import { formatUsdAmount } from "@/lib/format-inr";
-import type { AdminLivePositionRow } from "@/server/queries/active-positions-dashboard";
+import type {
+  AdminLivePositionRow,
+  AdminStrategyStatusRow,
+} from "@/server/queries/active-positions-dashboard";
 
 function StrategyPulseCell({ pulse }: { pulse: NonNullable<AdminLivePositionRow["strategyPulse"]> }) {
-  const ok = pulse.barsReady === "OK";
+  const h = pulse.history;
+  const historyReady = pulse.barsReady === "OK" && h.closedBars >= h.targetBars;
+  const signalOk = pulse.barsReady === "OK";
+  const priceOk = pulse.barsReady === "OK";
+
+  let d1EntryLabel: string;
+  let d1EntryOk: boolean;
+  if (pulse.d1Status === "Active") {
+    d1EntryLabel = "Active";
+    d1EntryOk = true;
+  } else if (pulse.hasEntrySignalBar) {
+    d1EntryLabel = "Pending";
+    d1EntryOk = false;
+  } else {
+    d1EntryLabel = "Crossover Wait";
+    d1EntryOk = false;
+  }
+
+  const historyLine = historyReady ? (
+    <span className="text-emerald-400/95">
+      <span className="mr-1">✅</span>
+      Bars:{" "}
+      <span className="font-semibold tabular-nums">
+        {h.closedBars >= h.targetBars ? `${h.closedBars}+` : `${h.closedBars}`} OK
+      </span>
+      <span className="text-emerald-500/80"> (target {h.targetBars} closed)</span>
+      <span className="ml-1 font-mono text-[9px] text-emerald-600/90">· raw {h.rawBars}</span>
+      <span className="ml-1 font-mono text-[9px] text-emerald-700/80">{h.symbolFetched}</span>
+    </span>
+  ) : (
+    <span className="text-amber-300/95">
+      <span className="mr-1">⏳</span>
+      Bars:{" "}
+      <span className="font-semibold tabular-nums text-amber-100">
+        [{h.closedBars}/{h.targetBars}]
+      </span>{" "}
+      — need closed history (raw {h.rawBars})
+      <br />
+      <span className="font-mono text-[9px] text-amber-200/80">
+        {h.symbolRequested} → {h.symbolFetched}
+      </span>
+    </span>
+  );
+
   return (
-    <ul className="list-none space-y-1 text-[10px] leading-snug text-slate-300">
-      <li>
-        Bars ready:{" "}
-        <span className={ok ? "font-semibold text-emerald-400" : "font-semibold text-amber-400"}>
-          {ok ? "OK" : "Pending"}
-        </span>
+    <ul className="list-none space-y-2 text-[10px] leading-snug">
+      <li>{historyLine}</li>
+      <li className={signalOk ? "text-emerald-400/95" : "text-amber-300/95"}>
+        <span className="mr-1">{signalOk ? "✅" : "⏳"}</span>
+        Signal:{" "}
+        <span className="font-semibold tabular-nums text-slate-100">[{pulse.trendDirection}]</span>
       </li>
-      <li>
-        Trend:{" "}
-        <span className="font-medium text-slate-100">{pulse.trendDirection}</span>
-      </li>
-      <li>
+      <li className={priceOk ? "text-emerald-400/95" : "text-amber-300/95"}>
+        <span className="mr-1">{priceOk ? "✅" : "⏳"}</span>
         Price vs HT:{" "}
-        <span className="font-medium text-slate-100">{pulse.priceVsHt}</span>
+        <span className="font-semibold tabular-nums text-slate-100">[{pulse.priceVsHt}]</span>
       </li>
-      <li>
-        D1 status:{" "}
-        <span
-          className={
-            pulse.d1Status === "Active" ? "font-semibold text-sky-300" : "font-semibold text-slate-400"
-          }
-        >
-          {pulse.d1Status === "Active" ? "Active" : "Waiting"}
-        </span>
+      <li className={d1EntryOk ? "text-emerald-400/95" : "text-amber-300/95"}>
+        <span className="mr-1">{d1EntryOk ? "✅" : "⏳"}</span>
+        D1 Entry:{" "}
+        <span className="font-semibold text-slate-100">[{d1EntryLabel}]</span>
       </li>
     </ul>
   );
@@ -46,10 +84,13 @@ function livePnlUsd(leg: {
 
 export function AdminLiveTradeMonitor({
   initialRows,
+  initialStatusRows,
 }: {
   initialRows: AdminLivePositionRow[];
+  initialStatusRows: AdminStrategyStatusRow[];
 }) {
   const [rows, setRows] = useState<AdminLivePositionRow[]>(initialRows);
+  const [statusRows, setStatusRows] = useState<AdminStrategyStatusRow[]>(initialStatusRows);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,10 +106,12 @@ export function AdminLiveTradeMonitor({
         }
         const data = (await res.json()) as {
           rows: AdminLivePositionRow[];
+          statusRows?: AdminStrategyStatusRow[];
           updatedAt?: string;
         };
         if (!cancelled) {
           setRows(data.rows);
+          setStatusRows(data.statusRows ?? []);
           setUpdatedAt(data.updatedAt ?? null);
           setError(null);
         }
@@ -103,11 +146,7 @@ export function AdminLiveTradeMonitor({
         </p>
       </div>
 
-      {rows.length === 0 ? (
-        <p className="text-sm text-[var(--text-muted)]">
-          No open legs across active runs right now.
-        </p>
-      ) : (
+      {rows.length > 0 ? (
         <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
           <table className="min-w-[1100px] w-full text-left text-xs text-slate-200">
             <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
@@ -160,6 +199,46 @@ export function AdminLiveTradeMonitor({
             </tbody>
           </table>
         </div>
+      ) : statusRows.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs text-[var(--text-muted)]">
+            No open legs right now — showing strategy pulse for active subscriptions.
+          </p>
+          <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+            <table className="min-w-[900px] w-full text-left text-xs text-slate-200">
+              <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Strategy</th>
+                  <th className="px-3 py-2">Mode</th>
+                  <th className="px-3 py-2">Trader</th>
+                  <th className="px-3 py-2 min-w-[180px]">Strategy status</th>
+                  <th className="px-3 py-2 min-w-[220px]">Participating users</th>
+                </tr>
+              </thead>
+              <tbody>
+                {statusRows.map((row) => (
+                  <tr key={row.key} className="border-t border-white/[0.05] bg-black/20">
+                    <td className="px-3 py-2 font-medium text-[var(--text-primary)]">
+                      {row.strategyName}
+                    </td>
+                    <td className="px-3 py-2 capitalize text-slate-400">{row.mode}</td>
+                    <td className="px-3 py-2 text-slate-300">{row.userLabel}</td>
+                    <td className="px-3 py-2 align-top text-slate-400">
+                      <StrategyPulseCell pulse={row.strategyPulse} />
+                    </td>
+                    <td className="px-3 py-2 text-[11px] leading-snug text-slate-400">
+                      {row.participatingUsers || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-[var(--text-muted)]">
+          No open legs or active strategy subscriptions right now.
+        </p>
       )}
     </div>
   );
