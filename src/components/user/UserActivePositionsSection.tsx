@@ -119,6 +119,7 @@ export function UserActivePositionsSection({
         <div className="mt-8 space-y-6">
           {groups.map((g) => {
             const openLegs = g.legs.filter((leg) => Math.abs(leg.netQty) > 1e-10);
+            const displayPNL = openLegs.reduce((acc, leg) => acc + (leg.unrealizedPnlUsd || 0), 0);
             const historyOpen = historyOpenByRun[g.runId] ?? false;
             const historyPage = Math.max(1, historyPageByRun[g.runId] ?? 1);
             const historyPageCount = Math.max(1, Math.ceil(g.closedLegs.length / HISTORY_PAGE_SIZE));
@@ -142,9 +143,9 @@ export function UserActivePositionsSection({
                   </div>
                   <div className="text-right">
                     <p
-                      className={`text-sm font-semibold tabular-nums ${g.activePnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
+                      className={`text-sm font-semibold tabular-nums ${displayPNL < 0 ? "text-red-300" : "text-emerald-100"}`}
                     >
-                      Active PnL: {signedUsdText(g.activePnlUsd)}
+                      Active PnL: {signedUsdText(displayPNL)}
                     </p>
                     <p
                       className={`text-sm font-semibold tabular-nums ${g.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}

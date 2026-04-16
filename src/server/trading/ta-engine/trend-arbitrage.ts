@@ -15,7 +15,6 @@ import { hasTradingJobForCorrelationId } from "../execution-queue";
 import { tradingLog } from "../trading-log";
 import {
   computeTrendArbLookbackSeconds,
-  fetchDeltaExchangeCandles,
   filterClosedCandles,
   normalizeDeltaCandlesSymbol,
   resolutionToSeconds,
@@ -339,12 +338,8 @@ export async function runTrendArbitrageOnce(
       candles = snapshot.candles;
       livePrice = snapshot.lastPrice;
     } else {
-      candles = await fetchDeltaExchangeCandles({
-        baseUrl: c.baseUrl,
-        symbol: c.symbol,
-        resolution: indicatorResolution,
-        lookbackSec,
-      });
+      console.log("[WAITING] WebSocket feed initializing...");
+      return { ok: true, fired: false, detail: "Waiting for websocket feed snapshot." };
     }
     const symApi = normalizeDeltaCandlesSymbol(c.baseUrl, c.symbol);
     const nowSecLog = Math.floor(Date.now() / 1000);
