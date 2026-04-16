@@ -75,6 +75,7 @@ export function calculateHalfTrend(
   candles: Candle[],
   amplitude: number = 2,
   channelDeviation: number = 2,
+  options?: { treatLastCandleAsForming?: boolean },
 ): HalfTrendResult {
   const n = candles.length;
   if (n === 0) {
@@ -133,8 +134,10 @@ export function calculateHalfTrend(
   let lastSell = false;
   let lastOpenTrend: 0 | 1 = 0;
   let lastCloseTrend: 0 | 1 = 0;
+  const treatLastCandleAsForming = Boolean(options?.treatLastCandleAsForming && n > 1);
+  const loopEndExclusive = treatLastCandleAsForming ? n - 1 : n;
 
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < loopEndExclusive; i++) {
     const trendPrevBar = trend;
 
     const close = closes[i]!;
@@ -205,6 +208,72 @@ export function calculateHalfTrend(
 
     lastBuy = trend === 0 && trendPrevBar === 1;
     lastSell = trend === 1 && trendPrevBar === 0;
+  }
+
+  if (treatLastCandleAsForming) {
+    const i = n - 1;
+    const close = closes[i]!;
+    const hb = highestBarsOffset(highs, i, amplitude);
+    const lb = lowestBarsOffset(lows, i, amplitude);
+    const highPrice = highs[i - hb]!;
+    const lowPrice = lows[i - lb]!;
+    const highma = smaHighAt(i);
+    const lowma = smaLowAt(i);
+    const atr2 = atrAt(i) / 2;
+    const _dev = channelDeviation * atr2;
+    const prevLowForFlip = i > 0 ? lows[i - 1]! : lows[i]!;
+    const prevHighForFlip = i > 0 ? highs[i - 1]! : highs[i]!;
+
+    // Non-mutating provisional pass for forming candle:
+    // - evaluate potential current-trend/line with frozen state from last closed candle
+    // - do not emit buy/sell signals from this pass
+    let pTrend: 0 | 1 = trend;
+    let pNextTrend: 0 | 1 = nextTrend;
+    let pMaxLowPrice = maxLowPrice;
+    let pMinHighPrice = minHighPrice;
+    let pUp = up;
+    let pDown = down;
+    const pPrevUp = prevUp;
+    const pPrevDown = prevDown;
+
+    if (pNextTrend === 1) {
+      pMaxLowPrice = Math.max(lowPrice, pMaxLowPrice);
+      if (!Number.isNaN(highma) && highma < pMaxLowPrice && close < prevLowForFlip) {
+        pTrend = 1;
+        pNextTrend = 0;
+        pMinHighPrice = highPrice;
+      }
+    } else {
+      pMinHighPrice = Math.min(highPrice, pMinHighPrice);
+      if (!Number.isNaN(lowma) && lowma > pMinHighPrice && close > prevHighForFlip) {
+        pTrend = 0;
+        pNextTrend = 1;
+        pMaxLowPrice = lowPrice;
+      }
+    }
+
+    if (pTrend === 0) {
+      if (pTrend !== trend) {
+        pUp = pPrevDown == null ? pDown : pPrevDown;
+      } else {
+        pUp = pPrevUp == null ? pMaxLowPrice : Math.max(pMaxLowPrice, pPrevUp);
+      }
+    } else {
+      if (pTrend !== trend) {
+        pDown = pPrevUp == null ? pUp : pPrevUp;
+      } else {
+        pDown = pPrevDown == null ? pMinHighPrice : Math.min(pMinHighPrice, pPrevDown);
+      }
+    }
+
+    const pHt = pTrend === 0 ? pUp : pDown;
+    lastPrevHt = trend === 0 ? up : down;
+    lastHt = pHt;
+    lastOpenTrend = trend;
+    lastCloseTrend = pTrend;
+    // Strict crossover memory: signals come only from confirmed closed-candle transitions.
+    lastBuy = false;
+    lastSell = false;
   }
 
   return {

@@ -370,7 +370,9 @@ export async function runTrendArbitrageOnce(
     };
   }
 
-  const half = calculateHalfTrend(candles, c.amplitude, c.channelDeviation);
+  const half = calculateHalfTrend(candles, c.amplitude, c.channelDeviation, {
+    treatLastCandleAsForming: true,
+  });
   const bar = candles[candles.length - 1]!;
   const barCloseLive = livePrice && livePrice > 0 ? livePrice : bar.close;
   const scanSignal = halfTrendSignalLabel(half);
