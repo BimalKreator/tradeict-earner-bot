@@ -73,7 +73,7 @@ function lowestBarsOffset(lows: number[], i: number, length: number): number {
  */
 export function calculateHalfTrend(
   candles: Candle[],
-  amplitude: number = 9,
+  amplitude: number = 2,
   channelDeviation: number = 2,
 ): HalfTrendResult {
   const n = candles.length;
@@ -119,8 +119,8 @@ export function calculateHalfTrend(
 
   let trend: 0 | 1 = 0;
   let nextTrend: 0 | 1 = 0;
-  let maxLowPrice = lows[0]!;
-  let minHighPrice = highs[0]!;
+  let maxLowPrice = lows[1] ?? lows[0]!;
+  let minHighPrice = highs[1] ?? highs[0]!;
   let up = 0;
   let down = 0;
   /** Pine `up[1]` / `down[1]` — `undefined` means `na`. */
@@ -149,15 +149,15 @@ export function calculateHalfTrend(
     const atr2 = atrAt(i) / 2;
     const _dev = channelDeviation * atr2;
 
-    const prevLowForFlip = i > 0 ? lows[i - 1]! : lowPrice;
-    const prevHighForFlip = i > 0 ? highs[i - 1]! : highPrice;
+    // Pine parity: nz(low[1], low) / nz(high[1], high)
+    const prevLowForFlip = i > 0 ? lows[i - 1]! : lows[i]!;
+    const prevHighForFlip = i > 0 ? highs[i - 1]! : highs[i]!;
 
     if (nextTrend === 1) {
       maxLowPrice = Math.max(lowPrice, maxLowPrice);
       if (
         !Number.isNaN(highma) &&
         highma < maxLowPrice &&
-        i > 0 &&
         close < prevLowForFlip
       ) {
         trend = 1;
@@ -169,7 +169,6 @@ export function calculateHalfTrend(
       if (
         !Number.isNaN(lowma) &&
         lowma > minHighPrice &&
-        i > 0 &&
         close > prevHighForFlip
       ) {
         trend = 0;
