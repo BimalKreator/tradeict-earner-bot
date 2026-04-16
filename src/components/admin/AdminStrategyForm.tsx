@@ -5,7 +5,6 @@ import Link from "next/link";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import type { AdminStrategyFormDefaults } from "@/lib/admin-strategy-form-defaults";
-import { isTrendArbitrageStrategySlug } from "@/lib/trend-arb-strategy-config";
 import {
   type StrategyFormState,
   createStrategyAction,
@@ -52,8 +51,10 @@ export function AdminStrategyForm(props: Props) {
         } satisfies AdminStrategyFormDefaults);
 
   const showTrendArbAdvanced =
-    props.mode === "edit" && isTrendArbitrageStrategySlug(d.slug) && d.trendArb != null;
-  const trendArbDefaults = showTrendArbAdvanced ? d.trendArb : null;
+    props.mode === "edit" &&
+    (d.slug ?? "").trim().toLowerCase().includes("trend-arb") &&
+    d?.trendArb != null;
+  const trendArbDefaults = showTrendArbAdvanced ? d?.trendArb ?? null : null;
 
   return (
     <GlassPanel className="space-y-6">
@@ -327,22 +328,48 @@ export function AdminStrategyForm(props: Props) {
               </div>
             </div>
 
-            <div>
-              <label
-                htmlFor={`${baseId}-trend-indicator-settings`}
-                className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
-              >
-                Indicator settings (JSON object)
-              </label>
-              <textarea
-                id={`${baseId}-trend-indicator-settings`}
-                name="trend_arb_indicator_settings_json"
-                rows={6}
-                spellCheck={false}
-                defaultValue={trendArbDefaults.indicatorSettingsJsonText}
-                className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/40 px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
-              />
-              {fieldError(state.fieldErrors, "trend_arb_indicator_settings_json")}
+            <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                Indicator settings
+              </h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-indicator-amplitude`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    HalfTrend amplitude
+                  </label>
+                  <input
+                    id={`${baseId}-trend-indicator-amplitude`}
+                    name="trend_arb_indicator_amplitude"
+                    type="number"
+                    step="1"
+                    required
+                    defaultValue={trendArbDefaults.indicatorAmplitude}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_indicator_amplitude")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-indicator-channel-dev`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Channel deviation
+                  </label>
+                  <input
+                    id={`${baseId}-trend-indicator-channel-dev`}
+                    name="trend_arb_indicator_channel_deviation"
+                    type="number"
+                    step="1"
+                    required
+                    defaultValue={trendArbDefaults.indicatorChannelDeviation}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "trend_arb_indicator_channel_deviation")}
+                </div>
+              </div>
             </div>
 
             <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">

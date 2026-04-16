@@ -1,6 +1,5 @@
 import { formatChartPointsForTextarea } from "@/lib/strategy-performance-chart";
 import {
-  formatTrendArbIndicatorSettings,
   isTrendArbitrageStrategySlug,
   trendArbStrategyConfigSchema,
 } from "@/lib/trend-arb-strategy-config";
@@ -20,7 +19,8 @@ export type AdminStrategyFormDefaults = {
   trendArb: {
     symbol: string;
     capitalAllocationPct: string;
-    indicatorSettingsJsonText: string;
+    indicatorAmplitude: string;
+    indicatorChannelDeviation: string;
     delta1EntryQtyPct: string;
     delta1TargetProfitPct: string;
     delta1StopLossPct: string;
@@ -59,6 +59,13 @@ export function strategyDefaultsFromRow(row: {
   const trendArbParsed = isTrendArb
     ? trendArbStrategyConfigSchema.safeParse(row.settingsJson)
     : null;
+  const rawTrendSettings = (row.settingsJson ?? {}) as Record<string, unknown>;
+  const rawDelta1 = (rawTrendSettings.delta1 ?? {}) as Record<string, unknown>;
+  const rawDelta2 = (rawTrendSettings.delta2 ?? {}) as Record<string, unknown>;
+  const rawIndicatorSettings = (rawTrendSettings.indicatorSettings ?? {}) as Record<
+    string,
+    unknown
+  >;
 
   return {
     slug: row.slug,
@@ -79,32 +86,61 @@ export function strategyDefaultsFromRow(row: {
     ),
     trendArb: !isTrendArb
       ? null
-      : trendArbParsed?.success
-        ? {
-            symbol: trendArbParsed.data.symbol,
-            capitalAllocationPct: String(trendArbParsed.data.capitalAllocationPct),
-            indicatorSettingsJsonText: formatTrendArbIndicatorSettings(
-              trendArbParsed.data.indicatorSettings,
-            ),
-            delta1EntryQtyPct: String(trendArbParsed.data.delta1.entryQtyPct),
-            delta1TargetProfitPct: String(trendArbParsed.data.delta1.targetProfitPct),
-            delta1StopLossPct: String(trendArbParsed.data.delta1.stopLossPct),
-            delta2StepQtyPct: String(trendArbParsed.data.delta2.stepQtyPct),
-            delta2StepMovePct: String(trendArbParsed.data.delta2.stepMovePct),
-            delta2TargetProfitPct: String(trendArbParsed.data.delta2.targetProfitPct),
-            delta2StopLossPct: String(trendArbParsed.data.delta2.stopLossPct),
-          }
-        : {
-            symbol: "BTC_USDT",
-            capitalAllocationPct: "100",
-            indicatorSettingsJsonText: "{}",
-            delta1EntryQtyPct: "100",
-            delta1TargetProfitPct: "1",
-            delta1StopLossPct: "3",
-            delta2StepQtyPct: "10",
-            delta2StepMovePct: "1",
-            delta2TargetProfitPct: "1",
-            delta2StopLossPct: "3",
-          },
+      : {
+          symbol:
+            (trendArbParsed?.success
+              ? trendArbParsed.data.symbol
+              : (rawTrendSettings.symbol as string | undefined)) ?? "BTC_USDT",
+          capitalAllocationPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.capitalAllocationPct
+              : ((rawTrendSettings.capitalAllocationPct as number | undefined) ?? 100),
+          ),
+          indicatorAmplitude: String(
+            trendArbParsed?.success
+              ? (trendArbParsed.data.indicatorSettings.amplitude ?? 9)
+              : ((rawIndicatorSettings.amplitude as number | undefined) ?? 9),
+          ),
+          indicatorChannelDeviation: String(
+            trendArbParsed?.success
+              ? (trendArbParsed.data.indicatorSettings.channelDeviation ?? 2)
+              : ((rawIndicatorSettings.channelDeviation as number | undefined) ?? 2),
+          ),
+          delta1EntryQtyPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta1.entryQtyPct
+              : ((rawDelta1.entryQtyPct as number | undefined) ?? 100),
+          ),
+          delta1TargetProfitPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta1.targetProfitPct
+              : ((rawDelta1.targetProfitPct as number | undefined) ?? 1),
+          ),
+          delta1StopLossPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta1.stopLossPct
+              : ((rawDelta1.stopLossPct as number | undefined) ?? 3),
+          ),
+          delta2StepQtyPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta2.stepQtyPct
+              : ((rawDelta2.stepQtyPct as number | undefined) ?? 10),
+          ),
+          delta2StepMovePct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta2.stepMovePct
+              : ((rawDelta2.stepMovePct as number | undefined) ?? 1),
+          ),
+          delta2TargetProfitPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta2.targetProfitPct
+              : ((rawDelta2.targetProfitPct as number | undefined) ?? 1),
+          ),
+          delta2StopLossPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta2.stopLossPct
+              : ((rawDelta2.stopLossPct as number | undefined) ?? 3),
+          ),
+        },
   };
 }

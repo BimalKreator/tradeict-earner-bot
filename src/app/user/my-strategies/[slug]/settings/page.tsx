@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 
 import { UserStrategySettingsForm } from "@/components/user/UserStrategySettingsForm";
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -60,12 +59,39 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
 
   const data = await getUserStrategySettingsPageData(userId, slug);
   if (!data) {
-    notFound();
+    return (
+      <div className="space-y-6">
+        <Link
+          href="/user/my-strategies"
+          className="text-sm text-[var(--accent)] hover:underline"
+        >
+          ← My strategies
+        </Link>
+        <h1 className="font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
+          Strategy settings
+        </h1>
+        <GlassPanel className="space-y-3">
+          <p className="text-sm text-[var(--text-muted)]">
+            This strategy does not have initialized settings for your account yet.
+          </p>
+          <p className="text-xs text-slate-400">
+            Click initialize to create your settings context, then configure capital,
+            leverage, and exchange accounts.
+          </p>
+          <Link
+            href="/user/my-strategies"
+            className="inline-flex rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-100 hover:bg-sky-500/20"
+          >
+            Initialize Settings
+          </Link>
+        </GlassPanel>
+      </div>
+    );
   }
 
   const constraints = {
-    recommendedCapitalInr: data.recommendedCapitalInr,
-    maxLeverage: data.maxLeverage,
+    recommendedCapitalInr: data.recommendedCapitalInr ?? null,
+    maxLeverage: data.maxLeverage ?? null,
   };
 
   const maxLevN =
@@ -73,9 +99,7 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
       ? Number(data.maxLeverage)
       : null;
   const initialCapital = data.capitalToUseInr ?? "";
-  const initialLeverage =
-    data.leverage ??
-    (maxLevN != null && Number.isFinite(maxLevN) ? "1" : "");
+  const initialLeverage = data.leverage ?? (maxLevN != null && Number.isFinite(maxLevN) ? "1" : "");
 
   return (
     <div className="space-y-8">
@@ -87,7 +111,7 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
           ← My strategies
         </Link>
         <h1 className="mt-2 font-[family-name:var(--font-display)] text-2xl font-bold text-[var(--text-primary)]">
-          {data.strategyName}
+          {data.strategyName ?? "Strategy"}
         </h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Capital and leverage for your bot run on this strategy.
@@ -95,15 +119,15 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
       </div>
 
       <UserStrategySettingsForm
-        strategySlug={data.strategySlug}
+        strategySlug={data.strategySlug ?? slug}
         constraints={constraints}
         initialCapitalToUseInr={initialCapital}
         initialLeverage={initialLeverage}
-        initialPrimaryExchangeId={data.primaryExchangeConnectionId}
-        initialSecondaryExchangeId={data.secondaryExchangeConnectionId}
-        deltaConnections={data.deltaConnections}
-        runStatus={data.runStatus}
-        canEditSettings={data.canEditSettings}
+        initialPrimaryExchangeId={data.primaryExchangeConnectionId ?? null}
+        initialSecondaryExchangeId={data.secondaryExchangeConnectionId ?? null}
+        deltaConnections={data.deltaConnections ?? []}
+        runStatus={data.runStatus ?? "ready_to_activate"}
+        canEditSettings={data.canEditSettings ?? false}
       />
     </div>
   );

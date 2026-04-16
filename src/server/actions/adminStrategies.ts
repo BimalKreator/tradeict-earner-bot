@@ -10,7 +10,6 @@ import {
   parsePerformanceChartJsonText,
 } from "@/lib/strategy-performance-chart";
 import {
-  isTrendArbitrageStrategySlug,
   trendArbStrategyConfigSchema,
   type TrendArbStrategyConfig,
 } from "@/lib/trend-arb-strategy-config";
@@ -146,21 +145,14 @@ function parseTrendArbConfigFromForm(
     formData.get("trend_arb_d2_stop_loss_pct"),
     "Delta 2 stop loss %",
   );
-
-  const indicatorRaw = String(
-    formData.get("trend_arb_indicator_settings_json") ?? "{}",
-  ).trim();
-  let indicatorParsed: unknown;
-  try {
-    indicatorParsed = indicatorRaw === "" ? {} : JSON.parse(indicatorRaw);
-  } catch {
-    return {
-      ok: false,
-      fieldErrors: {
-        trend_arb_indicator_settings_json: ["Indicator settings must be valid JSON."],
-      },
-    };
-  }
+  const indicatorAmplitude = parsePercentField(
+    formData.get("trend_arb_indicator_amplitude"),
+    "HalfTrend amplitude",
+  );
+  const indicatorChannelDeviation = parsePercentField(
+    formData.get("trend_arb_indicator_channel_deviation"),
+    "Channel deviation",
+  );
 
   const parseErrors: Record<string, string[]> = {};
   if (!cap.ok) parseErrors.trend_arb_capital_allocation_pct = [cap.error];
@@ -171,6 +163,14 @@ function parseTrendArbConfigFromForm(
   if (!d2StepMove.ok) parseErrors.trend_arb_d2_step_move_pct = [d2StepMove.error];
   if (!d2Tp.ok) parseErrors.trend_arb_d2_target_profit_pct = [d2Tp.error];
   if (!d2Sl.ok) parseErrors.trend_arb_d2_stop_loss_pct = [d2Sl.error];
+  if (!indicatorAmplitude.ok) {
+    parseErrors.trend_arb_indicator_amplitude = [indicatorAmplitude.error];
+  }
+  if (!indicatorChannelDeviation.ok) {
+    parseErrors.trend_arb_indicator_channel_deviation = [
+      indicatorChannelDeviation.error,
+    ];
+  }
   if (Object.keys(parseErrors).length > 0) {
     return { ok: false, fieldErrors: parseErrors };
   }
@@ -183,11 +183,18 @@ function parseTrendArbConfigFromForm(
   const d2StepMoveValue = d2StepMove.ok ? d2StepMove.value : 0;
   const d2TpValue = d2Tp.ok ? d2Tp.value : 0;
   const d2SlValue = d2Sl.ok ? d2Sl.value : 0;
+  const indicatorAmplitudeValue = indicatorAmplitude.ok ? indicatorAmplitude.value : 0;
+  const indicatorChannelDeviationValue = indicatorChannelDeviation.ok
+    ? indicatorChannelDeviation.value
+    : 0;
 
   const cfgParsed = trendArbStrategyConfigSchema.safeParse({
     symbol,
     capitalAllocationPct: capValue,
-    indicatorSettings: indicatorParsed,
+    indicatorSettings: {
+      amplitude: indicatorAmplitudeValue,
+      channelDeviation: indicatorChannelDeviationValue,
+    },
     delta1: {
       entryQtyPct: d1QtyValue,
       targetProfitPct: d1TpValue,
@@ -208,7 +215,7 @@ function parseTrendArbConfigFromForm(
       errs.trend_arb_capital_allocation_pct = f.capitalAllocationPct;
     }
     if (f.indicatorSettings?.length) {
-      errs.trend_arb_indicator_settings_json = f.indicatorSettings;
+      errs.trend_arb_indicator_amplitude = f.indicatorSettings;
     }
     if (f.delta1?.length) errs.trend_arb_d1_entry_qty_pct = f.delta1;
     if (f.delta2?.length) errs.trend_arb_d2_step_qty_pct = f.delta2;
@@ -393,7 +400,7 @@ export async function updateStrategyAction(
     updatedAt: now,
   };
 
-  if (isTrendArbitrageStrategySlug(existing.slug)) {
+  if (existing.slug.trim().toLowerCase().includes("trend-arb")) {
     const parsedTrend = parseTrendArbConfigFromForm(formData);
     if (!parsedTrend.ok) {
       return { fieldErrors: parsedTrend.fieldErrors };

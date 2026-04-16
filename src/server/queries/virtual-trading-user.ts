@@ -24,6 +24,7 @@ export type VirtualRunOverview = {
 
 export type VirtualOrderLedgerRow = {
   id: string;
+  correlationId: string | null;
   symbol: string;
   side: string;
   quantity: string;
@@ -88,6 +89,7 @@ export async function listVirtualOrdersForRun(params: {
   const rows = await db
     .select({
       id: virtualBotOrders.id,
+      correlationId: virtualBotOrders.correlationId,
       symbol: virtualBotOrders.symbol,
       side: virtualBotOrders.side,
       quantity: virtualBotOrders.quantity,
@@ -111,6 +113,7 @@ export async function listVirtualOrdersForRun(params: {
 
   return rows.map((r) => ({
     id: r.id,
+    correlationId: r.correlationId,
     symbol: r.symbol,
     side: r.side,
     quantity: String(r.quantity),

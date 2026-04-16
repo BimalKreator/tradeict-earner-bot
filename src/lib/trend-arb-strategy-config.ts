@@ -60,7 +60,7 @@ export type TrendArbStrategyConfig = z.infer<typeof trendArbStrategyConfigSchema
 
 export function isTrendArbitrageStrategySlug(slug: string): boolean {
   const normalized = slug.trim().toLowerCase();
-  return normalized === "trend-arbitrage" || normalized === "trend-arb";
+  return normalized.includes("trend-arb");
 }
 
 export function formatTrendArbIndicatorSettings(

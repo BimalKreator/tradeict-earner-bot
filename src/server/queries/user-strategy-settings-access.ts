@@ -9,6 +9,7 @@ import {
 } from "@/server/db/schema";
 
 import { listUserDeltaIndiaExchangeConnections } from "./user-exchange-connection";
+import { ensureMissingStrategyRunsForUser } from "./user-my-strategies";
 
 type RunRow = InferSelectModel<typeof userStrategyRuns>;
 
@@ -44,6 +45,10 @@ export async function getUserStrategySettingsPageData(
   if (!db) return null;
   const slug = strategySlug.trim();
   if (!slug) return null;
+
+  // Keep settings page resilient: if payment flow created a subscription but run
+  // init has not happened yet, synthesize the missing run row first.
+  await ensureMissingStrategyRunsForUser(userId);
 
   const [row] = await db
     .select({
