@@ -47,6 +47,8 @@ export type ActivePositionLeg = {
   side: "long" | "short";
   netQty: number;
   avgEntryPrice: number | null;
+  displayNetQty: number;
+  displayAvgEntryPrice: number | null;
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
   markPrice: number | null;
@@ -199,6 +201,8 @@ function buildLegVirtual(params: {
   userLabel?: string;
   qtyPctOfCapital?: number | null;
   activeClipCount?: number | null;
+  displayNetQtyOverride?: number | null;
+  displayAvgEntryPriceOverride?: number | null;
 }): ActivePositionLeg | null {
   const openWindowOrders = extractCurrentOpenLedgerWindow(params.orders);
   const derivedSym =
@@ -235,6 +239,8 @@ function buildLegVirtual(params: {
     side: legSide(netQty),
     netQty,
     avgEntryPrice,
+    displayNetQty: params.displayNetQtyOverride ?? netQty,
+    displayAvgEntryPrice: params.displayAvgEntryPriceOverride ?? avgEntryPrice,
     realizedPnlUsd: dAll.realizedPnlUsd,
     unrealizedPnlUsd: unrealizedPnlUsd,
     markPrice: mark,
@@ -276,6 +282,8 @@ function buildLegReal(params: {
     side: legSide(dOpen.openNetQty),
     netQty: dOpen.openNetQty,
     avgEntryPrice: dOpen.avgEntryPrice,
+    displayNetQty: dOpen.openNetQty,
+    displayAvgEntryPrice: dOpen.avgEntryPrice,
     realizedPnlUsd: dAll.realizedPnlUsd,
     unrealizedPnlUsd: dOpen.unrealizedPnlUsd,
     markPrice: mark,
@@ -313,6 +321,38 @@ function deriveTrendArbSecondaryClipCount(orders: LedgerOrderRow[], openNetQty: 
     .find((qty) => Number.isFinite(qty) && qty > QTY_EPS);
   if (!(entryClipQty && entryClipQty > QTY_EPS)) return null;
   return Math.max(0, Math.round(Math.abs(openNetQty) / entryClipQty));
+}
+
+function latestEntryDisplayForAccount(params: {
+  strategySlug: string;
+  account: "D1" | "D2";
+  orderRows: {
+    symbol: string;
+    side: string;
+    quantity: string;
+    fillPrice: string | null;
+    status: string;
+    correlationId: string | null;
+    signalAction: string | null;
+    createdAt: Date;
+  }[];
+}): { qty: number; entryPrice: number | null } | null {
+  const filtered = params.orderRows
+    .filter((row) => row.status === "filled" || row.status === "partial_fill")
+    .filter((row) => row.signalAction === "entry")
+    .filter((row) =>
+      isTrendArbSlug(params.strategySlug)
+        ? (params.account === "D2"
+            ? classifyTrendArbAccount({ correlationId: row.correlationId }) === "secondary"
+            : classifyTrendArbAccount({ correlationId: row.correlationId }) === "primary")
+        : params.account === "D1",
+    );
+  if (filtered.length === 0) return null;
+  const latest = filtered[filtered.length - 1]!;
+  const qty = Math.abs(Number(latest.quantity));
+  const entryPrice = latest.fillPrice != null ? Number(latest.fillPrice) : null;
+  if (!(Number.isFinite(qty) && qty > QTY_EPS)) return null;
+  return { qty, entryPrice: Number.isFinite(entryPrice) && (entryPrice ?? 0) > 0 ? entryPrice : null };
 }
 
 function closedLegSideFromExitOrder(side: string): "long" | "short" {
@@ -550,9 +590,16 @@ export async function getUserVirtualActivePositionGroups(
         overrideOpenNetQty: Number(run.openNetQty),
         overrideAvgEntryPrice: Number(run.openAvgEntryPrice),
         overrideOpenSymbol: run.openSymbol,
+        displayNetQtyOverride: Math.abs(Number(run.openNetQty)),
+        displayAvgEntryPriceOverride: Number(run.openAvgEntryPrice) || null,
         qtyPctOfCapital: run.strategySettings?.d1QtyPctOfCapital ?? null,
       });
       const d2OpenNetQty = deriveLedgerMetrics(extractCurrentOpenLedgerWindow(sOrd), null).openNetQty;
+      const d2LatestEntry = latestEntryDisplayForAccount({
+        strategySlug: run.strategySlug,
+        account: "D2",
+        orderRows: run.orderRows,
+      });
       const l2 = buildLegVirtual({
         userId,
         virtualRunId: run.runId,
@@ -562,6 +609,8 @@ export async function getUserVirtualActivePositionGroups(
         account: "D2",
         orders: sOrd,
         markBySymbol,
+        displayNetQtyOverride: d2LatestEntry?.qty ?? null,
+        displayAvgEntryPriceOverride: d2LatestEntry?.entryPrice ?? null,
         qtyPctOfCapital: run.strategySettings?.d2QtyPctOfCapital ?? null,
         activeClipCount: deriveTrendArbSecondaryClipCount(sOrd, d2OpenNetQty),
       });
@@ -577,6 +626,8 @@ export async function getUserVirtualActivePositionGroups(
         account: "D1",
         orders: ledger,
         markBySymbol,
+        displayNetQtyOverride: Math.abs(Number(run.openNetQty)),
+        displayAvgEntryPriceOverride: Number(run.openAvgEntryPrice) || null,
         qtyPctOfCapital: run.strategySettings?.d1QtyPctOfCapital ?? null,
       });
       if (l) legs.push(l);
@@ -641,6 +692,16 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     openNetQty: string;
     openAvgEntryPrice: string;
     openSymbol: string | null;
+    orderRows: {
+      symbol: string;
+      side: string;
+      quantity: string;
+      fillPrice: string | null;
+      status: string;
+      correlationId: string | null;
+      signalAction: string | null;
+      createdAt: Date;
+    }[];
     ledger: LedgerOrderRow[];
     isTa: boolean;
     label: string;
@@ -656,6 +717,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         fillPrice: virtualBotOrders.fillPrice,
         status: virtualBotOrders.status,
         correlationId: virtualBotOrders.correlationId,
+        signalAction: virtualBotOrders.signalAction,
         createdAt: virtualBotOrders.createdAt,
       })
       .from(virtualBotOrders)
@@ -692,6 +754,16 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       openNetQty: String(run.openNetQty ?? "0"),
       openAvgEntryPrice: String(run.openAvgEntryPrice ?? "0"),
       openSymbol: run.openSymbol,
+      orderRows: orderRows.map((row) => ({
+        symbol: row.symbol,
+        side: row.side,
+        quantity: String(row.quantity),
+        fillPrice: row.fillPrice != null ? String(row.fillPrice) : null,
+        status: row.status,
+        correlationId: row.correlationId,
+        signalAction: row.signalAction,
+        createdAt: row.createdAt,
+      })),
       ledger,
       isTa,
       label,
@@ -785,6 +857,11 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         qtyPctOfCapital: c.strategySettings?.d1QtyPctOfCapital ?? null,
       });
       const d2OpenNetQty = deriveLedgerMetrics(extractCurrentOpenLedgerWindow(sOrd), null).openNetQty;
+      const d2LatestEntry = latestEntryDisplayForAccount({
+        strategySlug: c.strategySlug,
+        account: "D2",
+        orderRows: c.orderRows,
+      });
       const l2 = buildLegVirtual({
         userId: c.userId,
         virtualRunId: c.runId,
@@ -795,6 +872,8 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         orders: sOrd,
         markBySymbol,
         userLabel: c.label,
+        displayNetQtyOverride: d2LatestEntry?.qty ?? null,
+        displayAvgEntryPriceOverride: d2LatestEntry?.entryPrice ?? null,
         qtyPctOfCapital: c.strategySettings?.d2QtyPctOfCapital ?? null,
         activeClipCount: deriveTrendArbSecondaryClipCount(sOrd, d2OpenNetQty),
       });
@@ -811,6 +890,8 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         orders: c.ledger,
         markBySymbol,
         userLabel: c.label,
+        displayNetQtyOverride: Math.abs(Number(c.openNetQty)),
+        displayAvgEntryPriceOverride: Number(c.openAvgEntryPrice) || null,
         qtyPctOfCapital: c.strategySettings?.d1QtyPctOfCapital ?? null,
       });
       if (l) legs.push(l);

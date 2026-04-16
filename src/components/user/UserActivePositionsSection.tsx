@@ -207,10 +207,10 @@ export function UserActivePositionsSection({
                             <td className="px-4 py-3 font-medium">{leg.symbol}</td>
                             <td className="px-4 py-3 capitalize">{sideFromNetQty(leg.side, leg.netQty)}</td>
                             <td className="px-4 py-3 tabular-nums text-slate-300">
-                              {qtyDisplay(leg.netQty, leg.qtyPctOfCapital)}
+                              {qtyDisplay(leg.displayNetQty, leg.qtyPctOfCapital)}
                             </td>
                             <td className="px-4 py-3 tabular-nums text-slate-300">
-                              {leg.avgEntryPrice != null ? leg.avgEntryPrice.toFixed(2) : "—"}
+                              {leg.displayAvgEntryPrice != null ? leg.displayAvgEntryPrice.toFixed(2) : "—"}
                             </td>
                             <td className="px-4 py-3 tabular-nums text-white">
                               {leg.markPrice != null ? leg.markPrice.toFixed(2) : "—"}

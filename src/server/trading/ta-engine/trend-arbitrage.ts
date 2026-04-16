@@ -35,6 +35,11 @@ import {
   type TrendArbSide,
 } from "./trend-arb-dispatch";
 import { pollTrendArbRiskAndHedges, pollTrendArbVirtualRiskAndHedges } from "./trend-arb-poll";
+import {
+  ensureTrendArbLiveFeed,
+  getTrendArbLiveSnapshot,
+  subscribeTrendArbLiveTicks,
+} from "./trend-arb-live-feed";
 import { loadTrendArbExecutionScope, type TrendArbExecutionScope } from "./trend-arb-scope";
 import type { TrendArbitrageEnv, TrendArbRuntimeSettings } from "./trend-arb-types";
 import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
@@ -318,13 +323,29 @@ export async function runTrendArbitrageOnce(
   const minHistorySec = computeTrendArbLookbackSeconds(resSec, TREND_ARB_TARGET_CLOSED_BARS);
   const lookbackSec = Math.max(c.lookbackSec, minHistorySec);
   let candles: OhlcvCandle[];
+  let livePrice: number | null = null;
   try {
-    candles = await fetchDeltaExchangeCandles({
+    await ensureTrendArbLiveFeed({
       baseUrl: c.baseUrl,
       symbol: c.symbol,
       resolution: indicatorResolution,
       lookbackSec,
     });
+    const snapshot = getTrendArbLiveSnapshot({
+      symbol: c.symbol,
+      resolution: indicatorResolution,
+    });
+    if (snapshot && snapshot.candles.length > 0) {
+      candles = snapshot.candles;
+      livePrice = snapshot.lastPrice;
+    } else {
+      candles = await fetchDeltaExchangeCandles({
+        baseUrl: c.baseUrl,
+        symbol: c.symbol,
+        resolution: indicatorResolution,
+        lookbackSec,
+      });
+    }
     const symApi = normalizeDeltaCandlesSymbol(c.baseUrl, c.symbol);
     const nowSecLog = Math.floor(Date.now() / 1000);
     console.log(
@@ -349,18 +370,19 @@ export async function runTrendArbitrageOnce(
     };
   }
 
-  const half = calculateHalfTrend(closed, c.amplitude, c.channelDeviation);
-  const bar = closed[closed.length - 1]!;
+  const half = calculateHalfTrend(candles, c.amplitude, c.channelDeviation);
+  const bar = candles[candles.length - 1]!;
+  const barCloseLive = livePrice && livePrice > 0 ? livePrice : bar.close;
   const scanSignal = halfTrendSignalLabel(half);
   console.log(
-    `[SCANNING] ${c.symbol}: HalfTrend is ${fmtHt(half.htValue)}, Previous ${fmtHt(half.prevHtValue)}, Price is ${fmtHt(bar.close)}, Signal: ${scanSignal}`,
+    `[SCANNING] ${c.symbol}: HalfTrend is ${fmtHt(half.htValue)}, Previous ${fmtHt(half.prevHtValue)}, Price is ${fmtHt(barCloseLive)}, Signal: ${scanSignal}`,
   );
 
   // Always monitor active virtual runs for this strategy in parallel with live scope logic.
   const vMon = await pollTrendArbVirtualRiskAndHedges({
     env: c,
     barTime: bar.time,
-    barClose: bar.close,
+    barClose: barCloseLive,
   });
 
   let primaryFlat = !c.executionScope;
@@ -371,7 +393,7 @@ export async function runTrendArbitrageOnce(
         env: c,
         scope: c.executionScope,
         barTime: bar.time,
-        barClose: bar.close,
+        barClose: barCloseLive,
       });
       primaryFlat = poll.primaryFlat;
       pollDetail = [poll.detail, vMon.detail].filter(Boolean).join("|");
@@ -400,7 +422,7 @@ export async function runTrendArbitrageOnce(
   const hasCrossover = half.buySignal || half.sellSignal;
   if (!hasCrossover) {
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"}) | ${fmtCloseVsHt(bar.close, half.htValue)}`,
+      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"}) | ${fmtCloseVsHt(barCloseLive, half.htValue)}`,
     );
     return {
       ok: true,
@@ -469,7 +491,7 @@ export async function runTrendArbitrageOnce(
   }
 
   console.log(
-    `[ENTRY-CHECK] ${c.symbol}: evaluating simultaneous initial hedge entries @ ${fmtHt(bar.close)} (D1=${d1Side.toUpperCase()}, D2=${d2Side.toUpperCase()}) correlations D1=${correlationId}, D2=${d2InitialCorrelationId} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
+    `[ENTRY-CHECK] ${c.symbol}: evaluating simultaneous initial hedge entries @ ${fmtHt(barCloseLive)} (D1=${d1Side.toUpperCase()}, D2=${d2Side.toUpperCase()}) correlations D1=${correlationId}, D2=${d2InitialCorrelationId} | ${fmtCloseVsHt(barCloseLive, half.htValue)}`,
   );
 
   const dispatchScope = c.executionScope
@@ -487,7 +509,7 @@ export async function runTrendArbitrageOnce(
       targetProfitPct: c.runtime.d1TargetProfitPct / 100,
       side: d1Side,
       candleTime: bar.time,
-      markPrice: bar.close,
+      markPrice: barCloseLive,
       ...dispatchScope,
     }),
     dispatchTrendArbSecondaryHedgeClip({
@@ -497,7 +519,7 @@ export async function runTrendArbitrageOnce(
       stepIndex: 0,
       side: d2Side,
       forceSide: d2Side,
-      markPrice: bar.close,
+      markPrice: barCloseLive,
       quantity: c.runtime.d2StepQty,
       stepQtyPct: c.runtime.d2StepQtyPct,
       targetProfitPct: c.runtime.d2TargetProfitPct / 100,
@@ -514,7 +536,7 @@ export async function runTrendArbitrageOnce(
           ? `d2:${secondaryDispatch.error}`
           : "unknown_dispatch_error";
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: initial hedge dispatch failed — ${dispatchError} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
+      `[ENTRY-CHECK] ${c.symbol}: initial hedge dispatch failed — ${dispatchError} | ${fmtCloseVsHt(barCloseLive, half.htValue)}`,
     );
     return { ok: false, error: dispatchError };
   }
@@ -581,12 +603,43 @@ export function startTrendArbWorkerLoop(): NodeJS.Timeout {
     Number(process.env.TA_TREND_ARB_INTERVAL_MS?.trim() || "60000") || 60_000,
   );
   tradingLog("info", "ta_trend_arb_worker_started", { intervalMs: INTERVAL_MS });
-  void runTrendArbitrageOnce().catch((e) => {
-    console.error("[trend-arb] initial tick:", e);
-  });
-  return setInterval(() => {
-    void runTrendArbitrageOnce().catch((e) => {
-      console.error("[trend-arb] tick:", e);
-    });
-  }, INTERVAL_MS);
+  let running = false;
+  const runOnceSafe = () => {
+    if (running) return;
+    running = true;
+    void runTrendArbitrageOnce()
+      .catch((e) => {
+        console.error("[trend-arb] tick:", e);
+      })
+      .finally(() => {
+        running = false;
+      });
+  };
+
+  void (async () => {
+    const envRes = await readTrendArbitrageEnv();
+    if (envRes.kind === "ok") {
+      const resolution = envRes.config.runtime.indicatorSettings.timeframe || "1m";
+      await ensureTrendArbLiveFeed({
+        symbol: envRes.config.symbol,
+        resolution,
+        baseUrl: envRes.config.baseUrl,
+        lookbackSec: Math.max(
+          envRes.config.lookbackSec,
+          computeTrendArbLookbackSeconds(
+            resolutionToSeconds(resolution),
+            TREND_ARB_TARGET_CLOSED_BARS,
+          ),
+        ),
+      });
+      subscribeTrendArbLiveTicks({
+        symbol: envRes.config.symbol,
+        resolution,
+        onTick: runOnceSafe,
+      });
+    }
+    runOnceSafe();
+  })();
+
+  return setInterval(runOnceSafe, INTERVAL_MS);
 }

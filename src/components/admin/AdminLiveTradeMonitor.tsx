@@ -294,10 +294,10 @@ export function AdminLiveTradeMonitor({
                   <td className="px-3 py-2 text-slate-300">{row.userLabel ?? "—"}</td>
                   <td className="px-3 py-2 capitalize">{sideFromNetQty(row.side, row.netQty)}</td>
                   <td className="px-3 py-2 tabular-nums text-slate-300">
-                    {qtyDisplay(row.netQty, row.qtyPctOfCapital)}
+                    {qtyDisplay(row.displayNetQty, row.qtyPctOfCapital)}
                   </td>
                   <td className="px-3 py-2 tabular-nums text-slate-300">
-                    {row.avgEntryPrice != null ? row.avgEntryPrice.toFixed(2) : "—"}
+                    {row.displayAvgEntryPrice != null ? row.displayAvgEntryPrice.toFixed(2) : "—"}
                   </td>
                   <td className="px-3 py-2 tabular-nums text-slate-300">
                     {row.markPrice != null ? row.markPrice.toFixed(2) : "—"}
