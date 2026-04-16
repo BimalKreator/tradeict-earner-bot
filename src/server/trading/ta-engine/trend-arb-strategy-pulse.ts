@@ -119,6 +119,7 @@ async function loadLatestVirtualD1ForStrategy(
       and(
         eq(virtualBotOrders.virtualRunId, latest.virtualRunId),
         sql`${virtualBotOrders.status} in ('filled', 'partial_fill')`,
+        eq(virtualBotOrders.signalAction, "entry"),
       ),
     )
     .orderBy(desc(virtualBotOrders.createdAt))

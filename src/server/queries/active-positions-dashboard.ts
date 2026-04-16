@@ -4,7 +4,9 @@ import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import {
   classifyTrendArbAccount,
   deriveLedgerMetrics,
+  isFilledOrder,
   isTrendArbSlug,
+  num,
   type LedgerOrderRow,
 } from "@/lib/virtual-ledger-metrics";
 import { db } from "@/server/db";
@@ -157,6 +159,29 @@ async function fetchMarksForSymbols(symbols: string[]): Promise<Map<string, numb
   return out;
 }
 
+/**
+ * Keep only the current open-leg segment of a run/account ledger.
+ * This prevents historical closed cycles from polluting current entry/qty display.
+ */
+function extractCurrentOpenLedgerWindow(orders: LedgerOrderRow[]): LedgerOrderRow[] {
+  if (orders.length === 0) return [];
+  let runningNet = 0;
+  let lastFlatIdx = -1;
+  for (let i = 0; i < orders.length; i++) {
+    const o = orders[i]!;
+    if (!isFilledOrder(o.status)) continue;
+    const qty = num(o.quantity);
+    if (!(qty > 0)) continue;
+    runningNet += o.side === "buy" ? qty : -qty;
+    if (Math.abs(runningNet) <= QTY_EPS) {
+      runningNet = 0;
+      lastFlatIdx = i;
+    }
+  }
+  if (Math.abs(runningNet) <= QTY_EPS) return [];
+  return orders.slice(lastFlatIdx + 1);
+}
+
 function buildLegVirtual(params: {
   userId: string;
   virtualRunId: string;
@@ -175,13 +200,16 @@ function buildLegVirtual(params: {
   qtyPctOfCapital?: number | null;
   activeClipCount?: number | null;
 }): ActivePositionLeg | null {
-  const derivedSym = params.orders.length > 0 ? params.orders[params.orders.length - 1]!.symbol : null;
+  const openWindowOrders = extractCurrentOpenLedgerWindow(params.orders);
+  const derivedSym =
+    openWindowOrders.length > 0 ? openWindowOrders[openWindowOrders.length - 1]!.symbol : null;
   const sym = params.overrideOpenSymbol ?? derivedSym;
   const mark = sym ? params.markBySymbol.get(sym) ?? null : null;
-  const d = deriveLedgerMetrics(params.orders, mark);
+  const dOpen = deriveLedgerMetrics(openWindowOrders, mark);
+  const dAll = deriveLedgerMetrics(params.orders, mark);
 
-  const netQty = params.overrideOpenNetQty ?? d.openNetQty;
-  const avgEntryPrice = params.overrideAvgEntryPrice ?? d.avgEntryPrice;
+  const netQty = params.overrideOpenNetQty ?? dOpen.openNetQty;
+  const avgEntryPrice = params.overrideAvgEntryPrice ?? dOpen.avgEntryPrice;
   if (Math.abs(netQty) <= QTY_EPS) return null;
 
   const unrealizedPnlUsd =
@@ -191,7 +219,7 @@ function buildLegVirtual(params: {
     Number.isFinite(avgEntryPrice) &&
     mark > 0
       ? netQty * (mark - avgEntryPrice)
-      : d.unrealizedPnlUsd;
+      : dOpen.unrealizedPnlUsd;
 
   return {
     key: `v:${params.virtualRunId}:${params.account}`,
@@ -203,11 +231,11 @@ function buildLegVirtual(params: {
     strategyName: params.strategyName,
     strategySlug: params.strategySlug,
     account: params.account,
-    symbol: sym ?? d.openSymbol ?? "—",
+    symbol: sym ?? dOpen.openSymbol ?? "—",
     side: legSide(netQty),
     netQty,
     avgEntryPrice,
-    realizedPnlUsd: d.realizedPnlUsd,
+    realizedPnlUsd: dAll.realizedPnlUsd,
     unrealizedPnlUsd: unrealizedPnlUsd,
     markPrice: mark,
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
@@ -229,9 +257,11 @@ function buildLegReal(params: {
   qtyPctOfCapital?: number | null;
   activeClipCount?: number | null;
 }): ActivePositionLeg | null {
+  const openWindowOrders = extractCurrentOpenLedgerWindow(params.orders);
   const mark = params.markBySymbol.get(params.symbolHint) ?? null;
-  const d = deriveLedgerMetrics(params.orders, mark);
-  if (Math.abs(d.openNetQty) <= QTY_EPS) return null;
+  const dOpen = deriveLedgerMetrics(openWindowOrders, mark);
+  const dAll = deriveLedgerMetrics(params.orders, mark);
+  if (Math.abs(dOpen.openNetQty) <= QTY_EPS) return null;
   return {
     key: `r:${params.runId}:${params.account}:${params.symbolHint}`,
     mode: "real",
@@ -242,12 +272,12 @@ function buildLegReal(params: {
     strategyName: params.strategyName,
     strategySlug: params.strategySlug,
     account: params.account,
-    symbol: d.openSymbol ?? params.symbolHint,
-    side: legSide(d.openNetQty),
-    netQty: d.openNetQty,
-    avgEntryPrice: d.avgEntryPrice,
-    realizedPnlUsd: d.realizedPnlUsd,
-    unrealizedPnlUsd: d.unrealizedPnlUsd,
+    symbol: dOpen.openSymbol ?? params.symbolHint,
+    side: legSide(dOpen.openNetQty),
+    netQty: dOpen.openNetQty,
+    avgEntryPrice: dOpen.avgEntryPrice,
+    realizedPnlUsd: dAll.realizedPnlUsd,
+    unrealizedPnlUsd: dOpen.unrealizedPnlUsd,
     markPrice: mark,
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
     activeClipCount: params.activeClipCount ?? null,
@@ -522,7 +552,7 @@ export async function getUserVirtualActivePositionGroups(
         overrideOpenSymbol: run.openSymbol,
         qtyPctOfCapital: run.strategySettings?.d1QtyPctOfCapital ?? null,
       });
-      const d2OpenNetQty = deriveLedgerMetrics(sOrd, null).openNetQty;
+      const d2OpenNetQty = deriveLedgerMetrics(extractCurrentOpenLedgerWindow(sOrd), null).openNetQty;
       const l2 = buildLegVirtual({
         userId,
         virtualRunId: run.runId,
@@ -754,7 +784,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         overrideOpenSymbol: c.openSymbol,
         qtyPctOfCapital: c.strategySettings?.d1QtyPctOfCapital ?? null,
       });
-      const d2OpenNetQty = deriveLedgerMetrics(sOrd, null).openNetQty;
+      const d2OpenNetQty = deriveLedgerMetrics(extractCurrentOpenLedgerWindow(sOrd), null).openNetQty;
       const l2 = buildLegVirtual({
         userId: c.userId,
         virtualRunId: c.runId,
@@ -840,7 +870,10 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
           : r.strategySettings?.d1QtyPctOfCapital ?? null,
       activeClipCount:
         account === "D2"
-          ? deriveTrendArbSecondaryClipCount(ledger, deriveLedgerMetrics(ledger, null).openNetQty)
+          ? deriveTrendArbSecondaryClipCount(
+              ledger,
+              deriveLedgerMetrics(extractCurrentOpenLedgerWindow(ledger), null).openNetQty,
+            )
           : null,
     });
     if (lr) legs.push(lr);
