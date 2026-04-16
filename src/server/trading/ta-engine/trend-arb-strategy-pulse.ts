@@ -1,8 +1,9 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import { db } from "@/server/db";
 import { strategies } from "@/server/db/schema";
+import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
 
 import { calculateHalfTrend } from "./indicators/halftrend";
 import {
@@ -29,6 +30,12 @@ export type TrendArbMarketPulse = {
   /** Latest closed bar had a HalfTrend buy or sell signal (worker entry gate). */
   hasEntrySignalBar: boolean;
   history: TrendArbPulseHistory;
+  /**
+   * Optional: latest open D1 info pulled from `virtual_strategy_runs`.
+   * Used to keep admin/user dashboards aligned with worker PnL math.
+   */
+  d1EntryPrice?: number | null;
+  d1Side?: "long" | "short" | null;
 };
 
 const pulseCache = new Map<string, { at: number; value: TrendArbMarketPulse | null }>();
@@ -69,6 +76,56 @@ function emptyHistory(symbolRequested: string, baseUrl: string): TrendArbPulseHi
     symbolRequested,
     symbolFetched: normalizeDeltaCandlesSymbol(baseUrl, symbolRequested),
   };
+}
+
+async function loadLatestVirtualD1ForStrategy(
+  strategyId: string,
+): Promise<{ d1EntryPrice: number | null; d1Side: "long" | "short" | null } | null> {
+  if (!db) return null;
+
+  const [latest] = await db
+    .select({
+      virtualRunId: virtualStrategyRuns.id,
+      openNetQty: virtualStrategyRuns.openNetQty,
+      openAvgEntryPrice: virtualStrategyRuns.openAvgEntryPrice,
+    })
+    .from(virtualStrategyRuns)
+    .where(
+      and(
+        eq(virtualStrategyRuns.strategyId, strategyId),
+        eq(virtualStrategyRuns.status, "active"),
+        sql`abs(cast(${virtualStrategyRuns.openNetQty} as numeric)) > 0`,
+      ),
+    )
+    .orderBy(desc(virtualStrategyRuns.updatedAt))
+    .limit(1);
+
+  if (!latest) return null;
+
+  const openNetQty = Number(latest.openNetQty ?? "0");
+  const entryFromRun = Number(latest.openAvgEntryPrice ?? "0");
+  const d1Side = openNetQty > 0 ? "long" : openNetQty < 0 ? "short" : null;
+
+  // Prefer the engine’s stored avg entry for the open virtual D1 position.
+  if (entryFromRun > 0) {
+    return { d1EntryPrice: entryFromRun, d1Side };
+  }
+
+  // Fallback: use the latest filled virtual fill price (entry) if avg-entry wasn’t populated.
+  const [lastFill] = await db
+    .select({ fillPrice: virtualBotOrders.fillPrice })
+    .from(virtualBotOrders)
+    .where(
+      and(
+        eq(virtualBotOrders.virtualRunId, latest.virtualRunId),
+        sql`${virtualBotOrders.status} in ('filled', 'partial_fill')`,
+      ),
+    )
+    .orderBy(desc(virtualBotOrders.createdAt))
+    .limit(1);
+
+  const d1EntryPrice = lastFill ? Number(lastFill.fillPrice ?? "0") : null;
+  return { d1EntryPrice: d1EntryPrice && d1EntryPrice > 0 ? d1EntryPrice : null, d1Side };
 }
 
 /**
@@ -170,6 +227,16 @@ export async function getTrendArbMarketPulse(strategyId: string): Promise<TrendA
     };
   }
 
+  if (value) {
+    const latestVirtualD1 = await loadLatestVirtualD1ForStrategy(strategyId);
+    if (latestVirtualD1) {
+      value = {
+        ...value,
+        d1EntryPrice: latestVirtualD1.d1EntryPrice,
+        d1Side: latestVirtualD1.d1Side,
+      };
+    }
+  }
   pulseCache.set(strategyId, { at: now, value });
   return value;
 }

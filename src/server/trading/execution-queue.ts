@@ -40,7 +40,10 @@ export async function enqueueStrategySignalJobs(
       attempts: 0,
       maxAttempts: 5,
       runAt: now,
-      payload: p,
+      payload: {
+        ...p,
+        executionMode: p.executionMode ?? "live",
+      },
       updatedAt: now,
     })),
   );
@@ -165,8 +168,33 @@ export async function countDueTradingJobs(): Promise<number> {
     .where(
       and(
         eq(tradingExecutionJobs.status, "pending"),
-        lte(tradingExecutionJobs.runAt, new Date()),
+        lte(tradingExecutionJobs.runAt, sql`NOW()`),
       ),
     );
   return Number(r?.c ?? 0);
+}
+
+/**
+ * Requeues jobs stuck in `processing` beyond a lock timeout (worker crash/restart safety).
+ */
+export async function requeueStaleProcessingJobs(
+  staleMs = 60_000,
+): Promise<number> {
+  if (!db) return 0;
+  const seconds = Math.max(1, Math.floor(staleMs / 1000));
+  const q = await db.execute(sql`
+    UPDATE trading_execution_jobs
+    SET
+      status = 'pending',
+      locked_at = NULL,
+      locked_by = NULL,
+      updated_at = NOW(),
+      last_error = COALESCE(last_error, 'requeued_stale_processing_lock')
+    WHERE status = 'processing'
+      AND locked_at IS NOT NULL
+      AND locked_at <= NOW() - (${seconds} * INTERVAL '1 second')
+    RETURNING id
+  `);
+  const rows = q as unknown as { id: string }[];
+  return rows.length;
 }

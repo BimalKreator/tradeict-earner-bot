@@ -6,7 +6,7 @@
  * and flattens D2 when D1 is flat.
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import { db } from "@/server/db";
@@ -29,12 +29,15 @@ import {
 } from "./trend-arb-constants";
 import {
   dispatchTrendArbPrimaryEntry,
+  dispatchTrendArbSecondaryHedgeClip,
   trendArbPrimaryCorrelationId,
+  trendArbSecondaryCorrelationId,
   type TrendArbSide,
 } from "./trend-arb-dispatch";
-import { pollTrendArbRiskAndHedges } from "./trend-arb-poll";
+import { pollTrendArbRiskAndHedges, pollTrendArbVirtualRiskAndHedges } from "./trend-arb-poll";
 import { loadTrendArbExecutionScope, type TrendArbExecutionScope } from "./trend-arb-scope";
 import type { TrendArbitrageEnv, TrendArbRuntimeSettings } from "./trend-arb-types";
+import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
 
 function fmtHt(n: number): string {
   if (!Number.isFinite(n)) return "N/A";
@@ -49,6 +52,32 @@ function fmtCloseVsHt(close: number, ht: number): string {
   const pct = ht !== 0 ? (d / ht) * 100 : NaN;
   const pctStr = Number.isFinite(pct) ? `${pct >= 0 ? "+" : ""}${pct.toFixed(3)}%` : "—";
   return `Close=${fmtHt(close)} vs HT=${fmtHt(ht)} (Δ=${fmtHt(d)}, ${pctStr} of HT line)`;
+}
+
+async function detectVirtualActiveForRun(runId: string): Promise<number | null> {
+  if (!db) return null;
+  const [run] = await db
+    .select({ openNetQty: virtualStrategyRuns.openNetQty })
+    .from(virtualStrategyRuns)
+    .where(eq(virtualStrategyRuns.id, runId))
+    .limit(1);
+  if (!run) return null;
+  const openNet = Number(run.openNetQty ?? "0");
+  if (Number.isFinite(openNet) && Math.abs(openNet) > 1e-8) return openNet;
+  const [net] = await db
+    .select({
+      q: sql<number>`COALESCE(SUM(
+        CASE
+          WHEN ${virtualBotOrders.side} = 'buy' THEN cast(${virtualBotOrders.quantity} as numeric)
+          WHEN ${virtualBotOrders.side} = 'sell' THEN -cast(${virtualBotOrders.quantity} as numeric)
+          ELSE 0
+        END
+      ), 0)::float8`,
+    })
+    .from(virtualBotOrders)
+    .where(eq(virtualBotOrders.virtualRunId, runId));
+  const q = Number(net?.q ?? 0);
+  return Number.isFinite(q) ? q : 0;
 }
 
 function halfTrendSignalLabel(h: {
@@ -120,6 +149,8 @@ const DEFAULT_TREND_ARB_RUNTIME: TrendArbRuntimeSettings = {
   symbol: "BTC_USDT",
   d1EntryQty: TREND_ARB_PRIMARY_QTY,
   d2StepQty: TREND_ARB_SECONDARY_CLIP_QTY,
+  d1EntryQtyPct: 100,
+  d2StepQtyPct: 10,
   d2StepMovePct: 1,
   d1TargetProfitPct: 10,
   d2TargetProfitPct: 1,
@@ -148,16 +179,6 @@ export async function resolveTrendArbRuntimeSettings(
   if (!parsed.success) return DEFAULT_TREND_ARB_RUNTIME;
   const cfg = parsed.data;
 
-  // Percent fields scale the legacy baseline quantities to preserve behavior.
-  const d1QtyNum = Math.max(
-    1,
-    Math.round((Number(TREND_ARB_PRIMARY_QTY) * cfg.delta1.entryQtyPct) / 100),
-  );
-  const d2QtyNum = Math.max(
-    1,
-    Math.round((Number(TREND_ARB_SECONDARY_CLIP_QTY) * cfg.delta2.stepQtyPct) / 100),
-  );
-
   const indicatorAmplitude =
     cfg.indicatorSettings.amplitude != null
       ? Math.max(2, Math.round(cfg.indicatorSettings.amplitude))
@@ -172,8 +193,10 @@ export async function resolveTrendArbRuntimeSettings(
 
   return {
     symbol: cfg.symbol,
-    d1EntryQty: String(d1QtyNum),
-    d2StepQty: String(d2QtyNum),
+    d1EntryQty: TREND_ARB_PRIMARY_QTY,
+    d2StepQty: TREND_ARB_SECONDARY_CLIP_QTY,
+    d1EntryQtyPct: Math.max(0, cfg.delta1.entryQtyPct),
+    d2StepQtyPct: Math.max(0, cfg.delta2.stepQtyPct),
     d2StepMovePct: Math.max(0.1, cfg.delta2.stepMovePct),
     d1TargetProfitPct: Math.max(0.1, cfg.delta1.targetProfitPct),
     d2TargetProfitPct: Math.max(0.1, cfg.delta2.targetProfitPct),
@@ -285,6 +308,11 @@ export async function runTrendArbitrageOnce(
     c = parsed.config;
   }
 
+  // Graceful settings updates: always refresh runtime sizing/risk params per tick.
+  // This ensures D2 step sizing/targets use the latest strategy settings mid-trade.
+  const freshRuntime = await resolveTrendArbRuntimeSettings(c.strategyId);
+  c = { ...c, runtime: freshRuntime, symbol: freshRuntime.symbol || c.symbol };
+
   const indicatorResolution = c.runtime.indicatorSettings.timeframe || "4h";
   const resSec = resolutionToSeconds(indicatorResolution);
   const minHistorySec = computeTrendArbLookbackSeconds(resSec, TREND_ARB_TARGET_CLOSED_BARS);
@@ -328,6 +356,13 @@ export async function runTrendArbitrageOnce(
     `[SCANNING] ${c.symbol}: HalfTrend is ${fmtHt(half.htValue)}, Previous ${fmtHt(half.prevHtValue)}, Price is ${fmtHt(bar.close)}, Signal: ${scanSignal}`,
   );
 
+  // Always monitor active virtual runs for this strategy in parallel with live scope logic.
+  const vMon = await pollTrendArbVirtualRiskAndHedges({
+    env: c,
+    barTime: bar.time,
+    barClose: bar.close,
+  });
+
   let primaryFlat = !c.executionScope;
   let pollDetail = "";
   if (c.executionScope) {
@@ -339,22 +374,31 @@ export async function runTrendArbitrageOnce(
         barClose: bar.close,
       });
       primaryFlat = poll.primaryFlat;
-      pollDetail = poll.detail;
+      pollDetail = [poll.detail, vMon.detail].filter(Boolean).join("|");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       tradingLog("warn", "ta_trend_arb_poll_outer", { error: msg });
       primaryFlat = true;
-      pollDetail = `poll_outer:${msg}`;
+      pollDetail = [`poll_outer:${msg}`, vMon.detail].filter(Boolean).join("|");
+    }
+  } else {
+    pollDetail = vMon.detail;
+  }
+
+  if (primaryFlat) {
+    const configuredRunId = process.env.TA_TREND_ARB_RUN_ID?.trim() ?? "";
+    if (configuredRunId) {
+      const vNet = await detectVirtualActiveForRun(configuredRunId);
+      if (vNet != null && Math.abs(vNet) > 1e-8) {
+        primaryFlat = false;
+        pollDetail = [pollDetail, `virtual_active_${vNet}`].filter(Boolean).join("|");
+        console.log(`[STATE-SYNC] Detected active position of ${vNet}. Switching to D2 monitoring.`);
+      }
     }
   }
 
-  const side: TrendArbSide | null = half.buySignal
-    ? "long"
-    : half.sellSignal
-      ? "short"
-      : null;
-
-  if (side == null) {
+  const hasCrossover = half.buySignal || half.sellSignal;
+  if (!hasCrossover) {
     console.log(
       `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"}) | ${fmtCloseVsHt(bar.close, half.htValue)}`,
     );
@@ -371,6 +415,8 @@ export async function runTrendArbitrageOnce(
       },
     };
   }
+  const d1Side: TrendArbSide = half.trend === 0 ? "short" : "long";
+  const d2Side: TrendArbSide = d1Side === "long" ? "short" : "long";
 
   if (c.executionScope && !primaryFlat) {
     console.log(
@@ -379,7 +425,10 @@ export async function runTrendArbitrageOnce(
     return {
       ok: true,
       fired: false,
-      detail: [pollDetail, "Skip HalfTrend entry: primary not flat."].join(" "),
+      detail: [
+        pollDetail,
+        "Hold D1 until TP/SL (or manual close); ignore HalfTrend opposite while primary is open.",
+      ].join(" "),
       halfTrend: {
         buySignal: half.buySignal,
         sellSignal: half.sellSignal,
@@ -388,16 +437,20 @@ export async function runTrendArbitrageOnce(
     };
   }
 
-  const correlationId = trendArbPrimaryCorrelationId(c.strategyId, bar.time, side);
-  const exists = await hasTradingJobForCorrelationId(correlationId);
-  if (exists) {
+  const correlationId = trendArbPrimaryCorrelationId(c.strategyId, bar.time, d1Side);
+  const d2InitialCorrelationId = trendArbSecondaryCorrelationId(c.strategyId, bar.time, 0);
+  const [d1Exists, d2InitialExists] = await Promise.all([
+    hasTradingJobForCorrelationId(correlationId),
+    hasTradingJobForCorrelationId(d2InitialCorrelationId),
+  ]);
+  if (d1Exists || d2InitialExists) {
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: primary entry already queued for this candle (${correlationId})`,
+      `[ENTRY-CHECK] ${c.symbol}: initial D1/D2 entry already queued for this candle (D1=${correlationId}, D2=${d2InitialCorrelationId})`,
     );
     return {
       ok: true,
       fired: false,
-      detail: [pollDetail, "Primary entry already queued for this candle."]
+      detail: [pollDetail, "Initial D1/D2 entries already queued for this candle."]
         .join(" ")
         .trim(),
       halfTrend: {
@@ -410,35 +463,60 @@ export async function runTrendArbitrageOnce(
   }
 
   console.log(
-    `[ENTRY-CHECK] ${c.symbol}: evaluating primary ${side.toUpperCase()} entry @ ${fmtHt(bar.close)} (mark) correlation ${correlationId} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
+    `[ENTRY-CHECK] ${c.symbol}: evaluating simultaneous initial hedge entries @ ${fmtHt(bar.close)} (D1=${d1Side.toUpperCase()}, D2=${d2Side.toUpperCase()}) correlations D1=${correlationId}, D2=${d2InitialCorrelationId} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
   );
 
-  const dispatch = await dispatchTrendArbPrimaryEntry({
-    strategyId: c.strategyId,
-    symbol: c.runtime.symbol || c.symbol,
-    quantity: c.runtime.d1EntryQty,
-    targetProfitPct: c.runtime.d1TargetProfitPct / 100,
-    side,
-    candleTime: bar.time,
-    markPrice: bar.close,
-    ...(c.executionScope
-      ? {
-          targetUserIds: [c.executionScope.userId],
-          targetRunIds: [c.executionScope.runId],
-        }
-      : {}),
-  });
+  const dispatchScope = c.executionScope
+    ? {
+        targetUserIds: [c.executionScope.userId],
+        targetRunIds: [c.executionScope.runId],
+      }
+    : {};
+  const [primaryDispatch, secondaryDispatch] = await Promise.all([
+    dispatchTrendArbPrimaryEntry({
+      strategyId: c.strategyId,
+      symbol: c.runtime.symbol || c.symbol,
+      quantity: c.runtime.d1EntryQty,
+      entryQtyPct: c.runtime.d1EntryQtyPct,
+      targetProfitPct: c.runtime.d1TargetProfitPct / 100,
+      side: d1Side,
+      candleTime: bar.time,
+      markPrice: bar.close,
+      ...dispatchScope,
+    }),
+    dispatchTrendArbSecondaryHedgeClip({
+      strategyId: c.strategyId,
+      symbol: c.runtime.symbol || c.symbol,
+      candleTime: bar.time,
+      stepIndex: 0,
+      side: d2Side,
+      forceSide: d2Side,
+      markPrice: bar.close,
+      quantity: c.runtime.d2StepQty,
+      stepQtyPct: c.runtime.d2StepQtyPct,
+      targetProfitPct: c.runtime.d2TargetProfitPct / 100,
+      correlationIdOverride: d2InitialCorrelationId,
+      ...dispatchScope,
+    }),
+  ]);
 
-  if (!dispatch.ok) {
+  if (!primaryDispatch.ok || !secondaryDispatch.ok) {
+    const dispatchError =
+      !primaryDispatch.ok
+        ? `d1:${primaryDispatch.error}`
+        : !secondaryDispatch.ok
+          ? `d2:${secondaryDispatch.error}`
+          : "unknown_dispatch_error";
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: primary dispatch failed — ${dispatch.error} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
+      `[ENTRY-CHECK] ${c.symbol}: initial hedge dispatch failed — ${dispatchError} | ${fmtCloseVsHt(bar.close, half.htValue)}`,
     );
-    return { ok: false, error: dispatch.error };
+    return { ok: false, error: dispatchError };
   }
 
-  if (dispatch.jobsEnqueued === 0) {
+  const totalJobs = primaryDispatch.jobsEnqueued + secondaryDispatch.jobsEnqueued;
+  if (primaryDispatch.jobsEnqueued === 0 && secondaryDispatch.jobsEnqueued === 0) {
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: dispatch returned 0 jobs — no eligible runs for primary entry`,
+      `[ENTRY-CHECK] ${c.symbol}: dispatch returned 0 jobs — no eligible runs for initial D1/D2 entries`,
     );
     tradingLog("info", "ta_trend_arb_no_eligible_runs", {
       strategyId: c.strategyId,
@@ -447,7 +525,7 @@ export async function runTrendArbitrageOnce(
     return {
       ok: true,
       fired: false,
-      detail: [pollDetail, "No eligible runs for primary entry."].join(" ").trim(),
+      detail: [pollDetail, "No eligible runs for initial D1/D2 entries."].join(" ").trim(),
       halfTrend: {
         buySignal: half.buySignal,
         sellSignal: half.sellSignal,
@@ -459,18 +537,23 @@ export async function runTrendArbitrageOnce(
 
   tradingLog("info", "ta_trend_arb_dispatched_primary", {
     strategyId: c.strategyId,
-    jobs: dispatch.jobsEnqueued,
+    jobs: totalJobs,
+    d1Jobs: primaryDispatch.jobsEnqueued,
+    d2Jobs: secondaryDispatch.jobsEnqueued,
     correlationId,
-    side,
+    side: d1Side,
   });
   console.log(
-    `[ENTRY-CHECK] ${c.symbol}: enqueued ${dispatch.jobsEnqueued} primary ${side.toUpperCase()} job(s) (${correlationId})`,
+    `[ENTRY-CHECK] ${c.symbol}: enqueued D1=${primaryDispatch.jobsEnqueued} ${d1Side.toUpperCase()} and D2(initial step 0)=${secondaryDispatch.jobsEnqueued} ${d2Side.toUpperCase()} job(s)`,
   );
 
   return {
     ok: true,
     fired: true,
-    detail: [pollDetail, `Enqueued ${dispatch.jobsEnqueued} primary job(s).`]
+    detail: [
+      pollDetail,
+      `Enqueued initial hedge jobs: D1=${primaryDispatch.jobsEnqueued}, D2(step 0)=${secondaryDispatch.jobsEnqueued}.`,
+    ]
       .filter(Boolean)
       .join(" "),
     halfTrend: {

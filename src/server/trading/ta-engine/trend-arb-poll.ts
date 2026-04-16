@@ -1,3 +1,13 @@
+import { and, eq, isNull, sql } from "drizzle-orm";
+
+import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
+import {
+  classifyTrendArbAccount,
+  deriveLedgerMetrics,
+  type LedgerOrderRow,
+} from "@/lib/virtual-ledger-metrics";
+import { db } from "@/server/db";
+import { strategies, virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
 import {
   fetchDeltaIndiaPosition,
   fetchDeltaIndiaTickerMarkPrice,
@@ -16,6 +26,9 @@ import {
   countHedgeStepsForRun,
   filterUnhedgedSteps,
   recordHedgeStep,
+  clearVirtualHedgeStepsForRun,
+  filterUnhedgedVirtualSteps,
+  recordVirtualHedgeStep,
 } from "./trend-arb-hedge-db";
 import {
   getDeltaCredentialsForConnection,
@@ -28,11 +41,110 @@ const MIN_MS_TICKER = 1500;
 
 const lastPrimaryPollAt = new Map<string, number>();
 const lastTickerPollAt = new Map<string, number>();
+// Step 0 is reserved for immediate initial hedge at crossover dispatch time.
+const D2_FOLLOWUP_STEPS: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 /** Max favorable unrealized % seen while D1 was open (per run); reset when flat. */
 const d1PeakUrpPct = new Map<string, number>();
 /** Last D1 side while position was open — used to pick D2 flatten direction after D1 disappears. */
 const lastD1SideWhileOpen = new Map<string, "long" | "short">();
+
+async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrageEnv["runtime"]): Promise<{
+  stepMovePct: number;
+  d2TargetProfitPct: number;
+}> {
+  if (!db) {
+    return {
+      stepMovePct: Math.max(0.1, fallback.d2StepMovePct),
+      d2TargetProfitPct: Math.max(0.1, fallback.d2TargetProfitPct),
+    };
+  }
+  // NOTE: intentionally re-query DB every call (no in-memory cache) so mid-trade setting edits
+  // like stepMovePct=0.15 are applied on the very next poll tick.
+  const [row] = await db
+    .select({ settingsJson: strategies.settingsJson })
+    .from(strategies)
+    .where(and(eq(strategies.id, strategyId), isNull(strategies.deletedAt)))
+    .limit(1);
+  const parsed = trendArbStrategyConfigSchema.safeParse(row?.settingsJson ?? null);
+  if (!parsed.success) {
+    return {
+      stepMovePct: Math.max(0.1, fallback.d2StepMovePct),
+      d2TargetProfitPct: Math.max(0.1, fallback.d2TargetProfitPct),
+    };
+  }
+  return {
+    stepMovePct: Math.max(0.1, parsed.data.delta2.stepMovePct),
+    d2TargetProfitPct: Math.max(0.1, parsed.data.delta2.targetProfitPct),
+  };
+}
+
+async function readVirtualNetForRun(runId: string): Promise<number | null> {
+  if (!db) return null;
+  const [run] = await db
+    .select({ openNetQty: virtualStrategyRuns.openNetQty })
+    .from(virtualStrategyRuns)
+    .where(eq(virtualStrategyRuns.id, runId))
+    .limit(1);
+  if (!run) return null;
+  const openNetQty = Number(run.openNetQty ?? "0");
+  const [agg] = await db
+    .select({
+      net: sql<number>`COALESCE(SUM(
+        CASE
+          WHEN ${virtualBotOrders.side} = 'buy' THEN cast(${virtualBotOrders.quantity} as numeric)
+          WHEN ${virtualBotOrders.side} = 'sell' THEN -cast(${virtualBotOrders.quantity} as numeric)
+          ELSE 0
+        END
+      ), 0)::float8`,
+    })
+    .from(virtualBotOrders)
+    .where(eq(virtualBotOrders.virtualRunId, runId));
+  const ledgerNet = Number(agg?.net ?? 0);
+  return Number.isFinite(openNetQty) ? openNetQty : ledgerNet;
+}
+
+async function readVirtualTrendArbLegState(runId: string): Promise<{
+  d1NetQty: number;
+  d2NetQty: number;
+  d1EntryPrice: number | null;
+  d2Symbol: string | null;
+}> {
+  if (!db) return { d1NetQty: 0, d2NetQty: 0, d1EntryPrice: null, d2Symbol: null };
+  const orderRows = await db
+    .select({
+      symbol: virtualBotOrders.symbol,
+      side: virtualBotOrders.side,
+      quantity: virtualBotOrders.quantity,
+      fillPrice: virtualBotOrders.fillPrice,
+      status: virtualBotOrders.status,
+      correlationId: virtualBotOrders.correlationId,
+      createdAt: virtualBotOrders.createdAt,
+    })
+    .from(virtualBotOrders)
+    .where(eq(virtualBotOrders.virtualRunId, runId))
+    .orderBy(virtualBotOrders.createdAt);
+
+  const ledger: LedgerOrderRow[] = orderRows.map((row) => ({
+    symbol: row.symbol,
+    side: row.side,
+    quantity: String(row.quantity),
+    fillPrice: row.fillPrice != null ? String(row.fillPrice) : null,
+    status: row.status,
+    correlationId: row.correlationId,
+    createdAt: row.createdAt,
+  }));
+  const d1Orders = ledger.filter((order) => classifyTrendArbAccount(order) === "primary");
+  const d2Orders = ledger.filter((order) => classifyTrendArbAccount(order) === "secondary");
+  const d1 = deriveLedgerMetrics(d1Orders, null);
+  const d2 = deriveLedgerMetrics(d2Orders, null);
+  return {
+    d1NetQty: d1.openNetQty,
+    d2NetQty: d2.openNetQty,
+    d1EntryPrice: d1.avgEntryPrice,
+    d2Symbol: d2.openSymbol,
+  };
+}
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
@@ -70,6 +182,114 @@ export type TrendArbPollResult = {
   detail: string;
 };
 
+async function monitorActiveVirtualRuns(params: {
+  env: TrendArbitrageEnv;
+  barTime: number;
+  markPrice: number;
+}): Promise<string[]> {
+  const { env, barTime, markPrice } = params;
+  if (!db) return [];
+  const rows = await db
+    .select({
+      runId: virtualStrategyRuns.id,
+      userId: virtualStrategyRuns.userId,
+      openNetQty: virtualStrategyRuns.openNetQty,
+      openAvgEntryPrice: virtualStrategyRuns.openAvgEntryPrice,
+      openSymbol: virtualStrategyRuns.openSymbol,
+    })
+    .from(virtualStrategyRuns)
+    .where(
+      and(
+        eq(virtualStrategyRuns.strategyId, env.strategyId),
+        eq(virtualStrategyRuns.status, "active"),
+      ),
+    );
+
+  const parts: string[] = [];
+  for (const r of rows) {
+    const legState = await readVirtualTrendArbLegState(r.runId);
+    const d1NetQty = legState.d1NetQty;
+    const d2NetQty = legState.d2NetQty;
+    const entry = legState.d1EntryPrice ?? Number(r.openAvgEntryPrice ?? "0");
+
+    if (Math.abs(d1NetQty) <= 1e-8 && Math.abs(d2NetQty) > 1e-8) {
+      console.log(`[VIRTUAL-CLEANUP] D1 is flat. Flattening orphaned D2 position for run ${r.runId}`);
+      const flattenSide = d2NetQty > 0 ? "sell" : "buy";
+      const cleanup = await dispatchTrendArbFlattenSecondary({
+        strategyId: env.strategyId,
+        symbol: legState.d2Symbol ?? r.openSymbol ?? env.runtime.symbol,
+        reason: "virtual_primary_flat_cleanup",
+        nonce: `virtual_d2_cleanup_${r.runId}_${Date.now()}`,
+        markPrice,
+        targetUserIds: [r.userId],
+        quantity: String(Math.abs(d2NetQty)),
+        flattenSide,
+      });
+      if (cleanup.ok && cleanup.jobsEnqueued > 0) {
+        await clearVirtualHedgeStepsForRun(r.runId);
+        parts.push(`vcleanup:${r.runId}:jobs${cleanup.jobsEnqueued}`);
+      } else {
+        parts.push(`vcleanup_skip:${r.runId}:${cleanup.ok ? "zero_jobs" : cleanup.error}`);
+      }
+      continue;
+    }
+
+    if (!(Math.abs(d1NetQty) > 1e-8) || !(entry > 0)) continue;
+    const d1Side: "long" | "short" = d1NetQty > 0 ? "long" : "short";
+    console.log(
+      `[MONITORING-VIRTUAL] Run ${r.runId} is Active. Checking D2 triggers...`,
+    );
+
+    const pending = await filterUnhedgedVirtualSteps(r.runId, D2_FOLLOWUP_STEPS);
+    for (const step of pending) {
+      const latestRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
+      const needMovePct = step * latestRisk.stepMovePct;
+      const nextStepTarget =
+        d1Side === "long"
+          ? entry * (1 + needMovePct / 100)
+          : entry * (1 - needMovePct / 100);
+      console.log(
+        `[D2-MATH] Run: ${r.runId} | Side: ${d1Side} | Entry: ${entry.toFixed(2)} | LiveStepPct: ${latestRisk.stepMovePct}% | TargetPrice: ${nextStepTarget.toFixed(2)} | CurrentPrice: ${markPrice.toFixed(2)}`,
+      );
+      const crossed =
+        d1Side === "long"
+          ? markPrice >= nextStepTarget
+          : markPrice <= nextStepTarget;
+      if (!crossed) continue;
+      console.log(
+        `[D2-TRIGGER] Mark ${markPrice.toFixed(2)} has crossed target ${nextStepTarget.toFixed(2)}. Enqueueing hedge...`,
+      );
+      const correlationId = `ta_trendarb_${env.strategyId}_v_${r.runId}_s${step}_${Date.now()}`;
+      if (await hasTradingJobForCorrelationId(correlationId)) continue;
+      const clipRes = await dispatchTrendArbSecondaryHedgeClip({
+        strategyId: env.strategyId,
+        symbol: r.openSymbol ?? env.runtime.symbol,
+        candleTime: barTime,
+        stepIndex: step,
+        side: d1Side === "long" ? "short" : "long",
+        forceSide: d1Side === "long" ? "short" : "long",
+        markPrice,
+        quantity: env.runtime.d2StepQty,
+        stepQtyPct: env.runtime.d2StepQtyPct,
+        targetProfitPct: latestRisk.d2TargetProfitPct / 100,
+        targetUserIds: [r.userId],
+        correlationIdOverride: correlationId,
+      });
+      if (clipRes.ok && clipRes.jobsEnqueued > 0) {
+        await recordVirtualHedgeStep(r.runId, step);
+        parts.push(`vhedge:${r.runId}:s${step}`);
+      } else {
+        tradingLog("warn", "ta_trend_arb_virtual_hedge_skip", {
+          runId: r.runId,
+          step,
+          error: clipRes.ok ? "zero_jobs" : clipRes.error,
+        });
+      }
+    }
+  }
+  return parts;
+}
+
 /**
  * Stateful poll: primary position, D1 soft/hard risk exits, Delta 2 grid hedges, D2 cleanup when D1 flat.
  * Swallows venue/DB errors — returns `primaryFlat: true` on read failure so we do not stack entries blindly.
@@ -86,6 +306,12 @@ export async function pollTrendArbRiskAndHedges(params: {
 
   try {
     await throttlePrimaryPoll(scope.runId);
+
+    const virtualNet = await readVirtualNetForRun(scope.runId);
+    if (virtualNet != null && Math.abs(virtualNet) > 1e-8) {
+      console.log(`[STATE-SYNC] Detected active position of ${virtualNet}. Switching to D2 monitoring.`);
+      return { primaryFlat: false, detail: `virtual_active_${virtualNet}` };
+    }
 
     const cred = await getDeltaCredentialsForConnection({
       userId: scope.userId,
@@ -179,6 +405,8 @@ export async function pollTrendArbRiskAndHedges(params: {
     const d1Side = pos.side;
     const d1Sl = env.runtime.d1StopLossPct;
     const d1Tp = env.runtime.d1TargetProfitPct;
+    const liveRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
+    const liveStepMovePct = liveRisk.stepMovePct;
 
     const hardSlHit = urp <= -d1Sl;
     const hardTpHit = urp >= d1Tp;
@@ -186,19 +414,19 @@ export async function pollTrendArbRiskAndHedges(params: {
 
     let monD2 = "D2: n/a (no secondary exchange)";
     if (scope.secondaryExchangeConnectionId) {
-      const stepMove = env.runtime.d2StepMovePct;
-      const pendingSteps = await filterUnhedgedSteps(scope.runId, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      const pendingSteps = await filterUnhedgedSteps(scope.runId, D2_FOLLOWUP_STEPS);
       if (pendingSteps.length === 0) {
         monD2 = "D2: all hedge steps (1–9) recorded";
       } else {
         const nextStep = Math.min(...pendingSteps);
-        const needUrp = nextStep * stepMove;
-        const dist = needUrp - urp;
-        const px =
+        const needMovePct = nextStep * liveStepMovePct;
+        const nextStepTargetPx =
           pos.side === "long"
-            ? pos.entryPrice * (1 + needUrp / 100)
-            : pos.entryPrice * (1 - needUrp / 100);
-        monD2 = `next D2 step ${nextStep} at ~${px.toFixed(2)} (${needUrp}% URP, ${dist >= 0 ? "+" : ""}${dist.toFixed(2)}% to next hedge)`;
+            ? pos.entryPrice * (1 + needMovePct / 100)
+            : pos.entryPrice * (1 - needMovePct / 100);
+        const remainingMovePct =
+          mark > 0 ? Math.abs(((nextStepTargetPx - mark) / mark) * 100) : NaN;
+        monD2 = `next D2 step ${nextStep} at ~${nextStepTargetPx.toFixed(2)} (step ${liveStepMovePct}% x ${nextStep}, remaining ${Number.isFinite(remainingMovePct) ? remainingMovePct.toFixed(2) : "N/A"}%)`;
       }
     }
 
@@ -296,15 +524,28 @@ export async function pollTrendArbRiskAndHedges(params: {
       }
     }
 
-    if (scope.secondaryExchangeConnectionId && urp >= env.runtime.d2StepMovePct) {
-      const maxStep = Math.min(
-        9,
-        Math.floor(urp / Math.max(0.1, env.runtime.d2StepMovePct)),
-      );
-      const candidates: number[] = [];
-      for (let s = 1; s <= maxStep; s++) candidates.push(s);
-      const pending = await filterUnhedgedSteps(scope.runId, candidates);
+    if (scope.secondaryExchangeConnectionId) {
+      const pending = await filterUnhedgedSteps(scope.runId, D2_FOLLOWUP_STEPS);
       for (const step of pending) {
+        const latestRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
+        const needMovePct = step * latestRisk.stepMovePct;
+        const nextStepTarget =
+          d1Side === "long"
+            ? pos.entryPrice * (1 + needMovePct / 100)
+            : pos.entryPrice * (1 - needMovePct / 100);
+        console.log(
+          `[D2-MATH] Run: ${scope.runId} | Side: ${d1Side} | Entry: ${pos.entryPrice.toFixed(2)} | LiveStepPct: ${latestRisk.stepMovePct}% | TargetPrice: ${nextStepTarget.toFixed(2)} | CurrentPrice: ${mark.toFixed(2)}`,
+        );
+        const crossed =
+          d1Side === "long"
+            ? mark >= nextStepTarget
+            : mark <= nextStepTarget;
+        if (!crossed) {
+          continue;
+        }
+        console.log(
+          `[D2-TRIGGER] Mark ${mark.toFixed(2)} has crossed target ${nextStepTarget.toFixed(2)} for step ${step}. Enqueueing hedge...`,
+        );
         const correlationId = `ta_trendarb_${env.strategyId}_d2_${scope.runId}_s${step}_${Date.now()}`;
         if (await hasTradingJobForCorrelationId(correlationId)) continue;
 
@@ -313,10 +554,12 @@ export async function pollTrendArbRiskAndHedges(params: {
           symbol: env.runtime.symbol,
           candleTime: barTime,
           stepIndex: step,
-          d1Side,
+          side: d1Side === "long" ? "short" : "long",
+          forceSide: d1Side === "long" ? "short" : "long",
           markPrice: mark,
           quantity: env.runtime.d2StepQty,
-          targetProfitPct: env.runtime.d2TargetProfitPct / 100,
+          stepQtyPct: env.runtime.d2StepQtyPct,
+          targetProfitPct: latestRisk.d2TargetProfitPct / 100,
           targetUserIds: [scope.userId],
           targetRunIds: [scope.runId],
           correlationIdOverride: correlationId,
@@ -342,5 +585,24 @@ export async function pollTrendArbRiskAndHedges(params: {
     const msg = e instanceof Error ? e.message : String(e);
     tradingLog("warn", "ta_trend_arb_poll_exception", { runId: scope.runId, error: msg });
     return { primaryFlat: true, detail: `poll_exception:${msg}` };
+  }
+}
+
+export async function pollTrendArbVirtualRiskAndHedges(params: {
+  env: TrendArbitrageEnv;
+  barTime: number;
+  barClose: number;
+}): Promise<{ detail: string }> {
+  try {
+    const parts = await monitorActiveVirtualRuns({
+      env: params.env,
+      barTime: params.barTime,
+      markPrice: params.barClose,
+    });
+    return { detail: parts.join("|") || "virtual_monitor_ok" };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tradingLog("warn", "ta_trend_arb_virtual_poll_exception", { error: msg });
+    return { detail: `virtual_poll_exception:${msg}` };
   }
 }

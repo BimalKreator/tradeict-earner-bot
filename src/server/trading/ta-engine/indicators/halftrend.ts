@@ -61,9 +61,10 @@ function lowestBarsOffset(lows: number[], i: number, length: number): number {
 /**
  * HalfTrend indicator — bar-by-bar state machine aligned to Pine execution order.
  *
- * **Close-only (product rule):** trend *flip* conditions compare `close` to the previous bar’s `close`;
- * swing levels (`highPrice` / `lowPrice`) use the **close** series for highest/lowest offsets.
- * SMA(high) / SMA(low) and ATR still use full OHLC for the channel envelope and volatility.
+ * TradingView parity mode:
+ * - swing levels (`highPrice` / `lowPrice`) are derived from highest `high` / lowest `low` windows
+ * - flip guards use previous-bar wick references (`low[1]` / `high[1]`) rather than close-only checks
+ * - SMA(high) / SMA(low) and ATR use standard OHLC inputs
  * **Signals** (`buySignal` / `sellSignal`) are emitted on trend state changes driven by that state machine.
  *
  * @param candles ascending time, full OHLC
@@ -118,8 +119,8 @@ export function calculateHalfTrend(
 
   let trend: 0 | 1 = 0;
   let nextTrend: 0 | 1 = 0;
-  let maxLowPrice = closes[0]!;
-  let minHighPrice = closes[0]!;
+  let maxLowPrice = lows[0]!;
+  let minHighPrice = highs[0]!;
   let up = 0;
   let down = 0;
   /** Pine `up[1]` / `down[1]` — `undefined` means `na`. */
@@ -138,18 +139,18 @@ export function calculateHalfTrend(
 
     const close = closes[i]!;
 
-    const hb = highestBarsOffset(closes, i, amplitude);
-    const lb = lowestBarsOffset(closes, i, amplitude);
-    const highPrice = closes[i - hb]!;
-    const lowPrice = closes[i - lb]!;
+    const hb = highestBarsOffset(highs, i, amplitude);
+    const lb = lowestBarsOffset(lows, i, amplitude);
+    const highPrice = highs[i - hb]!;
+    const lowPrice = lows[i - lb]!;
 
     const highma = smaHighAt(i);
     const lowma = smaLowAt(i);
     const atr2 = atrAt(i) / 2;
     const _dev = channelDeviation * atr2;
 
-    const prevCloseForFlip =
-      i > 0 ? closes[i - 1]! : close;
+    const prevLowForFlip = i > 0 ? lows[i - 1]! : lowPrice;
+    const prevHighForFlip = i > 0 ? highs[i - 1]! : highPrice;
 
     if (nextTrend === 1) {
       maxLowPrice = Math.max(lowPrice, maxLowPrice);
@@ -157,7 +158,7 @@ export function calculateHalfTrend(
         !Number.isNaN(highma) &&
         highma < maxLowPrice &&
         i > 0 &&
-        close < prevCloseForFlip
+        close < prevLowForFlip
       ) {
         trend = 1;
         nextTrend = 0;
@@ -169,7 +170,7 @@ export function calculateHalfTrend(
         !Number.isNaN(lowma) &&
         lowma > minHighPrice &&
         i > 0 &&
-        close > prevCloseForFlip
+        close > prevHighForFlip
       ) {
         trend = 0;
         nextTrend = 1;

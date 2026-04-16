@@ -169,6 +169,13 @@
       "when": 1776200000000,
       "tag": "0023_strategy_settings_json",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1776300000000,
+      "tag": "0024_trend_arb_virtual_hedge_state",
+      "breakpoints": true
     }
   ]
 }

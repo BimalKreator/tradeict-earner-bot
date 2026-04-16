@@ -12,6 +12,12 @@ import type {
 import { tradingLog } from "./trading-log";
 import type { TradingExecutionJobPayload } from "@/server/db/schema";
 
+type TrendArbSizingMeta = {
+  mode: "capital_split_50_50";
+  leg: "d1_entry" | "d2_step";
+  qtyPct: number;
+};
+
 function resolveLiveExchangeConnectionId(
   r: EligibleStrategyRunRow,
   venue: StrategyExecutionSignal["exchangeVenue"] | undefined,
@@ -39,6 +45,59 @@ function mergeSignalMetadata(
   return base;
 }
 
+function parsePositiveNumber(raw: unknown): number | null {
+  const n =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Number(raw.trim())
+        : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function readTrendArbSizing(meta: Record<string, unknown>): TrendArbSizingMeta | null {
+  const s = meta.trend_arb_sizing;
+  if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+  const rec = s as Record<string, unknown>;
+  const mode = rec.mode === "capital_split_50_50" ? "capital_split_50_50" : null;
+  const leg = rec.leg === "d1_entry" || rec.leg === "d2_step" ? rec.leg : null;
+  const qtyPct = parsePositiveNumber(rec.qtyPct);
+  if (!mode || !leg || qtyPct == null) return null;
+  return { mode, leg, qtyPct };
+}
+
+function resolveMarkPrice(meta: Record<string, unknown>, limitPrice?: string | null): number | null {
+  const m = parsePositiveNumber(meta.mark_price ?? meta.markPrice ?? meta.last_price ?? meta.lastPrice);
+  if (m != null) return m;
+  return parsePositiveNumber(limitPrice ?? null);
+}
+
+function normalizeTrendArbPct(rawPct: number): number {
+  if (!Number.isFinite(rawPct) || rawPct <= 0) return 0;
+  // If a decimal slipped through (e.g. 0.1 meaning 10%), normalize it.
+  return rawPct <= 1 ? rawPct * 100 : rawPct;
+}
+
+function computeTrendArbSizedQuantity(params: {
+  fallbackQuantity: string;
+  totalCapitalUsd: string;
+  markPrice: number | null;
+  sizing: TrendArbSizingMeta | null;
+}): string {
+  const cap = parsePositiveNumber(params.totalCapitalUsd);
+  const mark = params.markPrice;
+  if (!params.sizing || cap == null || mark == null || mark <= 0) return params.fallbackQuantity;
+  const totalStrategyCapital = cap;
+  const baseCapitalUsd = totalStrategyCapital * 0.5;
+  const stepQtyPct = normalizeTrendArbPct(params.sizing.qtyPct);
+  const pctDecimal = Number(stepQtyPct) / 100;
+  const notionalTargetUsd = baseCapitalUsd * pctDecimal;
+  const qty = notionalTargetUsd / mark;
+  if (!(Number.isFinite(qty) && qty > 0)) return params.fallbackQuantity;
+  // Exchange lot-size-safe fallback rounding.
+  return qty.toFixed(6);
+}
+
 /**
  * Entry point for future strategy signal providers (cron, websocket, ML, etc.).
  * Fans out one durable job per eligible **live** user run and per eligible **virtual** run.
@@ -55,6 +114,8 @@ export async function dispatchStrategyExecutionSignal(
 
   const signalAction = normalizeStrategySignalAction(signal);
   const signalMetadata = mergeSignalMetadata(signal);
+  const trendArbSizing = readTrendArbSizing(signalMetadata);
+  const markPrice = resolveMarkPrice(signalMetadata, signal.limitPrice ?? null);
 
   const [liveRuns, virtualRuns] = await Promise.all([
     findEligibleRunsForStrategyExecution(signal.strategyId, {
@@ -81,7 +142,12 @@ export async function dispatchStrategyExecutionSignal(
       symbol: signal.symbol,
       side: signal.side,
       orderType: signal.orderType,
-      quantity: signal.quantity,
+      quantity: computeTrendArbSizedQuantity({
+        fallbackQuantity: signal.quantity,
+        totalCapitalUsd: r.capitalToUseInr,
+        markPrice,
+        sizing: trendArbSizing,
+      }),
       limitPrice: signal.limitPrice ?? null,
       targetUserId: r.userId,
       subscriptionId: r.subscriptionId,
@@ -101,7 +167,12 @@ export async function dispatchStrategyExecutionSignal(
       symbol: signal.symbol,
       side: signal.side,
       orderType: signal.orderType,
-      quantity: signal.quantity,
+      quantity: computeTrendArbSizedQuantity({
+        fallbackQuantity: signal.quantity,
+        totalCapitalUsd: v.virtualCapitalUsd,
+        markPrice,
+        sizing: trendArbSizing,
+      }),
       limitPrice: signal.limitPrice ?? null,
       targetUserId: v.userId,
       virtualRunId: v.virtualRunId,

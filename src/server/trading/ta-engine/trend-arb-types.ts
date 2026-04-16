@@ -23,8 +23,12 @@ export type TrendArbAdvancedStrategySettings = {
 
 export type TrendArbRuntimeSettings = {
   symbol: string;
+  /** Legacy fallback absolute quantity; trend-arb now sizes from capital split + pct. */
   d1EntryQty: string;
+  /** Legacy fallback absolute quantity; trend-arb now sizes from capital split + pct. */
   d2StepQty: string;
+  d1EntryQtyPct: number;
+  d2StepQtyPct: number;
   d2StepMovePct: number;
   d1TargetProfitPct: number;
   d2TargetProfitPct: number;

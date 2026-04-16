@@ -14,6 +14,7 @@ export type EligibleVirtualRunRow = {
   userId: string;
   virtualRunId: string;
   strategyId: string;
+  virtualCapitalUsd: string;
   leverage: string;
   leverageCapped?: boolean;
 };
@@ -68,6 +69,7 @@ export async function findEligibleVirtualRunsForStrategyExecution(
       userId: virtualStrategyRuns.userId,
       virtualRunId: virtualStrategyRuns.id,
       strategyId: virtualStrategyRuns.strategyId,
+      virtualCapitalUsd: virtualStrategyRuns.virtualCapitalUsd,
       leverage: virtualStrategyRuns.leverage,
       strategyMaxLeverage: strategies.maxLeverage,
     })
@@ -85,6 +87,7 @@ export async function findEligibleVirtualRunsForStrategyExecution(
       userId: r.userId,
       virtualRunId: r.virtualRunId,
       strategyId: r.strategyId,
+      virtualCapitalUsd: String(r.virtualCapitalUsd),
       leverage,
       ...(capped ? { leverageCapped: true } : {}),
     };
@@ -115,7 +118,7 @@ export async function assertVirtualRunStillEligibleForExecution(
       strategyId: virtualStrategyRuns.strategyId,
       runStatus: virtualStrategyRuns.status,
       leverage: virtualStrategyRuns.leverage,
-      capital: virtualStrategyRuns.virtualCapitalUsd,
+      virtualCapitalUsd: virtualStrategyRuns.virtualCapitalUsd,
       approval: users.approvalStatus,
       stratStatus: strategies.status,
       stratDeleted: strategies.deletedAt,
@@ -148,7 +151,7 @@ export async function assertVirtualRunStillEligibleForExecution(
     }
   }
 
-  const cap = parsePositiveNum(String(r.capital ?? ""));
+  const cap = parsePositiveNum(String(r.virtualCapitalUsd ?? ""));
   const lev = parsePositiveNum(String(r.leverage ?? ""));
   if (cap == null || lev == null) {
     return { ok: false, reason: "settings_incomplete" };
@@ -165,6 +168,7 @@ export async function assertVirtualRunStillEligibleForExecution(
       userId: r.userId,
       virtualRunId: r.virtualRunId,
       strategyId: r.strategyId,
+      virtualCapitalUsd: String(r.virtualCapitalUsd),
       leverage: levEff.leverage,
       ...(levEff.capped ? { leverageCapped: true } : {}),
     },

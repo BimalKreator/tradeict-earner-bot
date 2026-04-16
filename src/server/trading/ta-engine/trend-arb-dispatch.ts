@@ -20,12 +20,27 @@ function entrySide(side: TrendArbSide): "buy" | "sell" {
   return side === "long" ? "buy" : "sell";
 }
 
+function normalizePctInput(raw: number | undefined, fallbackPct: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallbackPct;
+  // Guard against decimal pct input like 0.1 being intended as 10%.
+  return n <= 1 ? n * 100 : n;
+}
+
 export function trendArbPrimaryCorrelationId(
   strategyId: string,
   candleTime: number,
   side: TrendArbSide,
 ): string {
   return `ta_trendarb_${strategyId}_d1_${candleTime}_${side}`;
+}
+
+export function trendArbSecondaryCorrelationId(
+  strategyId: string,
+  candleTime: number,
+  stepIndex: number,
+): string {
+  return `ta_trendarb_${strategyId}_d2_${candleTime}_s${stepIndex}`;
 }
 
 type DispatchScope = {
@@ -38,6 +53,7 @@ export async function dispatchTrendArbPrimaryEntry(
     strategyId: string;
     symbol: string;
     quantity?: string;
+    entryQtyPct?: number;
     targetProfitPct?: number;
     side: TrendArbSide;
     candleTime: number;
@@ -66,6 +82,11 @@ export async function dispatchTrendArbPrimaryEntry(
       leg: "delta1_entry",
       mark_price: params.markPrice,
       half_trend: true,
+      trend_arb_sizing: {
+        mode: "capital_split_50_50",
+        leg: "d1_entry",
+        qtyPct: Math.max(0, Number(params.entryQtyPct ?? 100)),
+      },
       risk: {
         sl_pct: TREND_ARB_D1_SL_PCT,
         tp_pct: params.targetProfitPct ?? TREND_ARB_D1_TP_PCT,
@@ -81,21 +102,26 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     symbol: string;
     candleTime: number;
     stepIndex: number;
-    d1Side: TrendArbSide;
+    side: TrendArbSide;
+    forceSide?: TrendArbSide;
+    d1Side?: TrendArbSide;
     markPrice: number;
     quantity?: string;
+    stepQtyPct?: number;
     targetProfitPct?: number;
     correlationIdOverride?: string;
   } & DispatchScope,
 ): Promise<StrategySignalIntakeResponse> {
   const correlationId =
     params.correlationIdOverride ??
-    `ta_trendarb_${params.strategyId}_d2_${params.candleTime}_s${params.stepIndex}`;
+    trendArbSecondaryCorrelationId(params.strategyId, params.candleTime, params.stepIndex);
+  const effectiveSide = params.forceSide ?? params.side;
+  const effectiveStepQtyPct = normalizePctInput(params.stepQtyPct, 100);
   return dispatchStrategyExecutionSignal({
     strategyId: params.strategyId,
     correlationId,
     symbol: params.symbol,
-    side: oppositeSide(params.d1Side),
+    side: entrySide(effectiveSide),
     orderType: "market",
     quantity: params.quantity ?? TREND_ARB_SECONDARY_CLIP_QTY,
     actionType: "entry",
@@ -107,6 +133,12 @@ export async function dispatchTrendArbSecondaryHedgeClip(
       leg: "delta2_hedge_clip",
       hedge_step: params.stepIndex,
       mark_price: params.markPrice,
+      trend_arb_sizing: {
+        mode: "capital_split_50_50",
+        leg: "d2_step",
+        qtyPct: Math.max(0, effectiveStepQtyPct),
+      },
+      force_side: effectiveSide,
       risk: { tp_pct: params.targetProfitPct ?? TREND_ARB_D2_TP_PCT },
     },
   });
