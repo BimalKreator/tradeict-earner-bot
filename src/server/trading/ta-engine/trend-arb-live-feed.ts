@@ -21,6 +21,7 @@ type FeedState = {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<() => void>;
   seeded: boolean;
+  candleMeta: Map<number, { openTsMs: number; closeTsMs: number }>;
 };
 
 const feeds = new Map<FeedKey, FeedState>();
@@ -39,13 +40,36 @@ function websocketUrlFor(symbol: string): string {
   return `wss://stream.binance.com:9443/ws/${s}@trade`;
 }
 
+function seedCandleMeta(state: FeedState): void {
+  if (state.candleMeta.size > 0 || state.candles.length === 0) return;
+  for (const candle of state.candles) {
+    const bucketStartMs = candle.time * 1000;
+    // Historical REST bars are already finalized; seed with full-bucket bounds.
+    state.candleMeta.set(candle.time, {
+      openTsMs: bucketStartMs,
+      closeTsMs: bucketStartMs + state.resSec * 1000 - 1,
+    });
+  }
+}
+
+function pruneCandleMeta(state: FeedState): void {
+  if (state.candles.length === 0 || state.candleMeta.size === 0) return;
+  const oldest = state.candles[0]!.time;
+  for (const time of state.candleMeta.keys()) {
+    if (time < oldest) state.candleMeta.delete(time);
+  }
+}
+
 function rollTickIntoCandle(state: FeedState, params: { price: number; qty: number; tsMs: number }): void {
   const tsSec = Math.floor(params.tsMs / 1000);
   const bucketTime = Math.floor(tsSec / state.resSec) * state.resSec;
   const price = params.price;
   const vol = Number.isFinite(params.qty) ? Math.max(0, params.qty) : 0;
+  const bucketStartMs = bucketTime * 1000;
+  const bucketEndMs = bucketStartMs + state.resSec * 1000 - 1;
+
   const last = state.candles[state.candles.length - 1];
-  if (!last || last.time < bucketTime) {
+  if (!last || bucketTime > last.time) {
     state.candles.push({
       time: bucketTime,
       open: price,
@@ -54,16 +78,35 @@ function rollTickIntoCandle(state: FeedState, params: { price: number; qty: numb
       close: price,
       volume: vol,
     });
-  } else if (last.time === bucketTime) {
-    last.high = Math.max(last.high, price);
-    last.low = Math.min(last.low, price);
-    last.close = price;
-    last.volume = Math.max(0, last.volume + vol);
+    state.candleMeta.set(bucketTime, { openTsMs: params.tsMs, closeTsMs: params.tsMs });
+  } else {
+    // Handle in-order and late ticks by mutating the exact minute bucket.
+    let idx = state.candles.length - 1;
+    while (idx >= 0 && state.candles[idx]!.time > bucketTime) idx -= 1;
+    if (idx < 0 || state.candles[idx]!.time !== bucketTime) {
+      return;
+    }
+    const candle = state.candles[idx]!;
+    const meta =
+      state.candleMeta.get(bucketTime) ?? { openTsMs: bucketStartMs, closeTsMs: bucketEndMs };
+    candle.high = Math.max(candle.high, price);
+    candle.low = Math.min(candle.low, price);
+    if (params.tsMs <= meta.openTsMs) {
+      candle.open = price;
+      meta.openTsMs = params.tsMs;
+    }
+    if (params.tsMs >= meta.closeTsMs) {
+      candle.close = price;
+      meta.closeTsMs = params.tsMs;
+    }
+    candle.volume = Math.max(0, candle.volume + vol);
+    state.candleMeta.set(bucketTime, meta);
   }
   // Prevent unbounded memory growth.
   if (state.candles.length > 2500) {
     state.candles.splice(0, state.candles.length - 2500);
   }
+  pruneCandleMeta(state);
   state.lastPrice = price;
 }
 
@@ -78,6 +121,7 @@ async function seedFromRest(state: FeedState, baseUrl: string, lookbackSec: numb
   });
   if (candles.length > 0) {
     state.candles = candles;
+    seedCandleMeta(state);
     state.lastPrice = candles[candles.length - 1]!.close;
   }
   state.seeded = true;
@@ -141,6 +185,7 @@ export async function ensureTrendArbLiveFeed(params: {
       reconnectTimer: null,
       subscribers: new Set(),
       seeded: false,
+      candleMeta: new Map(),
     };
     feeds.set(key, state);
   }

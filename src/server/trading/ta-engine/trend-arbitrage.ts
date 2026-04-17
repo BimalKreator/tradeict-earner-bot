@@ -372,6 +372,16 @@ export async function runTrendArbitrageOnce(
     `[SCANNING] ${c.symbol}: HalfTrend is ${fmtHt(half.htValue)}, Previous ${fmtHt(half.prevHtValue)}, Price is ${fmtHt(barCloseLive)}, Signal: ${scanSignal}`,
   );
 
+  if (Number.isFinite(barCloseLive) && Number.isFinite(half.htValue)) {
+    const denom = Math.abs(half.htValue) > 1e-12 ? Math.abs(half.htValue) : Math.abs(barCloseLive);
+    const distanceRatio = denom > 0 ? Math.abs(barCloseLive - half.htValue) / denom : Infinity;
+    if (distanceRatio <= 0.001) {
+      console.log(
+        `[HT-DEBUG] Close: ${fmtHt(barCloseLive)}, HT: ${fmtHt(half.htValue)}, MaxLow: ${fmtHt(half.maxLowPrice)}, MinHigh: ${fmtHt(half.minHighPrice)}, Trend: ${half.trend}`,
+      );
+    }
+  }
+
   // Always monitor active virtual runs for this strategy in parallel with live scope logic.
   const vMon = await pollTrendArbVirtualRiskAndHedges({
     env: c,

@@ -24,9 +24,14 @@ export type HalfTrendResult = {
   htValue: number;
   /** HalfTrend line on the previous closed bar (for scan logging). */
   prevHtValue: number;
+  /** Internal guard state for down-flip checks. */
+  maxLowPrice: number;
+  /** Internal guard state for up-flip checks. */
+  minHighPrice: number;
 };
 
 const ATR_PERIOD = 100;
+const HALF_TREND_AMPLITUDE = 2;
 
 /** Pine `ta.highestbars(length)`: bars since highest `high` in the window (0 = this bar); tie → most recent bar. */
 function highestBarsOffset(highs: number[], i: number, length: number): number {
@@ -77,6 +82,9 @@ export function calculateHalfTrend(
   channelDeviation: number = 2,
   options?: { treatLastCandleAsForming?: boolean },
 ): HalfTrendResult {
+  // Hard-locked for TradingView parity requested by strategy runtime.
+  void amplitude;
+  const effectiveAmplitude = HALF_TREND_AMPLITUDE;
   const n = candles.length;
   if (n === 0) {
     return {
@@ -86,6 +94,8 @@ export function calculateHalfTrend(
       sellSignal: false,
       htValue: NaN,
       prevHtValue: NaN,
+      maxLowPrice: NaN,
+      minHighPrice: NaN,
     };
   }
 
@@ -93,8 +103,8 @@ export function calculateHalfTrend(
   const lows = candles.map((c) => c.low);
   const closes = candles.map((c) => c.close);
 
-  const smaHighSeries = SMA.calculate({ period: amplitude, values: highs });
-  const smaLowSeries = SMA.calculate({ period: amplitude, values: lows });
+  const smaHighSeries = SMA.calculate({ period: effectiveAmplitude, values: highs });
+  const smaLowSeries = SMA.calculate({ period: effectiveAmplitude, values: lows });
   const atrSeries = ATR.calculate({
     high: highs,
     low: lows,
@@ -104,12 +114,12 @@ export function calculateHalfTrend(
 
   /** Align SMA(amplitude) to bar index `i` (first value at `i === amplitude - 1`). */
   const smaHighAt = (i: number): number => {
-    if (i < amplitude - 1) return NaN;
-    return smaHighSeries[i - (amplitude - 1)]!;
+    if (i < effectiveAmplitude - 1) return NaN;
+    return smaHighSeries[i - (effectiveAmplitude - 1)]!;
   };
   const smaLowAt = (i: number): number => {
-    if (i < amplitude - 1) return NaN;
-    return smaLowSeries[i - (amplitude - 1)]!;
+    if (i < effectiveAmplitude - 1) return NaN;
+    return smaLowSeries[i - (effectiveAmplitude - 1)]!;
   };
 
   /** Align library ATR (length `n - ATR_PERIOD`) so bar `i` uses one consolidated ATR value. */
@@ -142,8 +152,8 @@ export function calculateHalfTrend(
 
     const close = closes[i]!;
 
-    const hb = highestBarsOffset(highs, i, amplitude);
-    const lb = lowestBarsOffset(lows, i, amplitude);
+    const hb = highestBarsOffset(highs, i, effectiveAmplitude);
+    const lb = lowestBarsOffset(lows, i, effectiveAmplitude);
     const highPrice = highs[i - hb]!;
     const lowPrice = lows[i - lb]!;
 
@@ -213,8 +223,8 @@ export function calculateHalfTrend(
   if (treatLastCandleAsForming) {
     const i = n - 1;
     const close = closes[i]!;
-    const hb = highestBarsOffset(highs, i, amplitude);
-    const lb = lowestBarsOffset(lows, i, amplitude);
+    const hb = highestBarsOffset(highs, i, effectiveAmplitude);
+    const lb = lowestBarsOffset(lows, i, effectiveAmplitude);
     const highPrice = highs[i - hb]!;
     const lowPrice = lows[i - lb]!;
     const highma = smaHighAt(i);
@@ -283,5 +293,7 @@ export function calculateHalfTrend(
     sellSignal: lastSell,
     htValue: lastHt,
     prevHtValue: lastPrevHt,
+    maxLowPrice,
+    minHighPrice,
   };
 }
