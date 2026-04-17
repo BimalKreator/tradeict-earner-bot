@@ -611,6 +611,7 @@ export async function runTrendArbitrageOnce(
       }),
       stepQtyPct: c.runtime.d2StepQtyPct,
       targetProfitPct: c.runtime.d2TargetProfitPct,
+      applyCapitalSplitSizing: true,
       correlationIdOverride: d2InitialCorrelationId,
       ...dispatchScope,
     }),

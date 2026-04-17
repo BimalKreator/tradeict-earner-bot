@@ -55,13 +55,23 @@ function parsePositiveNumber(raw: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function parseNonNegativeQtyPct(raw: unknown): number | null {
+  const n =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Number(raw.trim())
+        : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function readTrendArbSizing(meta: Record<string, unknown>): TrendArbSizingMeta | null {
   const s = meta.trend_arb_sizing;
   if (!s || typeof s !== "object" || Array.isArray(s)) return null;
   const rec = s as Record<string, unknown>;
   const mode = rec.mode === "capital_split_50_50" ? "capital_split_50_50" : null;
   const leg = rec.leg === "d1_entry" || rec.leg === "d2_step" ? rec.leg : null;
-  const qtyPct = parsePositiveNumber(rec.qtyPct);
+  const qtyPct = parseNonNegativeQtyPct(rec.qtyPct);
   if (!mode || !leg || qtyPct == null) return null;
   return { mode, leg, qtyPct };
 }
@@ -93,6 +103,8 @@ function computeTrendArbSizedQuantity(params: {
   const pctDecimal = Number(stepQtyPct) / 100;
   const notionalTargetUsd = baseCapitalUsd * pctDecimal;
   const qty = notionalTargetUsd / mark;
+  // Explicit zero sizing (e.g. admin set 0%): never fall back to raw contract constants.
+  if (Number(stepQtyPct) === 0 || pctDecimal === 0) return "0";
   if (!(Number.isFinite(qty) && qty > 0)) return params.fallbackQuantity;
   // Exchange lot-size-safe fallback rounding.
   return qty.toFixed(6);

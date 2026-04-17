@@ -76,9 +76,11 @@ export async function dispatchTrendArbPrimaryEntry(
       leg: "delta1_entry",
       mark_price: params.markPrice,
       half_trend: true,
+      /** Resolves per-run qty from virtual/live capital (see `computeTrendArbSizedQuantity`). */
       trend_arb_sizing: {
-        mode: "absolute",
+        mode: "capital_split_50_50",
         leg: "d1_entry",
+        qtyPct: params.entryQtyPct ?? 100,
       },
       risk: {
         sl_pct: params.stopLossPct ?? TREND_ARB_D1_SL_PCT,
@@ -103,12 +105,18 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     stepQtyPct?: number;
     targetProfitPct?: number;
     correlationIdOverride?: string;
+    /**
+     * Initial hedge (step 0): size from virtual/live capital via `capital_split_50_50`.
+     * Follow-up steps from `trend-arb-poll`: keep false so `quantity` (from actual D1 size) is used.
+     */
+    applyCapitalSplitSizing?: boolean;
   } & DispatchScope,
 ): Promise<StrategySignalIntakeResponse> {
   const correlationId =
     params.correlationIdOverride ??
     trendArbSecondaryCorrelationId(params.strategyId, params.candleTime, params.stepIndex);
   const effectiveSide = params.forceSide ?? params.side;
+  const useCapitalSplit = params.applyCapitalSplitSizing === true;
   return dispatchStrategyExecutionSignal({
     strategyId: params.strategyId,
     correlationId,
@@ -125,10 +133,16 @@ export async function dispatchTrendArbSecondaryHedgeClip(
       leg: "delta2_hedge_clip",
       hedge_step: params.stepIndex,
       mark_price: params.markPrice,
-      trend_arb_sizing: {
-        mode: "absolute",
-        leg: "d2_step",
-      },
+      trend_arb_sizing: useCapitalSplit
+        ? {
+            mode: "capital_split_50_50",
+            leg: "d2_step",
+            qtyPct: params.stepQtyPct ?? 10,
+          }
+        : {
+            mode: "absolute",
+            leg: "d2_step",
+          },
       force_side: effectiveSide,
       risk: { tp_pct: params.targetProfitPct ?? TREND_ARB_D2_TP_PCT },
     },
