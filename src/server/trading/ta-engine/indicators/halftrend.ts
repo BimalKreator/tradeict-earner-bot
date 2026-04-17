@@ -281,9 +281,7 @@ export function calculateHalfTrend(
     lastHt = pHt;
     lastOpenTrend = trend;
     lastCloseTrend = pTrend;
-    // Strict crossover memory: signals come only from confirmed closed-candle transitions.
-    lastBuy = false;
-    lastSell = false;
+    // Preserve closed-candle crossover state from the main loop.
   }
 
   return {
