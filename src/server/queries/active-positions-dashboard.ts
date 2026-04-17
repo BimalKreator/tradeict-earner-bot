@@ -308,15 +308,20 @@ function parseTrendArbDisplaySettings(
   };
 }
 
+/** D2 entry clips (excludes flatten helpers); includes virtual `..._v_<run>_s<step>_...` ids. */
+function isTrendArbD2EntryClipOrder(o: { correlationId: string | null }): boolean {
+  const cid = (o.correlationId ?? "").toLowerCase();
+  if (cid.includes("_d2_flat_")) return false;
+  if (cid.includes("_d2_")) return true;
+  return cid.startsWith("ta_trendarb_") && /_v_.+?_s\d+_/i.test(cid);
+}
+
 function deriveTrendArbSecondaryClipCount(orders: LedgerOrderRow[], openNetQty: number): number | null {
   if (!(Number.isFinite(openNetQty) && Math.abs(openNetQty) > QTY_EPS)) {
     return 0;
   }
   const entryClipQty = orders
-    .filter((o) => {
-      const cid = (o.correlationId ?? "").toLowerCase();
-      return cid.includes("_d2_") && !cid.includes("_d2_flat_");
-    })
+    .filter((o) => isTrendArbD2EntryClipOrder(o))
     .map((o) => Math.abs(Number(o.quantity)))
     .find((qty) => Number.isFinite(qty) && qty > QTY_EPS);
   if (!(entryClipQty && entryClipQty > QTY_EPS)) return null;

@@ -241,7 +241,12 @@ async function monitorActiveVirtualRuns(params: {
     const legState = await readVirtualTrendArbLegState(r.runId);
     const d1NetQty = legState.d1NetQty;
     const d2NetQty = legState.d2NetQty;
-    const entry = legState.d1EntryPrice ?? Number(r.openAvgEntryPrice ?? "0");
+    // Prefer run-row D1 avg (virtual simulator + dashboard) over ledger replay VWAP so step
+    // targets match the entry price users see; ledger replay can diverge after mis-tagged legs
+    // or partial history and skew 0.1% / 0.2% clip thresholds.
+    const runRowEntry = Number(r.openAvgEntryPrice ?? "0");
+    const entry =
+      runRowEntry > 0 ? runRowEntry : legState.d1EntryPrice ?? 0;
 
     if (Math.abs(d1NetQty) <= 1e-8 && Math.abs(d2NetQty) > 1e-8) {
       console.log(`[VIRTUAL-CLEANUP] D1 is flat. Flattening orphaned D2 position for run ${r.runId}`);

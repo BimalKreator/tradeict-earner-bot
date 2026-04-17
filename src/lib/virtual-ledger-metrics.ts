@@ -24,10 +24,23 @@ export function isFilledOrder(status: string): boolean {
   return status === "filled" || status === "partial_fill";
 }
 
+/**
+ * Delta-2 (hedge) orders: live/initial use `..._d2_...` in the correlation id.
+ * Virtual follow-up clips from `trend-arb-poll` use `ta_trendarb_<strategyId>_v_<runId>_s<step>_<nonce>`
+ * (no `_d2_` substring) — those must still classify as secondary for ledger/dashboard parity.
+ */
+export function isTrendArbSecondaryCorrelationId(
+  correlationId: string | null | undefined,
+): boolean {
+  const cid = (correlationId ?? "").toLowerCase();
+  if (cid.includes("delta2")) return true;
+  if (cid.includes("_d2_")) return true;
+  if (cid.startsWith("ta_trendarb_") && /_v_.+?_s\d+_/i.test(cid)) return true;
+  return false;
+}
+
 export function classifyTrendArbAccount(order: { correlationId: string | null }): AccountKey {
-  const cid = (order.correlationId ?? "").toLowerCase();
-  if (cid.includes("_d2_") || cid.includes("delta2")) return "secondary";
-  return "primary";
+  return isTrendArbSecondaryCorrelationId(order.correlationId) ? "secondary" : "primary";
 }
 
 export type LedgerDerivedMetrics = {
