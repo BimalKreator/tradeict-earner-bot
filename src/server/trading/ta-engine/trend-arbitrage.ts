@@ -126,6 +126,13 @@ function halfTrendSignalLabel(h: {
   return "WAIT";
 }
 
+function sideFromCloseVsHt(close: number, ht: number): -1 | 0 | 1 {
+  if (!Number.isFinite(close) || !Number.isFinite(ht)) return 0;
+  const d = close - ht;
+  if (Math.abs(d) <= 1e-9) return 0;
+  return d > 0 ? 1 : -1;
+}
+
 export {
   TREND_ARB_PRIMARY_QTY,
   TREND_ARB_SECONDARY_CLIP_QTY,
@@ -399,8 +406,13 @@ export async function runTrendArbitrageOnce(
   const half = calculateHalfTrend(candles, c.amplitude, c.channelDeviation, {
     treatLastCandleAsForming: true,
   });
+  const prevHalf =
+    candles.length > 2
+      ? calculateHalfTrend(candles.slice(0, -1), c.amplitude, c.channelDeviation)
+      : null;
   const bar = candles[candles.length - 1]!;
   const lastClosed = candles[candles.length - 2] ?? bar;
+  const prevClosed = candles[candles.length - 3] ?? null;
   const barCloseLive = livePrice && livePrice > 0 ? livePrice : bar.close;
   const scanSignal = halfTrendSignalLabel(half);
   console.log(
@@ -420,6 +432,20 @@ export async function runTrendArbitrageOnce(
     const t = formatUnixToUtcAndIst(lastClosed.time);
     console.log(
       `[HT-CLOSE-DEBUG] closed_candle utc=${t.utc} ist=${t.ist} prevTrend=${half.prevTrend} trend=${half.trend} buySignal=${half.buySignal} sellSignal=${half.sellSignal} closedClose=${fmtHt(lastClosed.close)} closedHT=${fmtHt(half.prevHtValue)} livePrice=${fmtHt(barCloseLive)}`,
+    );
+  }
+
+  // Fallback crossover parity check from the user's explicit rule:
+  // if current closed candle is on opposite side of HT vs previous closed candle.
+  const prevSide =
+    prevClosed && prevHalf ? sideFromCloseVsHt(prevClosed.close, prevHalf.htValue) : 0;
+  const currSide = sideFromCloseVsHt(lastClosed.close, half.prevHtValue);
+  const closeVsHtFlip =
+    prevSide !== 0 && currSide !== 0 && prevSide !== currSide ? currSide : 0;
+  if (closeVsHtFlip !== 0) {
+    const t = formatUnixToUtcAndIst(lastClosed.time);
+    console.log(
+      `[HT-CLOSE-FLIP] closed_candle utc=${t.utc} ist=${t.ist} prevSide=${prevSide} currSide=${currSide} prevClosed=${fmtHt(prevClosed?.close ?? NaN)} prevHT=${fmtHt(prevHalf?.htValue ?? NaN)} closedClose=${fmtHt(lastClosed.close)} closedHT=${fmtHt(half.prevHtValue)}`,
     );
   }
 
@@ -464,7 +490,11 @@ export async function runTrendArbitrageOnce(
     }
   }
 
-  const hasCrossover = half.buySignal || half.sellSignal;
+  const fallbackBuySignal = closeVsHtFlip > 0;
+  const fallbackSellSignal = closeVsHtFlip < 0;
+  const effectiveBuySignal = half.buySignal || fallbackBuySignal;
+  const effectiveSellSignal = half.sellSignal || fallbackSellSignal;
+  const hasCrossover = effectiveBuySignal || effectiveSellSignal;
   if (!hasCrossover) {
     console.log(
       `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"}) | ${fmtCloseVsHt(barCloseLive, half.htValue)}`,
@@ -476,15 +506,15 @@ export async function runTrendArbitrageOnce(
         .filter(Boolean)
         .join(" "),
       halfTrend: {
-        buySignal: half.buySignal,
-        sellSignal: half.sellSignal,
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
         trend: half.trend,
       },
     };
   }
-  const d1Side: TrendArbSide = half.sellSignal
+  const d1Side: TrendArbSide = effectiveSellSignal
     ? "short"
-    : half.buySignal
+    : effectiveBuySignal
       ? "long"
       : half.trend === 0
         ? "long"
@@ -503,8 +533,8 @@ export async function runTrendArbitrageOnce(
         "Hold D1 until TP/SL (or manual close); ignore HalfTrend opposite while primary is open.",
       ].join(" "),
       halfTrend: {
-        buySignal: half.buySignal,
-        sellSignal: half.sellSignal,
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
         trend: half.trend,
       },
     };
@@ -535,8 +565,8 @@ export async function runTrendArbitrageOnce(
         .join(" ")
         .trim(),
       halfTrend: {
-        buySignal: half.buySignal,
-        sellSignal: half.sellSignal,
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
         trend: half.trend,
       },
       correlationId,
@@ -613,8 +643,8 @@ export async function runTrendArbitrageOnce(
       fired: false,
       detail: [pollDetail, "No eligible runs for initial D1/D2 entries."].join(" ").trim(),
       halfTrend: {
-        buySignal: half.buySignal,
-        sellSignal: half.sellSignal,
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
         trend: half.trend,
       },
       correlationId,
@@ -643,8 +673,8 @@ export async function runTrendArbitrageOnce(
       .filter(Boolean)
       .join(" "),
     halfTrend: {
-      buySignal: half.buySignal,
-      sellSignal: half.sellSignal,
+      buySignal: effectiveBuySignal,
+      sellSignal: effectiveSellSignal,
       trend: half.trend,
     },
     correlationId,
