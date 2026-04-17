@@ -30,6 +30,10 @@ function qtyDisplay(netQty: number, qtyPctOfCapital: number | null): string {
 
 function legLabel(leg: UserActivePositionGroup["legs"][number]): string {
   if (leg.account === "D1") return "Delta 1";
+  if (leg.d2LadderStep != null) {
+    const n = leg.activeClipCount != null && leg.activeClipCount > 1 ? ` · ${leg.activeClipCount} clips` : "";
+    return `Delta 2 · Step ${leg.d2LadderStep}${n}`;
+  }
   if (leg.activeClipCount != null) {
     return `Delta 2 (Active Clips: ${leg.activeClipCount})`;
   }

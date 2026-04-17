@@ -165,6 +165,10 @@ function qtyDisplay(netQty: number, qtyPctOfCapital: number | null): string {
 
 function accountLabel(row: AdminLivePositionRow): string {
   if (row.account === "D1") return "D1";
+  if (row.d2LadderStep != null) {
+    const n = row.activeClipCount != null && row.activeClipCount > 1 ? ` · ${row.activeClipCount} clips` : "";
+    return `D2 · Step ${row.d2LadderStep}${n}`;
+  }
   if (row.activeClipCount != null) {
     return `D2 (Active Clips: ${row.activeClipCount})`;
   }
