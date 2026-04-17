@@ -435,8 +435,9 @@ export async function runTrendArbitrageOnce(
     );
   }
 
-  // Fallback crossover parity check from the user's explicit rule:
-  // if current closed candle is on opposite side of HT vs previous closed candle.
+  // Geometric close-vs-HT flip (prev closed vs current closed relative to HT lines).
+  // Used for debug only — new D1+D2 entries require native HalfTrend buy/sell signals so we
+  // do not re-enter immediately after a stop/exit on the same bar geometry flip.
   const prevSide =
     prevClosed && prevHalf ? sideFromCloseVsHt(prevClosed.close, prevHalf.htValue) : 0;
   const currSide = sideFromCloseVsHt(lastClosed.close, half.prevHtValue);
@@ -490,14 +491,17 @@ export async function runTrendArbitrageOnce(
     }
   }
 
-  const fallbackBuySignal = closeVsHtFlip > 0;
-  const fallbackSellSignal = closeVsHtFlip < 0;
-  const effectiveBuySignal = half.buySignal || fallbackBuySignal;
-  const effectiveSellSignal = half.sellSignal || fallbackSellSignal;
+  // Entry only on native HalfTrend crossover signals (not geometric close-vs-HT flip alone).
+  const effectiveBuySignal = half.buySignal;
+  const effectiveSellSignal = half.sellSignal;
   const hasCrossover = effectiveBuySignal || effectiveSellSignal;
   if (!hasCrossover) {
+    const flipHint =
+      closeVsHtFlip !== 0
+        ? " | close-vs-HT flip ignored until HalfTrend buy/sell signal"
+        : "";
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"}) | ${fmtCloseVsHt(barCloseLive, half.htValue)}`,
+      `[ENTRY-CHECK] ${c.symbol}: no HalfTrend crossover on latest bar — skip entry (${pollDetail || "poll ok"})${flipHint} | ${fmtCloseVsHt(barCloseLive, half.htValue)}`,
     );
     return {
       ok: true,
