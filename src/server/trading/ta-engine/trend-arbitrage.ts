@@ -11,7 +11,10 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import { db } from "@/server/db";
 import { strategies } from "@/server/db/schema";
-import { hasTradingJobForCorrelationId } from "../execution-queue";
+import {
+  getLatestTradingJobByCorrelationId,
+  hasTradingJobForCorrelationId,
+} from "../execution-queue";
 import { tradingLog } from "../trading-log";
 import {
   computeTrendArbLookbackSeconds,
@@ -248,7 +251,7 @@ export async function readTrendArbitrageEnv(): Promise<ReadTrendArbitrageEnvResu
   const enabled = process.env.TA_TREND_ARB_ENABLED?.trim() === "true";
   const strategyId = process.env.TA_TREND_ARB_STRATEGY_ID?.trim() ?? "";
   const baseUrl =
-    process.env.TA_TREND_ARB_DELTA_BASE_URL?.trim() || "https://api.delta.exchange";
+    process.env.TA_TREND_ARB_DELTA_BASE_URL?.trim() || "https://api.india.delta.exchange";
   const resolution = process.env.TA_TREND_ARB_RESOLUTION?.trim() || "5m";
   const lookbackSec = Math.max(
     36_000,
@@ -268,7 +271,7 @@ export async function readTrendArbitrageEnv(): Promise<ReadTrendArbitrageEnvResu
     return { kind: "invalid", error: "TA_TREND_ARB_STRATEGY_ID is required." };
   }
   const runtime = await resolveTrendArbRuntimeSettings(strategyId);
-  const symbol = runtime.symbol || process.env.TA_TREND_ARB_SYMBOL?.trim() || "BTC_USDT";
+  const symbol = runtime.symbol || process.env.TA_TREND_ARB_SYMBOL?.trim() || "BTCUSD";
 
   const runId = process.env.TA_TREND_ARB_RUN_ID?.trim() ?? "";
   const primaryEx = process.env.TA_TREND_PRIMARY_EXCHANGE_ID?.trim() ?? "";
@@ -509,13 +512,21 @@ export async function runTrendArbitrageOnce(
 
   const correlationId = trendArbPrimaryCorrelationId(c.strategyId, bar.time, d1Side);
   const d2InitialCorrelationId = trendArbSecondaryCorrelationId(c.strategyId, bar.time, 0);
-  const [d1Exists, d2InitialExists] = await Promise.all([
+  const [d1Exists, d2InitialExists, d1Job, d2Job] = await Promise.all([
     hasTradingJobForCorrelationId(correlationId),
     hasTradingJobForCorrelationId(d2InitialCorrelationId),
+    getLatestTradingJobByCorrelationId(correlationId),
+    getLatestTradingJobByCorrelationId(d2InitialCorrelationId),
   ]);
   if (d1Exists || d2InitialExists) {
+    const d1State = d1Job
+      ? `${d1Job.status}/a${d1Job.attempts}-${d1Job.maxAttempts}`
+      : "none";
+    const d2State = d2Job
+      ? `${d2Job.status}/a${d2Job.attempts}-${d2Job.maxAttempts}`
+      : "none";
     console.log(
-      `[ENTRY-CHECK] ${c.symbol}: initial D1/D2 entry already queued for this candle (D1=${correlationId}, D2=${d2InitialCorrelationId})`,
+      `[ENTRY-CHECK] ${c.symbol}: initial D1/D2 entry already queued for this candle (D1=${correlationId} status=${d1State}, D2=${d2InitialCorrelationId} status=${d2State})`,
     );
     return {
       ok: true,

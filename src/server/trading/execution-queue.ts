@@ -1,4 +1,4 @@
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import {
@@ -22,9 +22,40 @@ export async function hasTradingJobForCorrelationId(
   const [row] = await db
     .select({ id: tradingExecutionJobs.id })
     .from(tradingExecutionJobs)
-    .where(eq(tradingExecutionJobs.correlationId, correlationId))
+    .where(
+      and(
+        eq(tradingExecutionJobs.correlationId, correlationId),
+        inArray(tradingExecutionJobs.status, ["pending", "processing", "completed"]),
+      ),
+    )
     .limit(1);
   return row != null;
+}
+
+export async function getLatestTradingJobByCorrelationId(correlationId: string): Promise<{
+  id: string;
+  status: "pending" | "processing" | "completed" | "failed" | "dead";
+  attempts: number;
+  maxAttempts: number;
+  updatedAt: Date;
+  lastError: string | null;
+} | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({
+      id: tradingExecutionJobs.id,
+      status: tradingExecutionJobs.status,
+      attempts: tradingExecutionJobs.attempts,
+      maxAttempts: tradingExecutionJobs.maxAttempts,
+      updatedAt: tradingExecutionJobs.updatedAt,
+      lastError: tradingExecutionJobs.lastError,
+    })
+    .from(tradingExecutionJobs)
+    .where(eq(tradingExecutionJobs.correlationId, correlationId))
+    .orderBy(desc(tradingExecutionJobs.createdAt))
+    .limit(1);
+  if (!row) return null;
+  return row;
 }
 
 export async function enqueueStrategySignalJobs(

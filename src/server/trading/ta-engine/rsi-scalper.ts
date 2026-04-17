@@ -105,6 +105,7 @@ export async function fetchDeltaExchangeCandles(params: {
 
   const res = await fetch(url.toString(), {
     headers: { Accept: "application/json" },
+    cache: "no-store",
     signal: AbortSignal.timeout(25_000),
   });
 
