@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import {
@@ -7,7 +7,7 @@ import {
   type LedgerOrderRow,
 } from "@/lib/virtual-ledger-metrics";
 import { db } from "@/server/db";
-import { strategies, virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
+import { botOrders, strategies, virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
 import {
   fetchDeltaIndiaPosition,
   fetchDeltaIndiaTickerMarkPrice,
@@ -18,17 +18,21 @@ import { tradingLog } from "@/server/trading/trading-log";
 
 import {
   dispatchTrendArbClosePrimary,
+  dispatchTrendArbCloseSecondaryClip,
   dispatchTrendArbFlattenSecondary,
   dispatchTrendArbSecondaryHedgeClip,
 } from "./trend-arb-dispatch";
+import type { D2LadderOrderRow } from "./trend-arb-d2-ladder";
+import {
+  buildOpenD2ClipsFromOrders,
+  d2ClipTpHit,
+  d2RungTriggerPrice,
+  d2StepLabel,
+  TREND_ARB_D2_MAX_DISPLAY_STEP,
+} from "./trend-arb-d2-ladder";
 import {
   clearHedgeStepsForRun,
-  countHedgeStepsForRun,
-  filterUnhedgedSteps,
-  recordHedgeStep,
   clearVirtualHedgeStepsForRun,
-  filterUnhedgedVirtualSteps,
-  recordVirtualHedgeStep,
 } from "./trend-arb-hedge-db";
 import {
   getDeltaCredentialsForConnection,
@@ -41,9 +45,6 @@ const MIN_MS_TICKER = 1500;
 
 const lastPrimaryPollAt = new Map<string, number>();
 const lastTickerPollAt = new Map<string, number>();
-// Step 0 is reserved for immediate initial hedge at crossover dispatch time.
-const D2_FOLLOWUP_STEPS: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-
 /** Max favorable unrealized % seen while D1 was open (per run); reset when flat. */
 const d1PeakUrpPct = new Map<string, number>();
 /** Last D1 side while position was open — used to pick D2 flatten direction after D1 disappears. */
@@ -61,7 +62,7 @@ function computeD2StepQuantityFromD1Qty(params: {
   }
   const qty = d1 * (pct / 100);
   if (!(Number.isFinite(qty) && qty > 0)) return params.fallbackQty;
-  return qty.toFixed(8).replace(/\.?0+$/, "");
+  return qty.toFixed(6);
 }
 
 async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrageEnv["runtime"]): Promise<{
@@ -276,32 +277,101 @@ async function monitorActiveVirtualRuns(params: {
       `[MONITORING-VIRTUAL] Run ${r.runId} is Active. Checking D2 triggers...`,
     );
 
-    const pending = await filterUnhedgedVirtualSteps(r.runId, D2_FOLLOWUP_STEPS);
-    for (const step of pending) {
-      const latestRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
-      const needMovePct = step * latestRisk.stepMovePct;
-      const nextStepTarget =
-        d1Side === "long"
-          ? entry * (1 + needMovePct / 100)
-          : entry * (1 - needMovePct / 100);
-      console.log(
-        `[D2-MATH] Run: ${r.runId} | Side: ${d1Side} | Entry: ${entry.toFixed(2)} | LiveStepPct: ${latestRisk.stepMovePct}% | TargetPrice: ${nextStepTarget.toFixed(2)} | CurrentPrice: ${markPrice.toFixed(2)}`,
-      );
-      const crossed =
-        d1Side === "long"
-          ? markPrice >= nextStepTarget
-          : markPrice <= nextStepTarget;
+    const latestRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
+
+    const voRows = await db
+      .select({
+        createdAt: virtualBotOrders.createdAt,
+        correlationId: virtualBotOrders.correlationId,
+        side: virtualBotOrders.side,
+        quantity: virtualBotOrders.quantity,
+        fillPrice: virtualBotOrders.fillPrice,
+        status: virtualBotOrders.status,
+        signalAction: virtualBotOrders.signalAction,
+        rawSubmitResponse: virtualBotOrders.rawSubmitResponse,
+      })
+      .from(virtualBotOrders)
+      .where(eq(virtualBotOrders.virtualRunId, r.runId))
+      .orderBy(asc(virtualBotOrders.createdAt));
+
+    const ladderRows = voRows.map((row) => ({
+      createdAt: row.createdAt,
+      correlationId: row.correlationId,
+      side: row.side,
+      quantity: String(row.quantity),
+      fillPrice: row.fillPrice != null ? String(row.fillPrice) : null,
+      status: row.status,
+      signalAction: row.signalAction,
+      rawSubmitResponse: row.rawSubmitResponse as Record<string, unknown> | null,
+    }));
+
+    const openClips = buildOpenD2ClipsFromOrders(ladderRows, d1Side);
+    const d2IsShort = d1Side === "long";
+    const exitedThisTick = new Set<string>();
+
+    for (const clip of openClips) {
+      if (
+        !d2ClipTpHit({
+          d2IsShort,
+          clipEntryPx: clip.entryPx,
+          mark: markPrice,
+          targetProfitPct: latestRisk.d2TargetProfitPct,
+        })
+      ) {
+        continue;
+      }
+      const correlationIdOverride = `ta_trendarb_${env.strategyId}_v_${r.runId}_d2X${clip.displayStep}_${Date.now()}`;
+      if (await hasTradingJobForCorrelationId(correlationIdOverride)) continue;
+      const closeRes = await dispatchTrendArbCloseSecondaryClip({
+        strategyId: env.strategyId,
+        symbol: r.openSymbol ?? env.runtime.symbol,
+        markPrice,
+        flattenSide: d2IsShort ? "buy" : "sell",
+        quantity: clip.qty.toFixed(6),
+        closesEntryCorrelationId: clip.correlationId,
+        d2DisplayStep: clip.displayStep,
+        correlationNonce: `${r.runId}_${Date.now()}`,
+        correlationIdOverride,
+        targetUserIds: [r.userId],
+      });
+      if (closeRes.ok && closeRes.jobsEnqueued > 0) {
+        exitedThisTick.add(clip.correlationId);
+        parts.push(`vd2_tp:${r.runId}:L${clip.displayStep}`);
+        console.log(
+          `[D2-TP] Virtual run ${r.runId} exit ${d2StepLabel(clip.displayStep)} | clipEntry=${clip.entryPx.toFixed(2)} mark=${markPrice.toFixed(2)} qty=${clip.qty.toFixed(6)}`,
+        );
+      } else {
+        tradingLog("warn", "ta_trend_arb_virtual_d2_tp_skip", {
+          runId: r.runId,
+          step: clip.displayStep,
+          error: closeRes.ok ? "zero_jobs" : closeRes.error,
+        });
+      }
+    }
+
+    const stillOpen = openClips.filter((c) => !exitedThisTick.has(c.correlationId));
+
+    for (let displayStep = 2; displayStep <= TREND_ARB_D2_MAX_DISPLAY_STEP; displayStep++) {
+      if (stillOpen.some((c) => c.displayStep === displayStep)) continue;
+      const trig = d2RungTriggerPrice({
+        d1Side,
+        d1Entry: entry,
+        displayStep,
+        stepMovePct: latestRisk.stepMovePct,
+      });
+      if (!Number.isFinite(trig)) continue;
+      const crossed = d1Side === "long" ? markPrice >= trig : markPrice <= trig;
       if (!crossed) continue;
-      console.log(
-        `[D2-TRIGGER] Mark ${markPrice.toFixed(2)} has crossed target ${nextStepTarget.toFixed(2)}. Enqueueing hedge...`,
-      );
-      const correlationId = `ta_trendarb_${env.strategyId}_v_${r.runId}_s${step}_${Date.now()}`;
+      const correlationId = `ta_trendarb_${env.strategyId}_v_${r.runId}_d2L${displayStep}_${Date.now()}`;
       if (await hasTradingJobForCorrelationId(correlationId)) continue;
+      console.log(
+        `[D2-LADDER] Run ${r.runId} | ${d2StepLabel(displayStep)} add | trigger=${trig.toFixed(2)} mark=${markPrice.toFixed(2)}`,
+      );
       const clipRes = await dispatchTrendArbSecondaryHedgeClip({
         strategyId: env.strategyId,
         symbol: r.openSymbol ?? env.runtime.symbol,
         candleTime: barTime,
-        stepIndex: step,
+        stepIndex: displayStep,
         side: d1Side === "long" ? "short" : "long",
         forceSide: d1Side === "long" ? "short" : "long",
         markPrice,
@@ -314,14 +384,16 @@ async function monitorActiveVirtualRuns(params: {
         targetProfitPct: latestRisk.d2TargetProfitPct,
         targetUserIds: [r.userId],
         correlationIdOverride: correlationId,
+        applyCapitalSplitSizing: false,
+        d2DisplayStep: displayStep,
+        d2StepLabel: d2StepLabel(displayStep),
       });
       if (clipRes.ok && clipRes.jobsEnqueued > 0) {
-        await recordVirtualHedgeStep(r.runId, step);
-        parts.push(`vhedge:${r.runId}:s${step}`);
+        parts.push(`vd2_add:${r.runId}:L${displayStep}`);
       } else {
         tradingLog("warn", "ta_trend_arb_virtual_hedge_skip", {
           runId: r.runId,
-          step,
+          step: displayStep,
           error: clipRes.ok ? "zero_jobs" : clipRes.error,
         });
       }
@@ -342,7 +414,6 @@ export async function pollTrendArbRiskAndHedges(params: {
 }): Promise<TrendArbPollResult> {
   const { env, scope, barTime, barClose } = params;
   const parts: string[] = [];
-  const clip = Number(env.runtime.d2StepQty) || 100;
 
   try {
     await throttlePrimaryPoll(scope.runId);
@@ -390,33 +461,43 @@ export async function pollTrendArbRiskAndHedges(params: {
     const pos = posRes.position;
     if (!pos.open) {
       d1PeakUrpPct.delete(scope.runId);
-      const hedgeN = await countHedgeStepsForRun(scope.runId);
       const d1Was = lastD1SideWhileOpen.get(scope.runId) ?? "long";
-      if (hedgeN > 0 && scope.secondaryExchangeConnectionId) {
-        const nonce = `d1flat_${barTime}_${Date.now()}`;
-        const flattenSide = d1Was === "long" ? "buy" : "sell";
-        const qty = String(Math.min(900, hedgeN * clip));
-        const flat = await dispatchTrendArbFlattenSecondary({
-          strategyId: env.strategyId,
-          symbol: env.runtime.symbol,
-          reason: "primary_flat_cleanup",
-          nonce,
-          markPrice: barClose,
-          targetUserIds: [scope.userId],
-          targetRunIds: [scope.runId],
-          flattenSide,
-          quantity: qty,
+      if (scope.secondaryExchangeConnectionId) {
+        const secCred = await getDeltaCredentialsForConnection({
+          userId: scope.userId,
+          connectionId: scope.secondaryExchangeConnectionId,
         });
-        tradingLog("info", "ta_trend_arb_flatten_secondary", {
-          runId: scope.runId,
-          jobs: flat.ok ? flat.jobsEnqueued : 0,
-          error: flat.ok ? undefined : flat.error,
-        });
+        if (secCred.ok) {
+          const d2FlatProbe = await fetchDeltaIndiaPosition({
+            apiKey: secCred.apiKey,
+            apiSecret: secCred.apiSecret,
+            productId: product.productId,
+          });
+          const d2Sz =
+            d2FlatProbe.ok && d2FlatProbe.position.open ? d2FlatProbe.position.size : 0;
+          if (d2Sz > 1e-8) {
+            const nonce = `d1flat_${barTime}_${Date.now()}`;
+            const flattenSide = d1Was === "long" ? "buy" : "sell";
+            const flat = await dispatchTrendArbFlattenSecondary({
+              strategyId: env.strategyId,
+              symbol: env.runtime.symbol,
+              reason: "primary_flat_cleanup",
+              nonce,
+              markPrice: barClose,
+              targetUserIds: [scope.userId],
+              targetRunIds: [scope.runId],
+              flattenSide,
+              quantity: String(d2Sz),
+            });
+            tradingLog("info", "ta_trend_arb_flatten_secondary", {
+              runId: scope.runId,
+              jobs: flat.ok ? flat.jobsEnqueued : 0,
+              error: flat.ok ? undefined : flat.error,
+            });
+            parts.push(`flatten_d2_jobs:${flat.ok ? flat.jobsEnqueued : 0}`);
+          }
+        }
         await clearHedgeStepsForRun(scope.runId);
-        parts.push(`flatten_d2_jobs:${flat.ok ? flat.jobsEnqueued : 0}`);
-      } else if (hedgeN > 0) {
-        await clearHedgeStepsForRun(scope.runId);
-        parts.push("d2_flatten_skipped_no_secondary");
       }
       lastD1SideWhileOpen.delete(scope.runId);
       return { primaryFlat: true, detail: parts.join("|") || "primary_flat" };
@@ -448,26 +529,46 @@ export async function pollTrendArbRiskAndHedges(params: {
     const d1Tp = liveRisk.d1TargetProfitPct;
     const liveStepMovePct = liveRisk.stepMovePct;
 
+    let liveD2LadderRows: D2LadderOrderRow[] = [];
+    if (db && scope.secondaryExchangeConnectionId) {
+      const boRows = await db
+        .select({
+          createdAt: botOrders.createdAt,
+          correlationId: botOrders.correlationId,
+          side: botOrders.side,
+          quantity: botOrders.quantity,
+          fillPrice: botOrders.fillPrice,
+          status: botOrders.status,
+          rawSubmitResponse: botOrders.rawSubmitResponse,
+        })
+        .from(botOrders)
+        .where(
+          and(
+            eq(botOrders.runId, scope.runId),
+            eq(botOrders.exchangeConnectionId, scope.secondaryExchangeConnectionId),
+          ),
+        )
+        .orderBy(asc(botOrders.createdAt));
+      liveD2LadderRows = boRows.map((row) => ({
+        createdAt: row.createdAt,
+        correlationId: row.correlationId,
+        side: row.side,
+        quantity: String(row.quantity),
+        fillPrice: row.fillPrice != null ? String(row.fillPrice) : null,
+        status: row.status,
+        signalAction: null,
+        rawSubmitResponse: row.rawSubmitResponse as Record<string, unknown> | null,
+      }));
+    }
+    const liveOpenClipsPreview = buildOpenD2ClipsFromOrders(liveD2LadderRows, d1Side);
+
     const hardSlHit = urp <= -d1Sl;
     const hardTpHit = urp >= d1Tp;
     const softBeHit = peak >= Math.max(0.1, d1Tp / 2) && urp <= 0;
 
     let monD2 = "D2: n/a (no secondary exchange)";
     if (scope.secondaryExchangeConnectionId) {
-      const pendingSteps = await filterUnhedgedSteps(scope.runId, D2_FOLLOWUP_STEPS);
-      if (pendingSteps.length === 0) {
-        monD2 = "D2: all hedge steps (1–9) recorded";
-      } else {
-        const nextStep = Math.min(...pendingSteps);
-        const needMovePct = nextStep * liveStepMovePct;
-        const nextStepTargetPx =
-          pos.side === "long"
-            ? pos.entryPrice * (1 + needMovePct / 100)
-            : pos.entryPrice * (1 - needMovePct / 100);
-        const remainingMovePct =
-          mark > 0 ? Math.abs(((nextStepTargetPx - mark) / mark) * 100) : NaN;
-        monD2 = `next D2 step ${nextStep} at ~${nextStepTargetPx.toFixed(2)} (step ${liveStepMovePct}% x ${nextStep}, remaining ${Number.isFinite(remainingMovePct) ? remainingMovePct.toFixed(2) : "N/A"}%)`;
-      }
+      monD2 = `D2 ladder clips open=${liveOpenClipsPreview.length} (max ${TREND_ARB_D2_MAX_DISPLAY_STEP} rungs)`;
     }
 
     const toTgt = d1Tp - urp;
@@ -565,56 +666,97 @@ export async function pollTrendArbRiskAndHedges(params: {
     }
 
     if (scope.secondaryExchangeConnectionId) {
-      const pending = await filterUnhedgedSteps(scope.runId, D2_FOLLOWUP_STEPS);
-      for (const step of pending) {
-        const latestRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
-        const needMovePct = step * latestRisk.stepMovePct;
-        const nextStepTarget =
-          d1Side === "long"
-            ? pos.entryPrice * (1 + needMovePct / 100)
-            : pos.entryPrice * (1 - needMovePct / 100);
-        console.log(
-          `[D2-MATH] Run: ${scope.runId} | Side: ${d1Side} | Entry: ${pos.entryPrice.toFixed(2)} | LiveStepPct: ${latestRisk.stepMovePct}% | TargetPrice: ${nextStepTarget.toFixed(2)} | CurrentPrice: ${mark.toFixed(2)}`,
-        );
-        const crossed =
-          d1Side === "long"
-            ? mark >= nextStepTarget
-            : mark <= nextStepTarget;
-        if (!crossed) {
+      const openClips = buildOpenD2ClipsFromOrders(liveD2LadderRows, d1Side);
+      const d2IsShort = d1Side === "long";
+      const exitedThisTick = new Set<string>();
+
+      for (const clip of openClips) {
+        if (
+          !d2ClipTpHit({
+            d2IsShort,
+            clipEntryPx: clip.entryPx,
+            mark,
+            targetProfitPct: liveRisk.d2TargetProfitPct,
+          })
+        ) {
           continue;
         }
-        console.log(
-          `[D2-TRIGGER] Mark ${mark.toFixed(2)} has crossed target ${nextStepTarget.toFixed(2)} for step ${step}. Enqueueing hedge...`,
-        );
-        const correlationId = `ta_trendarb_${env.strategyId}_d2_${scope.runId}_s${step}_${Date.now()}`;
-        if (await hasTradingJobForCorrelationId(correlationId)) continue;
+        const correlationIdOverride = `ta_trendarb_${env.strategyId}_d2_${scope.runId}_d2X${clip.displayStep}_${Date.now()}`;
+        if (await hasTradingJobForCorrelationId(correlationIdOverride)) continue;
+        const closeRes = await dispatchTrendArbCloseSecondaryClip({
+          strategyId: env.strategyId,
+          symbol: env.runtime.symbol,
+          markPrice: mark,
+          flattenSide: d2IsShort ? "buy" : "sell",
+          quantity: clip.qty.toFixed(6),
+          closesEntryCorrelationId: clip.correlationId,
+          d2DisplayStep: clip.displayStep,
+          correlationNonce: `${scope.runId}_${Date.now()}`,
+          correlationIdOverride,
+          targetUserIds: [scope.userId],
+          targetRunIds: [scope.runId],
+        });
+        if (closeRes.ok && closeRes.jobsEnqueued > 0) {
+          exitedThisTick.add(clip.correlationId);
+          parts.push(`d2_tp:${scope.runId}:L${clip.displayStep}`);
+          console.log(
+            `[D2-TP] Live run ${scope.runId} exit ${d2StepLabel(clip.displayStep)} | clipEntry=${clip.entryPx.toFixed(2)} mark=${mark.toFixed(2)}`,
+          );
+        } else {
+          tradingLog("warn", "ta_trend_arb_d2_tp_skip", {
+            runId: scope.runId,
+            step: clip.displayStep,
+            error: closeRes.ok ? "zero_jobs" : closeRes.error,
+          });
+        }
+      }
 
+      const stillOpen = openClips.filter((c) => !exitedThisTick.has(c.correlationId));
+
+      for (let displayStep = 2; displayStep <= TREND_ARB_D2_MAX_DISPLAY_STEP; displayStep++) {
+        if (stillOpen.some((c) => c.displayStep === displayStep)) continue;
+        const trig = d2RungTriggerPrice({
+          d1Side,
+          d1Entry: pos.entryPrice,
+          displayStep,
+          stepMovePct: liveRisk.stepMovePct,
+        });
+        if (!Number.isFinite(trig)) continue;
+        const crossed = d1Side === "long" ? mark >= trig : mark <= trig;
+        if (!crossed) continue;
+        const correlationId = `ta_trendarb_${env.strategyId}_d2_${scope.runId}_d2L${displayStep}_${Date.now()}`;
+        if (await hasTradingJobForCorrelationId(correlationId)) continue;
+        console.log(
+          `[D2-LADDER] Live run ${scope.runId} | ${d2StepLabel(displayStep)} add | trigger=${trig.toFixed(2)} mark=${mark.toFixed(2)}`,
+        );
         const clipRes = await dispatchTrendArbSecondaryHedgeClip({
           strategyId: env.strategyId,
           symbol: env.runtime.symbol,
           candleTime: barTime,
-          stepIndex: step,
+          stepIndex: displayStep,
           side: d1Side === "long" ? "short" : "long",
           forceSide: d1Side === "long" ? "short" : "long",
           markPrice: mark,
           quantity: computeD2StepQuantityFromD1Qty({
             d1Qty: pos.size,
-            stepQtyPct: latestRisk.d2StepQtyPct,
+            stepQtyPct: liveRisk.d2StepQtyPct,
             fallbackQty: env.runtime.d2StepQty,
           }),
-          stepQtyPct: latestRisk.d2StepQtyPct,
-          targetProfitPct: latestRisk.d2TargetProfitPct,
+          stepQtyPct: liveRisk.d2StepQtyPct,
+          targetProfitPct: liveRisk.d2TargetProfitPct,
           targetUserIds: [scope.userId],
           targetRunIds: [scope.runId],
           correlationIdOverride: correlationId,
+          applyCapitalSplitSizing: false,
+          d2DisplayStep: displayStep,
+          d2StepLabel: d2StepLabel(displayStep),
         });
         if (clipRes.ok && clipRes.jobsEnqueued > 0) {
-          await recordHedgeStep(scope.runId, step);
-          parts.push(`hedge_s${step}`);
+          parts.push(`hedge_L${displayStep}`);
         } else {
           tradingLog("warn", "ta_trend_arb_hedge_skip", {
             runId: scope.runId,
-            step,
+            step: displayStep,
             error: clipRes.ok ? "zero_jobs" : clipRes.error,
           });
         }

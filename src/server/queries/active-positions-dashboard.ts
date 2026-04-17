@@ -308,11 +308,13 @@ function parseTrendArbDisplaySettings(
   };
 }
 
-/** D2 entry clips (excludes flatten helpers); includes virtual `..._v_<run>_s<step>_...` ids. */
+/** D2 entry clips (excludes flatten / per-clip TP exits); includes ladder `_d2l` and legacy `..._d2_<time>_sN_`. */
 function isTrendArbD2EntryClipOrder(o: { correlationId: string | null }): boolean {
   const cid = (o.correlationId ?? "").toLowerCase();
   if (cid.includes("_d2_flat_")) return false;
-  if (cid.includes("_d2_")) return true;
+  if (cid.includes("_d2x")) return false;
+  if (cid.includes("_d2l")) return true;
+  if (cid.includes("_d2_") && /_s\d+_/.test(cid)) return true;
   return cid.startsWith("ta_trendarb_") && /_v_.+?_s\d+_/i.test(cid);
 }
 

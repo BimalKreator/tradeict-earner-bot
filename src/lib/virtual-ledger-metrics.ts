@@ -35,6 +35,8 @@ export function isTrendArbSecondaryCorrelationId(
   const cid = (correlationId ?? "").toLowerCase();
   if (cid.includes("delta2")) return true;
   if (cid.includes("_d2_")) return true;
+  if (cid.includes("_d2l")) return true;
+  if (cid.includes("_d2x")) return true;
   if (cid.startsWith("ta_trendarb_") && /_v_.+?_s\d+_/i.test(cid)) return true;
   return false;
 }

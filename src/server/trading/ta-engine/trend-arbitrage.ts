@@ -88,7 +88,7 @@ function computeD2StepQuantityFromD1Qty(params: {
   }
   const qty = d1 * (pct / 100);
   if (!(Number.isFinite(qty) && qty > 0)) return params.fallbackQty;
-  return qty.toFixed(8).replace(/\.?0+$/, "");
+  return qty.toFixed(6);
 }
 
 async function detectVirtualActiveForRun(runId: string): Promise<number | null> {
@@ -616,6 +616,9 @@ export async function runTrendArbitrageOnce(
       stepQtyPct: c.runtime.d2StepQtyPct,
       targetProfitPct: c.runtime.d2TargetProfitPct,
       applyCapitalSplitSizing: true,
+      d1ClipQtyPct: c.runtime.d1EntryQtyPct,
+      d2DisplayStep: 1,
+      d2StepLabel: "D2 Step 1",
       correlationIdOverride: d2InitialCorrelationId,
       ...dispatchScope,
     }),

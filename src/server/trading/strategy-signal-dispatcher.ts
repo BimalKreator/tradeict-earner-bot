@@ -16,6 +16,11 @@ type TrendArbSizingMeta = {
   mode: "capital_split_50_50";
   leg: "d1_entry" | "d2_step";
   qtyPct: number;
+  /**
+   * Initial D2 (capital split): clip contracts = (D1-sized qty at same capital & mark) × (qtyPct/100).
+   * Omitted on older jobs → legacy half-capital × step% only (not tied to D1 entry %).
+   */
+  d1ClipQtyPct?: number;
 };
 
 function resolveLiveExchangeConnectionId(
@@ -73,7 +78,14 @@ function readTrendArbSizing(meta: Record<string, unknown>): TrendArbSizingMeta |
   const leg = rec.leg === "d1_entry" || rec.leg === "d2_step" ? rec.leg : null;
   const qtyPct = parseNonNegativeQtyPct(rec.qtyPct);
   if (!mode || !leg || qtyPct == null) return null;
-  return { mode, leg, qtyPct };
+  const base: TrendArbSizingMeta = { mode, leg, qtyPct };
+  if (leg === "d2_step") {
+    const d1Clip = parseNonNegativeQtyPct(rec.d1_clip_qty_pct);
+    if (d1Clip != null) {
+      base.d1ClipQtyPct = d1Clip;
+    }
+  }
+  return base;
 }
 
 function resolveMarkPrice(meta: Record<string, unknown>, limitPrice?: string | null): number | null {
@@ -99,6 +111,17 @@ function computeTrendArbSizedQuantity(params: {
   if (!params.sizing || cap == null || mark == null || mark <= 0) return params.fallbackQuantity;
   const totalStrategyCapital = cap;
   const baseCapitalUsd = totalStrategyCapital * 0.5;
+
+  if (params.sizing.leg === "d2_step" && params.sizing.d1ClipQtyPct != null) {
+    const d1Pct = normalizeTrendArbPct(params.sizing.d1ClipQtyPct);
+    const stepPct = normalizeTrendArbPct(params.sizing.qtyPct);
+    if (Number(d1Pct) === 0 || Number(stepPct) === 0) return "0";
+    const d1Qty = (baseCapitalUsd * (Number(d1Pct) / 100)) / mark;
+    const d2Qty = d1Qty * (Number(stepPct) / 100);
+    if (!(Number.isFinite(d2Qty) && d2Qty > 0)) return params.fallbackQuantity;
+    return d2Qty.toFixed(6);
+  }
+
   const stepQtyPct = normalizeTrendArbPct(params.sizing.qtyPct);
   const pctDecimal = Number(stepQtyPct) / 100;
   const notionalTargetUsd = baseCapitalUsd * pctDecimal;

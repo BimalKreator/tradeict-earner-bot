@@ -320,6 +320,9 @@ export async function simulateVirtualOrder(params: {
           rawSubmitResponse: {
             error: sim.error,
             mark_price: price,
+            ...(p.signalMetadata && typeof p.signalMetadata === "object"
+              ? { signal_metadata_snapshot: p.signalMetadata }
+              : {}),
           },
           errorMessage: sim.error,
           updatedAt: now,
@@ -358,6 +361,9 @@ export async function simulateVirtualOrder(params: {
         rawSubmitResponse: {
           mark_price: price,
           leverage: row.leverage,
+          ...(p.signalMetadata && typeof p.signalMetadata === "object"
+            ? { signal_metadata_snapshot: p.signalMetadata }
+            : {}),
           ...out.simulation,
         },
         updatedAt: now,

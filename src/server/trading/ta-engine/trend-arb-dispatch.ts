@@ -107,9 +107,15 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     correlationIdOverride?: string;
     /**
      * Initial hedge (step 0): size from virtual/live capital via `capital_split_50_50`.
+     * D2 clip contracts = (D1-sized qty at same capital & mark using this %) × (stepQtyPct/100).
      * Follow-up steps from `trend-arb-poll`: keep false so `quantity` (from actual D1 size) is used.
      */
     applyCapitalSplitSizing?: boolean;
+    /** Basis for initial D2 clip sizing: admin D1 entry % (half-capital leg). Default 100. */
+    d1ClipQtyPct?: number;
+    /** User-facing ladder step (1 = initial hedge at flip, 2–10 = rungs). */
+    d2DisplayStep?: number;
+    d2StepLabel?: string;
   } & DispatchScope,
 ): Promise<StrategySignalIntakeResponse> {
   const correlationId =
@@ -131,13 +137,24 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     metadata: {
       source: "ta_trend_arbitrage",
       leg: "delta2_hedge_clip",
-      hedge_step: params.stepIndex,
+      hedge_step: params.d2DisplayStep ?? params.stepIndex,
+      d2_display_step: (() => {
+        const s =
+          params.d2DisplayStep ?? (params.stepIndex <= 0 ? 1 : params.stepIndex + 1);
+        return s;
+      })(),
+      d2_step_label: (() => {
+        const s =
+          params.d2DisplayStep ?? (params.stepIndex <= 0 ? 1 : params.stepIndex + 1);
+        return params.d2StepLabel ?? `D2 Step ${s}`;
+      })(),
       mark_price: params.markPrice,
       trend_arb_sizing: useCapitalSplit
         ? {
             mode: "capital_split_50_50",
             leg: "d2_step",
             qtyPct: params.stepQtyPct ?? 10,
+            d1_clip_qty_pct: params.d1ClipQtyPct ?? 100,
           }
         : {
             mode: "absolute",
@@ -145,6 +162,44 @@ export async function dispatchTrendArbSecondaryHedgeClip(
           },
       force_side: effectiveSide,
       risk: { tp_pct: params.targetProfitPct ?? TREND_ARB_D2_TP_PCT },
+    },
+  });
+}
+
+/** Reduce-only close for one Delta 2 ladder clip (per-step TP). */
+export async function dispatchTrendArbCloseSecondaryClip(params: {
+  strategyId: string;
+  symbol: string;
+  markPrice: number;
+  /** Close short clips with `buy`, long clips with `sell`. */
+  flattenSide: "buy" | "sell";
+  quantity: string;
+  closesEntryCorrelationId: string;
+  d2DisplayStep: number;
+  correlationNonce: string;
+  correlationIdOverride?: string;
+} & DispatchScope): Promise<StrategySignalIntakeResponse> {
+  const correlationId =
+    params.correlationIdOverride ??
+    `ta_trendarb_${params.strategyId}_d2X${params.d2DisplayStep}_${params.correlationNonce}`;
+  return dispatchStrategyExecutionSignal({
+    strategyId: params.strategyId,
+    correlationId,
+    symbol: params.symbol,
+    side: params.flattenSide,
+    orderType: "market",
+    quantity: params.quantity,
+    actionType: "exit",
+    exchangeVenue: "secondary",
+    targetUserIds: params.targetUserIds,
+    targetRunIds: params.targetRunIds,
+    metadata: {
+      source: "ta_trend_arbitrage",
+      leg: "delta2_clip_exit",
+      mark_price: params.markPrice,
+      closes_entry_correlation_id: params.closesEntryCorrelationId,
+      d2_display_step: params.d2DisplayStep,
+      d2_step_label: `D2 Step ${params.d2DisplayStep} exit`,
     },
   });
 }
