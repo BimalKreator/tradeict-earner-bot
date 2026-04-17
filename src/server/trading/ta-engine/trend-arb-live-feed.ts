@@ -1,12 +1,14 @@
 import WebSocket from "ws";
 
 import {
+  fetchDeltaExchangeCandles,
   normalizeDeltaCandlesSymbol,
   resolutionToSeconds,
   type OhlcvCandle,
 } from "./rsi-scalper";
 
 type FeedKey = string;
+const MIN_SEED_BARS = 400;
 
 type FeedState = {
   key: FeedKey;
@@ -18,6 +20,7 @@ type FeedState = {
   ws: WebSocket | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<() => void>;
+  seeded: boolean;
 };
 
 const feeds = new Map<FeedKey, FeedState>();
@@ -62,6 +65,22 @@ function rollTickIntoCandle(state: FeedState, params: { price: number; qty: numb
     state.candles.splice(0, state.candles.length - 2500);
   }
   state.lastPrice = price;
+}
+
+async function seedFromRest(state: FeedState, baseUrl: string, lookbackSec: number): Promise<void> {
+  if (state.seeded) return;
+  const seedLookbackSec = Math.max(lookbackSec, state.resSec * MIN_SEED_BARS);
+  const candles = await fetchDeltaExchangeCandles({
+    baseUrl,
+    symbol: state.symbol,
+    resolution: state.resolution,
+    lookbackSec: seedLookbackSec,
+  });
+  if (candles.length > 0) {
+    state.candles = candles;
+    state.lastPrice = candles[candles.length - 1]!.close;
+  }
+  state.seeded = true;
 }
 
 function notify(state: FeedState): void {
@@ -121,11 +140,11 @@ export async function ensureTrendArbLiveFeed(params: {
       ws: null,
       reconnectTimer: null,
       subscribers: new Set(),
+      seeded: false,
     };
     feeds.set(key, state);
   }
-  void params.baseUrl;
-  void params.lookbackSec;
+  await seedFromRest(state, params.baseUrl, params.lookbackSec);
   if (!state.ws) connect(state);
 }
 
