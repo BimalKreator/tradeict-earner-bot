@@ -52,11 +52,19 @@ const lastD1SideWhileOpen = new Map<string, "long" | "short">();
 async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrageEnv["runtime"]): Promise<{
   stepMovePct: number;
   d2TargetProfitPct: number;
+  d2StopLossPct: number;
+  d2StepQtyPct: number;
+  d1TargetProfitPct: number;
+  d1StopLossPct: number;
 }> {
   if (!db) {
     return {
       stepMovePct: Math.max(0.1, fallback.d2StepMovePct),
       d2TargetProfitPct: Math.max(0.1, fallback.d2TargetProfitPct),
+      d2StopLossPct: Math.max(0.1, fallback.d2StopLossPct),
+      d2StepQtyPct: Math.max(0, fallback.d2StepQtyPct),
+      d1TargetProfitPct: Math.max(0.1, fallback.d1TargetProfitPct),
+      d1StopLossPct: Math.max(0.1, fallback.d1StopLossPct),
     };
   }
   // NOTE: intentionally re-query DB every call (no in-memory cache) so mid-trade setting edits
@@ -71,11 +79,19 @@ async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrage
     return {
       stepMovePct: Math.max(0.1, fallback.d2StepMovePct),
       d2TargetProfitPct: Math.max(0.1, fallback.d2TargetProfitPct),
+      d2StopLossPct: Math.max(0.1, fallback.d2StopLossPct),
+      d2StepQtyPct: Math.max(0, fallback.d2StepQtyPct),
+      d1TargetProfitPct: Math.max(0.1, fallback.d1TargetProfitPct),
+      d1StopLossPct: Math.max(0.1, fallback.d1StopLossPct),
     };
   }
   return {
     stepMovePct: Math.max(0.1, parsed.data.delta2.stepMovePct),
     d2TargetProfitPct: Math.max(0.1, parsed.data.delta2.targetProfitPct),
+    d2StopLossPct: Math.max(0.1, parsed.data.delta2.stopLossPct),
+    d2StepQtyPct: Math.max(0, parsed.data.delta2.stepQtyPct),
+    d1TargetProfitPct: Math.max(0.1, parsed.data.delta1.targetProfitPct),
+    d1StopLossPct: Math.max(0.1, parsed.data.delta1.stopLossPct),
   };
 }
 
@@ -270,8 +286,8 @@ async function monitorActiveVirtualRuns(params: {
         forceSide: d1Side === "long" ? "short" : "long",
         markPrice,
         quantity: env.runtime.d2StepQty,
-        stepQtyPct: env.runtime.d2StepQtyPct,
-        targetProfitPct: latestRisk.d2TargetProfitPct / 100,
+        stepQtyPct: latestRisk.d2StepQtyPct,
+        targetProfitPct: latestRisk.d2TargetProfitPct,
         targetUserIds: [r.userId],
         correlationIdOverride: correlationId,
       });
@@ -403,9 +419,9 @@ export async function pollTrendArbRiskAndHedges(params: {
     d1PeakUrpPct.set(scope.runId, peak);
 
     const d1Side = pos.side;
-    const d1Sl = env.runtime.d1StopLossPct;
-    const d1Tp = env.runtime.d1TargetProfitPct;
     const liveRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
+    const d1Sl = liveRisk.d1StopLossPct;
+    const d1Tp = liveRisk.d1TargetProfitPct;
     const liveStepMovePct = liveRisk.stepMovePct;
 
     const hardSlHit = urp <= -d1Sl;
@@ -494,7 +510,7 @@ export async function pollTrendArbRiskAndHedges(params: {
             entryPrice: d2PosRes.position.entryPrice,
             side: d2PosRes.position.side,
           });
-          const d2Sl = env.runtime.d2StopLossPct;
+          const d2Sl = liveRisk.d2StopLossPct;
           console.log(
             `[EXIT-CHECK] Trade #${scope.runId}: D2 — URP ${d2Urp.toFixed(2)}% vs stop −${d2Sl}% (mark ${d2Mark.toFixed(2)})`,
           );
@@ -558,8 +574,8 @@ export async function pollTrendArbRiskAndHedges(params: {
           forceSide: d1Side === "long" ? "short" : "long",
           markPrice: mark,
           quantity: env.runtime.d2StepQty,
-          stepQtyPct: env.runtime.d2StepQtyPct,
-          targetProfitPct: latestRisk.d2TargetProfitPct / 100,
+          stepQtyPct: latestRisk.d2StepQtyPct,
+          targetProfitPct: latestRisk.d2TargetProfitPct,
           targetUserIds: [scope.userId],
           targetRunIds: [scope.runId],
           correlationIdOverride: correlationId,

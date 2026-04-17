@@ -20,13 +20,6 @@ function entrySide(side: TrendArbSide): "buy" | "sell" {
   return side === "long" ? "buy" : "sell";
 }
 
-function normalizePctInput(raw: number | undefined, fallbackPct: number): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return fallbackPct;
-  // Guard against decimal pct input like 0.1 being intended as 10%.
-  return n <= 1 ? n * 100 : n;
-}
-
 export function trendArbPrimaryCorrelationId(
   strategyId: string,
   candleTime: number,
@@ -54,6 +47,7 @@ export async function dispatchTrendArbPrimaryEntry(
     symbol: string;
     quantity?: string;
     entryQtyPct?: number;
+    stopLossPct?: number;
     targetProfitPct?: number;
     side: TrendArbSide;
     candleTime: number;
@@ -83,12 +77,12 @@ export async function dispatchTrendArbPrimaryEntry(
       mark_price: params.markPrice,
       half_trend: true,
       trend_arb_sizing: {
-        mode: "capital_split_50_50",
+        mode: "percentage",
         leg: "d1_entry",
         qtyPct: Math.max(0, Number(params.entryQtyPct ?? 100)),
       },
       risk: {
-        sl_pct: TREND_ARB_D1_SL_PCT,
+        sl_pct: params.stopLossPct ?? TREND_ARB_D1_SL_PCT,
         tp_pct: params.targetProfitPct ?? TREND_ARB_D1_TP_PCT,
         trail_sl_to_be_at_pct: TREND_ARB_D1_TRAIL_BE_AT_PCT,
       },
@@ -116,7 +110,6 @@ export async function dispatchTrendArbSecondaryHedgeClip(
     params.correlationIdOverride ??
     trendArbSecondaryCorrelationId(params.strategyId, params.candleTime, params.stepIndex);
   const effectiveSide = params.forceSide ?? params.side;
-  const effectiveStepQtyPct = normalizePctInput(params.stepQtyPct, 100);
   return dispatchStrategyExecutionSignal({
     strategyId: params.strategyId,
     correlationId,
@@ -134,9 +127,9 @@ export async function dispatchTrendArbSecondaryHedgeClip(
       hedge_step: params.stepIndex,
       mark_price: params.markPrice,
       trend_arb_sizing: {
-        mode: "capital_split_50_50",
+        mode: "percentage",
         leg: "d2_step",
-        qtyPct: Math.max(0, effectiveStepQtyPct),
+        qtyPct: Math.max(0, Number(params.stepQtyPct ?? 10)),
       },
       force_side: effectiveSide,
       risk: { tp_pct: params.targetProfitPct ?? TREND_ARB_D2_TP_PCT },
