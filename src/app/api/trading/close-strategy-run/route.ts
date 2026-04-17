@@ -18,6 +18,7 @@ import {
   virtualStrategyRuns,
   type TradingExecutionJobPayload,
 } from "@/server/db/schema";
+import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
 import { assertVirtualRunStillEligibleForExecution } from "@/server/trading/virtual-eligibility";
 import { simulateVirtualOrder } from "@/server/trading/virtual-order-simulator";
@@ -97,6 +98,8 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
 
   let closed = 0;
   for (const leg of legClosures) {
+    const markPrice =
+      (await fetchDeltaIndiaTickerMarkPrice({ symbol: leg.symbol })) ?? undefined;
     const payload: TradingExecutionJobPayload = {
       kind: "execute_strategy_signal",
       executionMode: "virtual",
@@ -113,6 +116,7 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
         source: "manual_close",
         close_all_legs: true,
         account: leg.account,
+        ...(markPrice != null && markPrice > 0 ? { mark_price: markPrice } : {}),
       },
     };
     const sim = await simulateVirtualOrder({ payload, row: elig.row });

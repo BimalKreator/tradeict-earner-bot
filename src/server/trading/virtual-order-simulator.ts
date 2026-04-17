@@ -4,6 +4,8 @@ import { db } from "@/server/db";
 import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
 import type { TradingExecutionJobPayload } from "@/server/db/schema";
 
+import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
+
 import { fetchDeltaExchangeCandles, filterClosedCandles } from "./ta-engine/rsi-scalper";
 import type { EligibleVirtualRunRow } from "./virtual-eligibility";
 import { generateInternalClientOrderId } from "./ids";
@@ -68,6 +70,12 @@ async function resolveFillPriceUsd(
     }
   } catch {
     /* handled below */
+  }
+  try {
+    const india = await fetchDeltaIndiaTickerMarkPrice({ symbol: p.symbol });
+    if (india != null && india > 0) return india;
+  } catch {
+    /* ignore */
   }
   return null;
 }

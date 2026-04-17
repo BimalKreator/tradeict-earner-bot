@@ -97,15 +97,16 @@ export function UserActivePositionsSection({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300/90">
-              Live · Active positions
+              Paper · Active positions
             </p>
             <h2 className="mt-2 font-[family-name:var(--font-display)] text-2xl font-bold tracking-tight text-white sm:text-3xl">
               Open D1 &amp; D2 legs
             </h2>
             <p className="mt-2 max-w-xl text-sm text-slate-400">
-              Paper runs with <code className="text-emerald-300/90">status = active</code> and an open
-              simulated position. Entry from fills; <strong className="text-slate-200">current price</strong>{" "}
-              from the Delta India public ticker (auto-refresh ~8s).
+              Simulated (virtual) runs with <code className="text-emerald-300/90">status = active</code> and an
+              open paper position — not your real Delta orders. Marks use the Delta India public ticker
+              (auto-refresh ~8s). <strong className="text-slate-200">Close Position</strong> settles the paper
+              book only.
             </p>
           </div>
           <div className="text-right">
