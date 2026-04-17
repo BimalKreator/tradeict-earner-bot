@@ -77,9 +77,8 @@ export async function dispatchTrendArbPrimaryEntry(
       mark_price: params.markPrice,
       half_trend: true,
       trend_arb_sizing: {
-        mode: "percentage",
+        mode: "absolute",
         leg: "d1_entry",
-        qtyPct: Math.max(0, Number(params.entryQtyPct ?? 100)),
       },
       risk: {
         sl_pct: params.stopLossPct ?? TREND_ARB_D1_SL_PCT,
@@ -127,9 +126,8 @@ export async function dispatchTrendArbSecondaryHedgeClip(
       hedge_step: params.stepIndex,
       mark_price: params.markPrice,
       trend_arb_sizing: {
-        mode: "percentage",
+        mode: "absolute",
         leg: "d2_step",
-        qtyPct: Math.max(0, Number(params.stepQtyPct ?? 10)),
       },
       force_side: effectiveSide,
       risk: { tp_pct: params.targetProfitPct ?? TREND_ARB_D2_TP_PCT },
