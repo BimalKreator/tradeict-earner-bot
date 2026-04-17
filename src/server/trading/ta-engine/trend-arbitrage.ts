@@ -4,6 +4,13 @@
  * When `TA_TREND_ARB_RUN_ID` + `TA_TREND_PRIMARY_EXCHANGE_ID` are set, each tick polls Delta 1
  * position for SL/TP/soft-BE, Delta 2 grid hedges (configurable step %, DB-backed),
  * and flattens D2 when D1 is flat.
+ *
+ * **D1 exit policy:** Delta 1 is never closed because HalfTrend flipped. Closes only on
+ * configured TP, SL, soft trailing breakeven (`pollTrendArbRiskAndHedges`), or manual close.
+ *
+ * **D1 re-entry:** After D1 goes flat, the worker waits until the **next** closed candle strictly
+ * after the flat-detection bar before a new HalfTrend entry is allowed (avoids same-bar flip
+ * re-entry while `buySignal`/`sellSignal` stay true for the whole bar).
  */
 
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -35,7 +42,11 @@ import {
   trendArbSecondaryCorrelationId,
   type TrendArbSide,
 } from "./trend-arb-dispatch";
-import { pollTrendArbRiskAndHedges, pollTrendArbVirtualRiskAndHedges } from "./trend-arb-poll";
+import {
+  hasAnyOpenTrendArbD1PositionForStrategy,
+  pollTrendArbRiskAndHedges,
+  pollTrendArbVirtualRiskAndHedges,
+} from "./trend-arb-poll";
 import {
   ensureTrendArbLiveFeed,
   getTrendArbLiveSnapshot,
@@ -131,6 +142,53 @@ function sideFromCloseVsHt(close: number, ht: number): -1 | 0 | 1 {
   const d = close - ht;
   if (Math.abs(d) <= 1e-9) return 0;
   return d > 0 ? 1 : -1;
+}
+
+type TrendArbPostExitCooldown = {
+  /** Previous tick: was primary (D1) flat? */
+  lastPrimaryFlat: boolean | undefined;
+  /**
+   * While flat: require `signalClosedBarTime > this` before a new D1 entry.
+   * Set when we transition from D1 open → flat (TP/SL/trail/manual).
+   */
+  nextEntryMinClosedBarTimeExclusive: number | null;
+};
+
+const trendArbPostExitEntryCooldownByStrategy = new Map<string, TrendArbPostExitCooldown>();
+
+/**
+ * Tracks D1 flat transitions and returns whether the current closed bar is still in the
+ * post-exit wait window (same bar as flat detection, or older).
+ */
+function updateTrendArbPostExitEntryCooldown(params: {
+  strategyId: string;
+  primaryFlat: boolean;
+  signalClosedBarTime: number;
+}): { closedBarBlocksEntry: boolean; gateBarTime: number | null } {
+  const prev = trendArbPostExitEntryCooldownByStrategy.get(params.strategyId) ?? {
+    lastPrimaryFlat: undefined,
+    nextEntryMinClosedBarTimeExclusive: null,
+  };
+
+  const becameFlat = params.primaryFlat === true && prev.lastPrimaryFlat === false;
+  let nextMin = prev.nextEntryMinClosedBarTimeExclusive;
+  if (!params.primaryFlat) {
+    nextMin = null;
+  } else if (becameFlat) {
+    nextMin = params.signalClosedBarTime;
+  }
+
+  trendArbPostExitEntryCooldownByStrategy.set(params.strategyId, {
+    lastPrimaryFlat: params.primaryFlat,
+    nextEntryMinClosedBarTimeExclusive: nextMin,
+  });
+
+  const blocked =
+    params.primaryFlat &&
+    nextMin != null &&
+    params.signalClosedBarTime <= nextMin;
+
+  return { closedBarBlocksEntry: blocked, gateBarTime: nextMin };
 }
 
 export {
@@ -472,7 +530,8 @@ export async function runTrendArbitrageOnce(
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       tradingLog("warn", "ta_trend_arb_poll_outer", { error: msg });
-      primaryFlat = true;
+      // Conservative: never open new D1 while primary poll is failing (may still have an open D1).
+      primaryFlat = false;
       pollDetail = [`poll_outer:${msg}`, vMon.detail].filter(Boolean).join("|");
     }
   } else {
@@ -490,6 +549,25 @@ export async function runTrendArbitrageOnce(
       }
     }
   }
+
+  // Without a single-run scope, signals fan out to every eligible run — block if ANY run still
+  // has primary exposure (otherwise venue nets opposite entry against existing D1 = "reverse").
+  if (!c.executionScope) {
+    const sym = (c.runtime.symbol || c.symbol).trim();
+    if (sym) {
+      const anyD1 = await hasAnyOpenTrendArbD1PositionForStrategy(c.strategyId, sym);
+      if (anyD1) {
+        primaryFlat = false;
+        pollDetail = [pollDetail, "d1_position_lock:open_strategy_wide"].filter(Boolean).join("|");
+      }
+    }
+  }
+
+  const postExitCooldown = updateTrendArbPostExitEntryCooldown({
+    strategyId: c.strategyId,
+    primaryFlat,
+    signalClosedBarTime: lastClosed.time,
+  });
 
   // Entry only on native HalfTrend crossover signals (not geometric close-vs-HT flip alone).
   const effectiveBuySignal = half.buySignal;
@@ -516,6 +594,46 @@ export async function runTrendArbitrageOnce(
       },
     };
   }
+
+  if (postExitCooldown.closedBarBlocksEntry) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: post-D1-flat cooldown — need a strictly newer closed bar than the bar when D1 went flat (gate=${postExitCooldown.gateBarTime}, closedBar=${lastClosed.time}); skip new entry this tick`,
+    );
+    return {
+      ok: true,
+      fired: false,
+      detail: [pollDetail, "Post-D1-flat: wait for next closed bar before new HalfTrend entry."]
+        .filter(Boolean)
+        .join(" "),
+      halfTrend: {
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
+        trend: half.trend,
+      },
+    };
+  }
+
+  if (!primaryFlat) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: Active D1 position exists. Ignoring new HalfTrend signal. (${pollDetail || "poll ok"})`,
+    );
+    return {
+      ok: true,
+      fired: false,
+      detail: [
+        pollDetail,
+        "Position lock: no new D1 entry while any primary leg is open (TP/SL/trail/manual close required first).",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      halfTrend: {
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
+        trend: half.trend,
+      },
+    };
+  }
+
   const d1Side: TrendArbSide = effectiveSellSignal
     ? "short"
     : effectiveBuySignal
@@ -524,25 +642,6 @@ export async function runTrendArbitrageOnce(
         ? "long"
         : "short";
   const d2Side: TrendArbSide = d1Side === "long" ? "short" : "long";
-
-  if (c.executionScope && !primaryFlat) {
-    console.log(
-      `[ENTRY-CHECK] ${c.symbol}: primary (D1) still open for run ${c.executionScope.runId} — skip new HalfTrend entry`,
-    );
-    return {
-      ok: true,
-      fired: false,
-      detail: [
-        pollDetail,
-        "Hold D1 until TP/SL (or manual close); ignore HalfTrend opposite while primary is open.",
-      ].join(" "),
-      halfTrend: {
-        buySignal: effectiveBuySignal,
-        sellSignal: effectiveSellSignal,
-        trend: half.trend,
-      },
-    };
-  }
 
   const correlationId = trendArbPrimaryCorrelationId(c.strategyId, bar.time, d1Side);
   const d2InitialCorrelationId = trendArbSecondaryCorrelationId(c.strategyId, bar.time, 0);

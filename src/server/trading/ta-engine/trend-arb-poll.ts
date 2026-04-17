@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import {
@@ -7,7 +7,15 @@ import {
   type LedgerOrderRow,
 } from "@/lib/virtual-ledger-metrics";
 import { db } from "@/server/db";
-import { botOrders, strategies, virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
+import {
+  botOrders,
+  botPositions,
+  strategies,
+  userStrategyRuns,
+  userStrategySubscriptions,
+  virtualBotOrders,
+  virtualStrategyRuns,
+} from "@/server/db/schema";
 import {
   fetchDeltaIndiaPosition,
   fetchDeltaIndiaTickerMarkPrice,
@@ -214,6 +222,58 @@ export type TrendArbPollResult = {
   detail: string;
 };
 
+/**
+ * True if any active virtual run or live primary `bot_positions` row for this strategy has
+ * non-flat D1-sized exposure (used when the worker has no single-run scope — prevents fan-out
+ * from dispatching an opposite-side primary entry that would flatten an existing D1).
+ */
+export async function hasAnyOpenTrendArbD1PositionForStrategy(
+  strategyId: string,
+  symbol: string,
+): Promise<boolean> {
+  if (!db) return false;
+  const sym = symbol.trim();
+  if (!sym) return false;
+
+  const [vOpen] = await db
+    .select({ id: virtualStrategyRuns.id })
+    .from(virtualStrategyRuns)
+    .innerJoin(strategies, eq(virtualStrategyRuns.strategyId, strategies.id))
+    .where(
+      and(
+        eq(virtualStrategyRuns.strategyId, strategyId),
+        eq(virtualStrategyRuns.status, "active"),
+        isNull(strategies.deletedAt),
+        sql`abs(cast(${virtualStrategyRuns.openNetQty} as numeric)) > 0.00000001`,
+      ),
+    )
+    .limit(1);
+  if (vOpen) return true;
+
+  const [pOpen] = await db
+    .select({ id: botPositions.id })
+    .from(botPositions)
+    .innerJoin(userStrategyRuns, eq(botPositions.subscriptionId, userStrategyRuns.subscriptionId))
+    .innerJoin(
+      userStrategySubscriptions,
+      eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+    )
+    .innerJoin(strategies, eq(botPositions.strategyId, strategies.id))
+    .where(
+      and(
+        eq(userStrategySubscriptions.strategyId, strategyId),
+        eq(userStrategyRuns.status, "active"),
+        eq(botPositions.symbol, sym),
+        isNotNull(userStrategyRuns.primaryExchangeConnectionId),
+        eq(botPositions.exchangeConnectionId, userStrategyRuns.primaryExchangeConnectionId),
+        isNull(strategies.deletedAt),
+        sql`abs(cast(${botPositions.netQuantity} as numeric)) > 0.00000001`,
+      ),
+    )
+    .limit(1);
+  return Boolean(pOpen);
+}
+
 async function monitorActiveVirtualRuns(params: {
   env: TrendArbitrageEnv;
   barTime: number;
@@ -403,7 +463,8 @@ async function monitorActiveVirtualRuns(params: {
 }
 
 /**
- * Stateful poll: primary position, D1 soft/hard risk exits, Delta 2 grid hedges, D2 cleanup when D1 flat.
+ * Stateful poll: primary position, D1 risk exits (TP / SL / soft trailing breakeven only — never HalfTrend),
+ * Delta 2 ladder hedges, D2 cleanup when D1 flat.
  * Swallows venue/DB errors — returns `primaryFlat: true` on read failure so we do not stack entries blindly.
  */
 export async function pollTrendArbRiskAndHedges(params: {
@@ -580,6 +641,7 @@ export async function pollTrendArbRiskAndHedges(params: {
       `[EXIT-CHECK] Trade #${scope.runId}: D1 — URP ${urp.toFixed(2)}% (SL ≤-${d1Sl}%, TP +${d1Tp}%, peak ${peak.toFixed(2)}%) | hard_sl=${hardSlHit} hard_tp=${hardTpHit} soft_be=${softBeHit}`,
     );
 
+    // D1 flatten only on configured risk / trail — not on HalfTrend direction changes.
     if (hardSlHit || hardTpHit || softBeHit) {
       const reason = hardSlHit
         ? `hard_sl_${d1Sl}pct`
