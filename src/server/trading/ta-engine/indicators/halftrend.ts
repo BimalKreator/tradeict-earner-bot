@@ -279,8 +279,8 @@ export function calculateHalfTrend(
     const pHt = pTrend === 0 ? pUp : pDown;
     lastPrevHt = trend === 0 ? up : down;
     lastHt = pHt;
-    lastOpenTrend = trend;
-    lastCloseTrend = pTrend;
+    // Keep signal-driving trend state pinned to the last *closed* candle.
+    // The forming-candle provisional pass is only for live HT line visualization.
     // Preserve closed-candle crossover state from the main loop.
   }
 
