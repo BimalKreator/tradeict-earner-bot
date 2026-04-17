@@ -49,6 +49,21 @@ const d1PeakUrpPct = new Map<string, number>();
 /** Last D1 side while position was open — used to pick D2 flatten direction after D1 disappears. */
 const lastD1SideWhileOpen = new Map<string, "long" | "short">();
 
+function computeD2StepQuantityFromD1Qty(params: {
+  d1Qty: number;
+  stepQtyPct: number;
+  fallbackQty: string;
+}): string {
+  const d1 = Number(params.d1Qty);
+  const pct = Number(params.stepQtyPct);
+  if (!(Number.isFinite(d1) && d1 > 0) || !(Number.isFinite(pct) && pct > 0)) {
+    return params.fallbackQty;
+  }
+  const qty = d1 * (pct / 100);
+  if (!(Number.isFinite(qty) && qty > 0)) return params.fallbackQty;
+  return qty.toFixed(8).replace(/\.?0+$/, "");
+}
+
 async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrageEnv["runtime"]): Promise<{
   stepMovePct: number;
   d2TargetProfitPct: number;
@@ -285,7 +300,11 @@ async function monitorActiveVirtualRuns(params: {
         side: d1Side === "long" ? "short" : "long",
         forceSide: d1Side === "long" ? "short" : "long",
         markPrice,
-        quantity: env.runtime.d2StepQty,
+        quantity: computeD2StepQuantityFromD1Qty({
+          d1Qty: Math.abs(d1NetQty),
+          stepQtyPct: latestRisk.d2StepQtyPct,
+          fallbackQty: env.runtime.d2StepQty,
+        }),
         stepQtyPct: latestRisk.d2StepQtyPct,
         targetProfitPct: latestRisk.d2TargetProfitPct,
         targetUserIds: [r.userId],
@@ -573,7 +592,11 @@ export async function pollTrendArbRiskAndHedges(params: {
           side: d1Side === "long" ? "short" : "long",
           forceSide: d1Side === "long" ? "short" : "long",
           markPrice: mark,
-          quantity: env.runtime.d2StepQty,
+          quantity: computeD2StepQuantityFromD1Qty({
+            d1Qty: pos.size,
+            stepQtyPct: latestRisk.d2StepQtyPct,
+            fallbackQty: env.runtime.d2StepQty,
+          }),
           stepQtyPct: latestRisk.d2StepQtyPct,
           targetProfitPct: latestRisk.d2TargetProfitPct,
           targetUserIds: [scope.userId],

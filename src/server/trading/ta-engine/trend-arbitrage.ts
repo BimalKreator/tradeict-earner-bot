@@ -57,6 +57,37 @@ function fmtCloseVsHt(close: number, ht: number): string {
   return `Close=${fmtHt(close)} vs HT=${fmtHt(ht)} (Δ=${fmtHt(d)}, ${pctStr} of HT line)`;
 }
 
+function formatUnixToUtcAndIst(tsSec: number): { utc: string; ist: string } {
+  const ms = tsSec * 1000;
+  const utc = new Date(ms).toISOString();
+  const ist = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(ms);
+  return { utc, ist };
+}
+
+function computeD2StepQuantityFromD1Qty(params: {
+  d1Qty: string | number;
+  stepQtyPct: number;
+  fallbackQty: string;
+}): string {
+  const d1 = typeof params.d1Qty === "number" ? params.d1Qty : Number(params.d1Qty);
+  const pct = Number(params.stepQtyPct);
+  if (!(Number.isFinite(d1) && d1 > 0) || !(Number.isFinite(pct) && pct > 0)) {
+    return params.fallbackQty;
+  }
+  const qty = d1 * (pct / 100);
+  if (!(Number.isFinite(qty) && qty > 0)) return params.fallbackQty;
+  return qty.toFixed(8).replace(/\.?0+$/, "");
+}
+
 async function detectVirtualActiveForRun(runId: string): Promise<number | null> {
   if (!db) return null;
   const [run] = await db
@@ -366,6 +397,7 @@ export async function runTrendArbitrageOnce(
     treatLastCandleAsForming: true,
   });
   const bar = candles[candles.length - 1]!;
+  const lastClosed = candles[candles.length - 2] ?? bar;
   const barCloseLive = livePrice && livePrice > 0 ? livePrice : bar.close;
   const scanSignal = halfTrendSignalLabel(half);
   console.log(
@@ -380,6 +412,12 @@ export async function runTrendArbitrageOnce(
         `[HT-DEBUG] Close: ${fmtHt(barCloseLive)}, HT: ${fmtHt(half.htValue)}, MaxLow: ${fmtHt(half.maxLowPrice)}, MinHigh: ${fmtHt(half.minHighPrice)}, Trend: ${half.trend}`,
       );
     }
+  }
+  {
+    const t = formatUnixToUtcAndIst(lastClosed.time);
+    console.log(
+      `[HT-CLOSE-DEBUG] closed_candle utc=${t.utc} ist=${t.ist} prevTrend=${half.prevTrend} trend=${half.trend} buySignal=${half.buySignal} sellSignal=${half.sellSignal} closedClose=${fmtHt(lastClosed.close)} closedHT=${fmtHt(half.prevHtValue)} livePrice=${fmtHt(barCloseLive)}`,
+    );
   }
 
   // Always monitor active virtual runs for this strategy in parallel with live scope logic.
@@ -525,7 +563,11 @@ export async function runTrendArbitrageOnce(
       side: d2Side,
       forceSide: d2Side,
       markPrice: barCloseLive,
-      quantity: c.runtime.d2StepQty,
+      quantity: computeD2StepQuantityFromD1Qty({
+        d1Qty: c.runtime.d1EntryQty,
+        stepQtyPct: c.runtime.d2StepQtyPct,
+        fallbackQty: c.runtime.d2StepQty,
+      }),
       stepQtyPct: c.runtime.d2StepQtyPct,
       targetProfitPct: c.runtime.d2TargetProfitPct,
       correlationIdOverride: d2InitialCorrelationId,
