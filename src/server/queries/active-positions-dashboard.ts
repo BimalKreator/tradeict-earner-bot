@@ -432,7 +432,8 @@ function buildTrendArbD2LadderClipLegs(params: {
       unrealizedPnlUsd,
       markPrice: mark,
       qtyPctOfCapital: params.qtyPctOfCapital,
-      activeClipCount: clipCount,
+      /** Per-row: omit global clip count so labels stay "Step N", not "Step N · K clips" on every line. */
+      activeClipCount: null,
       d2LadderStep: clip.displayStep,
     };
   });

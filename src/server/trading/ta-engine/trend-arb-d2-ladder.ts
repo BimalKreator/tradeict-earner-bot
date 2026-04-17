@@ -51,6 +51,58 @@ export function d2RungTriggerPrice(params: {
   return d1Side === "long" ? d1Entry * (1 + need) : d1Entry * (1 - need);
 }
 
+/** Minimum mark displacement past the rung so slippage / float noise cannot arm Step 2 on the same tick as Step 1. */
+function d2RungCrossEpsilonAbs(triggerPx: number): number {
+  if (!(triggerPx > 0) || !Number.isFinite(triggerPx)) return 1e-6;
+  return Math.max(1e-6, triggerPx * 1e-8);
+}
+
+/**
+ * True when mark has moved **strictly past** the ladder rung (not equal at noise level).
+ * Long D1: mark must exceed trigger + ε; short D1: mark must be below trigger − ε.
+ */
+export function d2LadderRungCrossedForAdd(params: {
+  d1Side: "long" | "short";
+  mark: number;
+  triggerPx: number;
+}): boolean {
+  const { d1Side, mark, triggerPx } = params;
+  if (!(mark > 0) || !(triggerPx > 0) || !Number.isFinite(mark) || !Number.isFinite(triggerPx)) {
+    return false;
+  }
+  const eps = d2RungCrossEpsilonAbs(triggerPx);
+  return d1Side === "long" ? mark > triggerPx + eps : mark < triggerPx - eps;
+}
+
+/** True if a **filled** secondary hedge entry exists at this display step (used before opening step N+1). */
+export function hasFilledTrendArbD2EntryAtDisplayStep(
+  orders: D2LadderOrderRow[],
+  d1Side: "long" | "short",
+  displayStep: number,
+): boolean {
+  if (displayStep < 1 || displayStep > TREND_ARB_D2_MAX_DISPLAY_STEP) return false;
+  for (const o of orders) {
+    if (!isFilled(o.status)) continue;
+    if (!isD2SecondaryEntryClip(o, d1Side)) continue;
+    const s = displayStepFromOrder(o);
+    if (s === displayStep) return true;
+  }
+  return false;
+}
+
+/** Step N add (N≥2) requires filled entries for steps 1..N−1 in this run’s order history. */
+export function ladderPriorStepsHaveFilledEntries(
+  orders: D2LadderOrderRow[],
+  d1Side: "long" | "short",
+  displayStep: number,
+): boolean {
+  if (displayStep < 2) return true;
+  for (let s = 1; s < displayStep; s++) {
+    if (!hasFilledTrendArbD2EntryAtDisplayStep(orders, d1Side, s)) return false;
+  }
+  return true;
+}
+
 /** Short clip: exit when price has dropped tpPct% from clip entry. Long clip: symmetric. */
 export function d2ClipTpHit(params: {
   d2IsShort: boolean;

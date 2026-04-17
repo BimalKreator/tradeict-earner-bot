@@ -34,8 +34,10 @@ import type { D2LadderOrderRow } from "./trend-arb-d2-ladder";
 import {
   buildOpenD2ClipsFromOrders,
   d2ClipTpHit,
+  d2LadderRungCrossedForAdd,
   d2RungTriggerPrice,
   d2StepLabel,
+  ladderPriorStepsHaveFilledEntries,
   TREND_ARB_D2_MAX_DISPLAY_STEP,
 } from "./trend-arb-d2-ladder";
 import {
@@ -413,6 +415,9 @@ async function monitorActiveVirtualRuns(params: {
 
     for (let displayStep = 2; displayStep <= TREND_ARB_D2_MAX_DISPLAY_STEP; displayStep++) {
       if (stillOpen.some((c) => c.displayStep === displayStep)) continue;
+      if (!ladderPriorStepsHaveFilledEntries(ladderRows, d1Side, displayStep)) {
+        continue;
+      }
       const trig = d2RungTriggerPrice({
         d1Side,
         d1Entry: entry,
@@ -420,8 +425,7 @@ async function monitorActiveVirtualRuns(params: {
         stepMovePct: latestRisk.stepMovePct,
       });
       if (!Number.isFinite(trig)) continue;
-      const crossed = d1Side === "long" ? markPrice >= trig : markPrice <= trig;
-      if (!crossed) continue;
+      if (!d2LadderRungCrossedForAdd({ d1Side, mark: markPrice, triggerPx: trig })) continue;
       const correlationId = `ta_trendarb_${env.strategyId}_v_${r.runId}_d2L${displayStep}_${Date.now()}`;
       if (await hasTradingJobForCorrelationId(correlationId)) continue;
       console.log(
@@ -777,6 +781,9 @@ export async function pollTrendArbRiskAndHedges(params: {
 
       for (let displayStep = 2; displayStep <= TREND_ARB_D2_MAX_DISPLAY_STEP; displayStep++) {
         if (stillOpen.some((c) => c.displayStep === displayStep)) continue;
+        if (!ladderPriorStepsHaveFilledEntries(liveD2LadderRows, d1Side, displayStep)) {
+          continue;
+        }
         const trig = d2RungTriggerPrice({
           d1Side,
           d1Entry: pos.entryPrice,
@@ -784,8 +791,7 @@ export async function pollTrendArbRiskAndHedges(params: {
           stepMovePct: liveRisk.stepMovePct,
         });
         if (!Number.isFinite(trig)) continue;
-        const crossed = d1Side === "long" ? mark >= trig : mark <= trig;
-        if (!crossed) continue;
+        if (!d2LadderRungCrossedForAdd({ d1Side, mark, triggerPx: trig })) continue;
         const correlationId = `ta_trendarb_${env.strategyId}_d2_${scope.runId}_d2L${displayStep}_${Date.now()}`;
         if (await hasTradingJobForCorrelationId(correlationId)) continue;
         console.log(

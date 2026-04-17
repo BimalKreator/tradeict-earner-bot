@@ -32,6 +32,20 @@ export async function hasTradingJobForCorrelationId(
   return row != null;
 }
 
+/**
+ * Any job row for this correlation (including failed/dead) — used to avoid enqueueing a second
+ * Trend Arb initial D2 (s0) with the same id after a failed attempt, which would flatten D1 twice.
+ */
+export async function hasTradingJobRowForCorrelationId(correlationId: string): Promise<boolean> {
+  if (!db) return false;
+  const [row] = await db
+    .select({ id: tradingExecutionJobs.id })
+    .from(tradingExecutionJobs)
+    .where(eq(tradingExecutionJobs.correlationId, correlationId))
+    .limit(1);
+  return row != null;
+}
+
 export async function getLatestTradingJobByCorrelationId(correlationId: string): Promise<{
   id: string;
   status: "pending" | "processing" | "completed" | "failed" | "dead";

@@ -21,6 +21,7 @@ import { strategies } from "@/server/db/schema";
 import {
   getLatestTradingJobByCorrelationId,
   hasTradingJobForCorrelationId,
+  hasTradingJobRowForCorrelationId,
 } from "../execution-queue";
 import { tradingLog } from "../trading-log";
 import {
@@ -647,7 +648,8 @@ export async function runTrendArbitrageOnce(
   const d2InitialCorrelationId = trendArbSecondaryCorrelationId(c.strategyId, bar.time, 0);
   const [d1Exists, d2InitialExists, d1Job, d2Job] = await Promise.all([
     hasTradingJobForCorrelationId(correlationId),
-    hasTradingJobForCorrelationId(d2InitialCorrelationId),
+    // Any row (incl. failed) blocks a second s0 with the same candle key — avoids double Step 1.
+    hasTradingJobRowForCorrelationId(d2InitialCorrelationId),
     getLatestTradingJobByCorrelationId(correlationId),
     getLatestTradingJobByCorrelationId(d2InitialCorrelationId),
   ]);
