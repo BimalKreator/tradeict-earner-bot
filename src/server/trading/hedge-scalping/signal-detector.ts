@@ -9,11 +9,11 @@ const HS_LOG_PREFIX = "[HS-SIGNAL]";
 const DEFAULT_CHANNEL_DEVIATION = 2;
 
 /**
- * If the series has at least three bars, the final bar is treated as the live / forming candle
- * and is excluded from signal evaluation. If there are exactly two bars, both are treated as closed.
+ * Strict "once per bar close": always treat the final bar as live/forming and exclude it from
+ * signal math. This keeps `prevTrend/newTrend` stable while live price wiggles inside a bucket.
  */
 function closedBarsForSignal(candles: Candle[]): Candle[] {
-  if (candles.length >= 3) {
+  if (candles.length >= 2) {
     return candles.slice(0, -1);
   }
   return candles.slice();
@@ -25,13 +25,14 @@ function logHedgeScalpingSignal(params: {
   htValue: number;
   state: HedgeScalpingState;
   signal: HedgeScalpingSignal;
+  closedBars: number;
 }): void {
-  const { livePrice, closedPrice, htValue, state, signal } = params;
+  const { livePrice, closedPrice, htValue, state, signal, closedBars } = params;
   const live = Number.isFinite(livePrice) ? livePrice.toFixed(2) : String(livePrice);
   const closed = Number.isFinite(closedPrice) ? closedPrice.toFixed(2) : String(closedPrice);
   const ht = Number.isFinite(htValue) ? htValue.toFixed(4) : String(htValue);
   console.log(
-    `${HS_LOG_PREFIX} livePrice=${live} closedPrice=${closed} ht=${ht} prevTrend=${state.previousTrend} newTrend=${state.currentTrend} signal=${signal}`,
+    `${HS_LOG_PREFIX} mode=bar_close_only livePrice=${live} closedPrice=${closed} ht=${ht} prevTrend=${state.previousTrend} newTrend=${state.currentTrend} closedBars=${closedBars} signal=${signal}`,
   );
 }
 
@@ -57,6 +58,7 @@ export function detectHedgeScalpingSignal(
       closedPrice: closed.at(-1)?.close ?? NaN,
       htValue: NaN,
       state: noopState,
+      closedBars: closed.length,
       signal: "WAIT",
     });
     return "WAIT";
@@ -89,6 +91,13 @@ export function detectHedgeScalpingSignal(
     signal = "SHORT";
   }
 
-  logHedgeScalpingSignal({ livePrice, closedPrice, htValue, state, signal });
+  logHedgeScalpingSignal({
+    livePrice,
+    closedPrice,
+    htValue,
+    state,
+    closedBars: closed.length,
+    signal,
+  });
   return signal;
 }

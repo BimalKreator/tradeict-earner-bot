@@ -72,13 +72,28 @@ export function d1FavorableDistancePct(
   return ((entry - mark) / entry) * 100;
 }
 
-/** Highest step index k>=1 such that favorable move >= k * stepMovePct. */
-export function theoreticalD2StepLevel(
+/**
+ * Count of full `stepMovePct` favorable bands beyond D1 entry (0 when flat or unfavorable).
+ * Seed D2 step 1 is opened at run start; each additional band adds one more ladder rung.
+ */
+export function d2LadderFavorableBandFloor(
   favorableDistancePct: number,
   stepMovePct: number,
 ): number {
   if (!(stepMovePct > 0) || !(favorableDistancePct > 0)) return 0;
   return Math.floor(favorableDistancePct / stepMovePct + 1e-12);
+}
+
+/**
+ * Highest 1-based D2 ladder step that should exist: step 1 at D1 entry, then one step per
+ * full `stepMovePct` of favorable excursion (mark vs D1 entry).
+ */
+export function maxD2LadderStepInclusive(
+  favorableDistancePct: number,
+  stepMovePct: number,
+): number {
+  if (!(stepMovePct > 0)) return 1;
+  return 1 + d2LadderFavorableBandFloor(favorableDistancePct, stepMovePct);
 }
 
 function breakevenArmed(
@@ -154,13 +169,14 @@ function d2ClipExitIntent(
   return null;
 }
 
-function hasActiveClipAtStep(clips: D2ClipState[], stepLevel: number): boolean {
-  return clips.some((c) => c.stepLevel === stepLevel);
+function hasOccupiedD2Step(occupied: readonly number[], stepLevel: number): boolean {
+  return occupied.includes(stepLevel);
 }
 
 /**
- * Pure state evaluation: D1 target / SL / breakeven, D2 per-clip TP/SL, and D2 ladder re-entry
- * (zigzag: any missing step up to the theoretical level gets an open intent).
+ * Pure state evaluation: D1 target / SL / breakeven, D2 per-clip TP/SL, and D2 ladder
+ * (zigzag: open missing steps 1..max inclusive, where max = 1 + floor(favorable/stepMove),
+ * accounting for the seed clip at step 1; never re-open an occupied step level).
  *
  * Precedence: if D1 must flat, returns only `[{ type: 'CLOSE_ALL', ... }]`.
  */
@@ -213,11 +229,11 @@ export function evaluateHedgeScalpingState(
   }
 
   const favorablePct = d1FavorableDistancePct(state.d1Side, entry, mark);
-  const maxStep = theoreticalD2StepLevel(favorablePct, d2.stepMovePct);
+  const maxStep = maxD2LadderStepInclusive(favorablePct, d2.stepMovePct);
   const d2Side = hedgeScalpingD2Side(state.d1Side);
 
   for (let step = 1; step <= maxStep; step += 1) {
-    if (!hasActiveClipAtStep(state.activeD2Clips, step)) {
+    if (!hasOccupiedD2Step(state.occupiedD2StepLevels, step)) {
       out.push({
         type: "OPEN_D2_CLIP",
         stepLevel: step,
