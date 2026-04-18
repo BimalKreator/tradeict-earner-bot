@@ -466,23 +466,32 @@ async function processOneActiveRun(params: {
   });
 }
 
+export type HedgeScalpingStrategyFeedFilter = {
+  symbol: string;
+  resolution: string;
+};
+
+function strategyMatchesFeedFilter(
+  cfg: HedgeScalpingConfig,
+  filter: HedgeScalpingStrategyFeedFilter | null,
+): boolean {
+  if (!filter) return true;
+  const tf = cfg.general.timeframe.trim().toLowerCase();
+  if (tf !== filter.resolution.trim().toLowerCase()) return false;
+  const syms = parseAllowedSymbolsList(cfg.general.allowedSymbols);
+  return syms.includes(filter.symbol.trim().toUpperCase());
+}
+
 /**
- * Cron/worker entry: load active Hedge Scalping virtual runs, update excursion, evaluate math,
- * persist intents, then open new runs from HalfTrend signals for eligible paper users.
- *
- * Callers should pass **candles and mark for the same instrument** as the user’s resolved
- * symbol (from run settings or the first entry in `general.allowedSymbols`).
+ * Updates all active hedge-scalping virtual runs (D1/D2 math, marks, intents). Safe to call once per worker tick.
  */
-export async function pollHedgeScalpingVirtualTrades(
-  currentCandles: Candle[],
-  currentMarkPrice: number,
-): Promise<void> {
+export async function processHedgeScalpingActiveRunsPhase(currentMarkPrice: number): Promise<void> {
   if (!db) {
-    console.warn(`${LOG} skip — database not configured`);
+    console.warn(`${LOG} skip active runs — database not configured`);
     return;
   }
   if (!Number.isFinite(currentMarkPrice) || currentMarkPrice <= 0) {
-    console.warn(`${LOG} skip — invalid mark=${String(currentMarkPrice)}`);
+    console.warn(`${LOG} skip active runs — invalid mark=${String(currentMarkPrice)}`);
     return;
   }
 
@@ -535,6 +544,25 @@ export async function pollHedgeScalpingVirtualTrades(
       console.error(`${LOG} run=${run.runId} error=${msg.slice(0, 500)}`);
     }
   }
+}
+
+/**
+ * HalfTrend new-run fan-out. When `feedFilter` is set, only strategies whose `general.timeframe`
+ * and `allowedSymbols` match that feed run `detectHedgeScalpingSignal` on `currentCandles`.
+ */
+export async function processHedgeScalpingNewEntriesPhase(
+  currentCandles: Candle[],
+  currentMarkPrice: number,
+  feedFilter: HedgeScalpingStrategyFeedFilter | null,
+): Promise<void> {
+  if (!db) {
+    console.warn(`${LOG} skip new entries — database not configured`);
+    return;
+  }
+  if (!Number.isFinite(currentMarkPrice) || currentMarkPrice <= 0) {
+    console.warn(`${LOG} skip new entries — invalid mark=${String(currentMarkPrice)}`);
+    return;
+  }
 
   const hedgeStrategies = await db
     .select({
@@ -553,6 +581,7 @@ export async function pollHedgeScalpingVirtualTrades(
       console.warn(`${LOG} skip new entries — invalid settings strategy=${strat.id}`);
       continue;
     }
+    if (!strategyMatchesFeedFilter(cfg, feedFilter)) continue;
 
     const paperUsers = await db
       .selectDistinct({ userId: virtualStrategyRuns.userId })
@@ -702,4 +731,19 @@ export async function pollHedgeScalpingVirtualTrades(
       }
     }
   }
+}
+
+/**
+ * Cron/worker entry: active runs + optional feed-scoped new entries.
+ *
+ * @param feedFilter When set, NEW_RUN logic runs only for strategies on that symbol+timeframe;
+ *   active runs always process. When null, legacy single-feed behavior (all strategies see the same candles).
+ */
+export async function pollHedgeScalpingVirtualTrades(
+  currentCandles: Candle[],
+  currentMarkPrice: number,
+  feedFilter: HedgeScalpingStrategyFeedFilter | null = null,
+): Promise<void> {
+  await processHedgeScalpingActiveRunsPhase(currentMarkPrice);
+  await processHedgeScalpingNewEntriesPhase(currentCandles, currentMarkPrice, feedFilter);
 }
