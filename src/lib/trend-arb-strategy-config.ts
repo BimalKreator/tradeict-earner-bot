@@ -33,6 +33,16 @@ export const trendArbStrategyConfigSchema = z.object({
       .min(0, "Delta 1 stop loss must be >= 0.")
       .max(100, "Delta 1 stop loss must be <= 100.")
       .default(3),
+    /**
+     * Peak unrealized profit % on D1 must reach at least this value before a logical stop at
+     * entry is armed. At 0 the soft breakeven path is disabled.
+     */
+    d1BreakevenTriggerPct: z
+      .number()
+      .finite()
+      .min(0, "D1 breakeven trigger must be >= 0.")
+      .max(100, "D1 breakeven trigger must be <= 100.")
+      .default(0),
   }),
   delta2: z.object({
     stepQtyPct: z

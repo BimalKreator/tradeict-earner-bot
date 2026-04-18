@@ -25,6 +25,7 @@ export type AdminStrategyFormDefaults = {
     delta1EntryQtyPct: string;
     delta1TargetProfitPct: string;
     delta1StopLossPct: string;
+    delta1BreakevenTriggerPct: string;
     delta2StepQtyPct: string;
     delta2StepMovePct: string;
     delta2TargetProfitPct: string;
@@ -131,6 +132,11 @@ export function strategyDefaultsFromRow(row: {
             trendArbParsed?.success
               ? trendArbParsed.data.delta1.stopLossPct
               : ((rawDelta1.stopLossPct as number | undefined) ?? 3),
+          ),
+          delta1BreakevenTriggerPct: String(
+            trendArbParsed?.success
+              ? trendArbParsed.data.delta1.d1BreakevenTriggerPct
+              : ((rawDelta1.d1BreakevenTriggerPct as number | undefined) ?? 0),
           ),
           delta2StepQtyPct: String(
             trendArbParsed?.success

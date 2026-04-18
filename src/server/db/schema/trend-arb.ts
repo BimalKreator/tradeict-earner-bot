@@ -3,6 +3,11 @@ import { index, integer, pgTable, primaryKey, timestamp, uuid } from "drizzle-or
 import { userStrategyRuns } from "./subscriptions";
 import { virtualStrategyRuns } from "./virtual-trading";
 
+/**
+ * Trend-arb economics (D1/D2 %, HalfTrend params, `delta1.d1BreakevenTriggerPct`, etc.) are
+ * stored in `strategies.settings_json` as `TrendArbStrategyConfig` — not in this file.
+ */
+
 /** One row per (run, hedge step) after a Delta 2 clip was dispatched for that 1% step. */
 export const trendArbHedgeState = pgTable(
   "trend_arb_hedge_state",

@@ -2,15 +2,17 @@
  * Trend Arbitrage Scalping — stateful worker (multi-account via execution signals).
  *
  * When `TA_TREND_ARB_RUN_ID` + `TA_TREND_PRIMARY_EXCHANGE_ID` are set, each tick polls Delta 1
- * position for SL/TP/soft-BE, Delta 2 grid hedges (configurable step %, DB-backed),
+ * position for hard SL/TP, Delta 2 grid hedges (configurable step %, DB-backed),
  * and flattens D2 when D1 is flat.
  *
- * **D1 exit policy:** Delta 1 is never closed because HalfTrend flipped. Closes only on
- * configured TP, SL, soft trailing breakeven (`pollTrendArbRiskAndHedges`), or manual close.
+ * **D1 exit policy:** Delta 1 is never closed because HalfTrend flipped. Closes on configured
+ * hard TP/SL, optional soft breakeven (peak URP ≥ admin `d1BreakevenTriggerPct` then trail to
+ * entry — `pollTrendArbRiskAndHedges`), or manual close.
  *
- * **D1 re-entry:** After D1 goes flat, the worker waits until the **next** closed candle strictly
- * after the flat-detection bar before a new HalfTrend entry is allowed (avoids same-bar flip
- * re-entry while `buySignal`/`sellSignal` stay true for the whole bar).
+ * **D1 re-entry:** After D1 goes flat, the worker (1) skips the flat-detection closed bar, then
+ * (2) requires HalfTrend direction (`trend` 0/1) to **flip away** from the direction at flat time
+ * at least once before a new crossover entry is allowed — avoids immediate re-entry on the same
+ * trend leg after TP/SL.
  */
 
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -150,9 +152,14 @@ type TrendArbPostExitCooldown = {
   lastPrimaryFlat: boolean | undefined;
   /**
    * While flat: require `signalClosedBarTime > this` before a new D1 entry.
-   * Set when we transition from D1 open → flat (TP/SL/trail/manual).
+   * Set when we transition from D1 open → flat (TP/SL/manual).
    */
   nextEntryMinClosedBarTimeExclusive: number | null;
+  /**
+   * While flat: HalfTrend `trend` at D1-flat time; cleared once `trend` differs (next flip).
+   * Blocks new entries until then (in addition to the one-bar gate above).
+   */
+  postFlatAwaitTrendDiffersFrom: 0 | 1 | null;
 };
 
 const trendArbPostExitEntryCooldownByStrategy = new Map<string, TrendArbPostExitCooldown>();
@@ -165,10 +172,18 @@ function updateTrendArbPostExitEntryCooldown(params: {
   strategyId: string;
   primaryFlat: boolean;
   signalClosedBarTime: number;
-}): { closedBarBlocksEntry: boolean; gateBarTime: number | null } {
+  /** HalfTrend `trend` on the latest closed bar (0 = long bias, 1 = short bias). */
+  closedBarHalfTrend: 0 | 1;
+}): {
+  closedBarBlocksEntry: boolean;
+  gateBarTime: number | null;
+  trendFlipBlocksEntry: boolean;
+  awaitTrendDiffersFrom: 0 | 1 | null;
+} {
   const prev = trendArbPostExitEntryCooldownByStrategy.get(params.strategyId) ?? {
     lastPrimaryFlat: undefined,
     nextEntryMinClosedBarTimeExclusive: null,
+    postFlatAwaitTrendDiffersFrom: null,
   };
 
   const becameFlat = params.primaryFlat === true && prev.lastPrimaryFlat === false;
@@ -179,17 +194,40 @@ function updateTrendArbPostExitEntryCooldown(params: {
     nextMin = params.signalClosedBarTime;
   }
 
+  let postFlatAwaitTrendDiffersFrom = prev.postFlatAwaitTrendDiffersFrom;
+  if (!params.primaryFlat) {
+    postFlatAwaitTrendDiffersFrom = null;
+  } else if (becameFlat) {
+    postFlatAwaitTrendDiffersFrom = params.closedBarHalfTrend;
+  } else if (
+    postFlatAwaitTrendDiffersFrom != null &&
+    params.closedBarHalfTrend !== postFlatAwaitTrendDiffersFrom
+  ) {
+    postFlatAwaitTrendDiffersFrom = null;
+  }
+
   trendArbPostExitEntryCooldownByStrategy.set(params.strategyId, {
     lastPrimaryFlat: params.primaryFlat,
     nextEntryMinClosedBarTimeExclusive: nextMin,
+    postFlatAwaitTrendDiffersFrom,
   });
 
-  const blocked =
+  const closedBarBlocksEntry =
     params.primaryFlat &&
     nextMin != null &&
     params.signalClosedBarTime <= nextMin;
 
-  return { closedBarBlocksEntry: blocked, gateBarTime: nextMin };
+  const trendFlipBlocksEntry =
+    params.primaryFlat &&
+    postFlatAwaitTrendDiffersFrom != null &&
+    params.closedBarHalfTrend === postFlatAwaitTrendDiffersFrom;
+
+  return {
+    closedBarBlocksEntry,
+    gateBarTime: nextMin,
+    trendFlipBlocksEntry,
+    awaitTrendDiffersFrom: postFlatAwaitTrendDiffersFrom,
+  };
 }
 
 export {
@@ -258,6 +296,7 @@ const DEFAULT_TREND_ARB_RUNTIME: TrendArbRuntimeSettings = {
   d1TargetProfitPct: 10,
   d2TargetProfitPct: 1,
   d1StopLossPct: 3,
+  d1BreakevenTriggerPct: 0,
   d2StopLossPct: 3,
   indicatorSettings: {
     amplitude: 9,
@@ -304,6 +343,7 @@ export async function resolveTrendArbRuntimeSettings(
     d1TargetProfitPct: Math.max(0.1, cfg.delta1.targetProfitPct),
     d2TargetProfitPct: Math.max(0.1, cfg.delta2.targetProfitPct),
     d1StopLossPct: Math.max(0.1, cfg.delta1.stopLossPct),
+    d1BreakevenTriggerPct: Math.max(0, cfg.delta1.d1BreakevenTriggerPct),
     d2StopLossPct: Math.max(0.1, cfg.delta2.stopLossPct),
     indicatorSettings: {
       amplitude: indicatorAmplitude,
@@ -568,6 +608,7 @@ export async function runTrendArbitrageOnce(
     strategyId: c.strategyId,
     primaryFlat,
     signalClosedBarTime: lastClosed.time,
+    closedBarHalfTrend: half.trend,
   });
 
   // Entry only on native HalfTrend crossover signals (not geometric close-vs-HT flip alone).
@@ -614,6 +655,27 @@ export async function runTrendArbitrageOnce(
     };
   }
 
+  if (postExitCooldown.trendFlipBlocksEntry) {
+    console.log(
+      `[ENTRY-CHECK] ${c.symbol}: post-D1-flat trend gate — HalfTrend trend must flip away from ${postExitCooldown.awaitTrendDiffersFrom} (current closed-bar trend=${half.trend}) before a new entry; skip this tick`,
+    );
+    return {
+      ok: true,
+      fired: false,
+      detail: [
+        pollDetail,
+        "Post-D1-flat: wait for next HalfTrend direction flip before new HalfTrend entry.",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      halfTrend: {
+        buySignal: effectiveBuySignal,
+        sellSignal: effectiveSellSignal,
+        trend: half.trend,
+      },
+    };
+  }
+
   if (!primaryFlat) {
     console.log(
       `[ENTRY-CHECK] ${c.symbol}: Active D1 position exists. Ignoring new HalfTrend signal. (${pollDetail || "poll ok"})`,
@@ -623,7 +685,7 @@ export async function runTrendArbitrageOnce(
       fired: false,
       detail: [
         pollDetail,
-        "Position lock: no new D1 entry while any primary leg is open (TP/SL/trail/manual close required first).",
+        "Position lock: no new D1 entry while any primary leg is open (TP/SL/manual close required first).",
       ]
         .filter(Boolean)
         .join(" "),

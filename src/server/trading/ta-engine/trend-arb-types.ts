@@ -12,6 +12,8 @@ export type TrendArbAdvancedStrategySettings = {
     entryQtyPct: number;
     targetProfitPct: number;
     stopLossPct: number;
+    /** 0 = disabled. Peak URP % must reach this before entry-level soft stop can fire. */
+    d1BreakevenTriggerPct?: number;
   };
   delta2: {
     stepQtyPct: number;
@@ -33,6 +35,8 @@ export type TrendArbRuntimeSettings = {
   d1TargetProfitPct: number;
   d2TargetProfitPct: number;
   d1StopLossPct: number;
+  /** 0 = disabled. See `TrendArbStrategyConfig.delta1.d1BreakevenTriggerPct`. */
+  d1BreakevenTriggerPct: number;
   d2StopLossPct: number;
   indicatorSettings: {
     amplitude: number;

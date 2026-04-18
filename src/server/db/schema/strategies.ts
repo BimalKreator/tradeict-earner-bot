@@ -8,32 +8,14 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import type { TrendArbStrategyConfig } from "@/lib/trend-arb-strategy-config";
 import {
   strategyRiskLabelEnum,
   strategyStatusEnum,
   strategyVisibilityEnum,
 } from "./enums";
 
-export type TrendArbStrategyConfig = {
-  symbol: string;
-  capitalAllocationPct: number;
-  indicatorSettings: {
-    amplitude: number;
-    channelDeviation: number;
-    timeframe: "1m" | "15m" | "1h" | "4h" | "1d";
-  };
-  delta1: {
-    entryQtyPct: number;
-    targetProfitPct: number;
-    stopLossPct: number;
-  };
-  delta2: {
-    stepQtyPct: number;
-    stepMovePct: number;
-    targetProfitPct: number;
-    stopLossPct: number;
-  };
-};
+export type { TrendArbStrategyConfig };
 
 export const strategies = pgTable(
   "strategies",
@@ -72,6 +54,9 @@ export const strategies = pgTable(
     /**
      * Admin-only strategy execution config (engine-specific).
      * User-facing catalog/subscription UI must never render these internals.
+     *
+     * Trend-arbitrage (`TrendArbStrategyConfig`) includes e.g. `delta1.d1BreakevenTriggerPct`
+     * for optional soft breakeven (trail stop to entry after peak URP reaches the threshold).
      */
     settingsJson: jsonb("settings_json").$type<
       Record<string, unknown> | TrendArbStrategyConfig | null

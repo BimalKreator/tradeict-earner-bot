@@ -130,6 +130,14 @@ function parseTrendArbConfigFromForm(
     formData.get("trend_arb_d1_stop_loss_pct"),
     "Delta 1 stop loss %",
   );
+  const d1BeRaw = String(formData.get("trend_arb_d1_breakeven_trigger_pct") ?? "").trim();
+  const d1BreakevenTrigger =
+    d1BeRaw === ""
+      ? ({ ok: true as const, value: 0 })
+      : parsePercentField(
+          formData.get("trend_arb_d1_breakeven_trigger_pct"),
+          "D1 breakeven trigger %",
+        );
   const d2StepQty = parsePercentField(
     formData.get("trend_arb_d2_step_qty_pct"),
     "Delta 2 step qty %",
@@ -164,6 +172,9 @@ function parseTrendArbConfigFromForm(
   if (!d1Qty.ok) parseErrors.trend_arb_d1_entry_qty_pct = [d1Qty.error];
   if (!d1Tp.ok) parseErrors.trend_arb_d1_target_profit_pct = [d1Tp.error];
   if (!d1Sl.ok) parseErrors.trend_arb_d1_stop_loss_pct = [d1Sl.error];
+  if (!d1BreakevenTrigger.ok) {
+    parseErrors.trend_arb_d1_breakeven_trigger_pct = [d1BreakevenTrigger.error];
+  }
   if (!d2StepQty.ok) parseErrors.trend_arb_d2_step_qty_pct = [d2StepQty.error];
   if (!d2StepMove.ok) parseErrors.trend_arb_d2_step_move_pct = [d2StepMove.error];
   if (!d2Tp.ok) parseErrors.trend_arb_d2_target_profit_pct = [d2Tp.error];
@@ -187,6 +198,7 @@ function parseTrendArbConfigFromForm(
   const d1QtyValue = d1Qty.ok ? d1Qty.value : 0;
   const d1TpValue = d1Tp.ok ? d1Tp.value : 0;
   const d1SlValue = d1Sl.ok ? d1Sl.value : 0;
+  const d1BreakevenTriggerValue = d1BreakevenTrigger.ok ? d1BreakevenTrigger.value : 0;
   const d2StepQtyValue = d2StepQty.ok ? d2StepQty.value : 0;
   const d2StepMoveValue = d2StepMove.ok ? d2StepMove.value : 0;
   const d2TpValue = d2Tp.ok ? d2Tp.value : 0;
@@ -208,6 +220,7 @@ function parseTrendArbConfigFromForm(
       entryQtyPct: d1QtyValue,
       targetProfitPct: d1TpValue,
       stopLossPct: d1SlValue,
+      d1BreakevenTriggerPct: d1BreakevenTriggerValue,
     },
     delta2: {
       stepQtyPct: d2StepQtyValue,
@@ -219,6 +232,11 @@ function parseTrendArbConfigFromForm(
   if (!cfgParsed.success) {
     const f = cfgParsed.error.flatten().fieldErrors;
     const errs: Record<string, string[]> = {};
+    for (const iss of cfgParsed.error.issues) {
+      if (iss.path[0] === "delta1" && iss.path[1] === "d1BreakevenTriggerPct") {
+        errs.trend_arb_d1_breakeven_trigger_pct = [iss.message];
+      }
+    }
     if (f.symbol?.length) errs.trend_arb_symbol = f.symbol;
     if (f.capitalAllocationPct?.length) {
       errs.trend_arb_capital_allocation_pct = f.capitalAllocationPct;

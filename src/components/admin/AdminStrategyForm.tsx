@@ -447,6 +447,26 @@ export function AdminStrategyForm(props: Props) {
                   />
                   {fieldError(state.fieldErrors, "trend_arb_d1_stop_loss_pct")}
                 </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-trend-d1-be`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    D1 breakeven trigger (%)
+                  </label>
+                  <input
+                    id={`${baseId}-trend-d1-be`}
+                    name="trend_arb_d1_breakeven_trigger_pct"
+                    placeholder="0 = disabled"
+                    defaultValue={trendArbDefaults.delta1BreakevenTriggerPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  <p className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">
+                    Peak unrealized profit on D1 must reach this % before stop trails to entry; exit
+                    at breakeven if price reverses. Leave empty or 0 to turn off.
+                  </p>
+                  {fieldError(state.fieldErrors, "trend_arb_d1_breakeven_trigger_pct")}
+                </div>
               </div>
             </div>
 

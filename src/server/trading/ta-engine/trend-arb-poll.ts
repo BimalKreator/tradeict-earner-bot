@@ -55,8 +55,10 @@ const MIN_MS_TICKER = 1500;
 
 const lastPrimaryPollAt = new Map<string, number>();
 const lastTickerPollAt = new Map<string, number>();
-/** Max favorable unrealized % seen while D1 was open (per run); reset when flat. */
+/** Max favorable unrealized % on D1 while live run is open; reset when flat (soft BE arming). */
 const d1PeakUrpPct = new Map<string, number>();
+/** Same for virtual paper runs (key = virtual run id). */
+const virtualD1PeakUrpPct = new Map<string, number>();
 /** Last D1 side while position was open — used to pick D2 flatten direction after D1 disappears. */
 const lastD1SideWhileOpen = new Map<string, "long" | "short">();
 
@@ -82,6 +84,7 @@ async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrage
   d2StepQtyPct: number;
   d1TargetProfitPct: number;
   d1StopLossPct: number;
+  d1BreakevenTriggerPct: number;
 }> {
   if (!db) {
     return {
@@ -91,6 +94,7 @@ async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrage
       d2StepQtyPct: Math.max(0, fallback.d2StepQtyPct),
       d1TargetProfitPct: Math.max(0.1, fallback.d1TargetProfitPct),
       d1StopLossPct: Math.max(0.1, fallback.d1StopLossPct),
+      d1BreakevenTriggerPct: Math.max(0, fallback.d1BreakevenTriggerPct),
     };
   }
   // NOTE: intentionally re-query DB every call (no in-memory cache) so mid-trade setting edits
@@ -109,6 +113,7 @@ async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrage
       d2StepQtyPct: Math.max(0, fallback.d2StepQtyPct),
       d1TargetProfitPct: Math.max(0.1, fallback.d1TargetProfitPct),
       d1StopLossPct: Math.max(0.1, fallback.d1StopLossPct),
+      d1BreakevenTriggerPct: Math.max(0, fallback.d1BreakevenTriggerPct),
     };
   }
   return {
@@ -118,6 +123,7 @@ async function loadLiveRiskSettings(strategyId: string, fallback: TrendArbitrage
     d2StepQtyPct: Math.max(0, parsed.data.delta2.stepQtyPct),
     d1TargetProfitPct: Math.max(0.1, parsed.data.delta1.targetProfitPct),
     d1StopLossPct: Math.max(0.1, parsed.data.delta1.stopLossPct),
+    d1BreakevenTriggerPct: Math.max(0, parsed.data.delta1.d1BreakevenTriggerPct),
   };
 }
 
@@ -312,6 +318,7 @@ async function monitorActiveVirtualRuns(params: {
       runRowEntry > 0 ? runRowEntry : legState.d1EntryPrice ?? 0;
 
     if (Math.abs(d1NetQty) <= 1e-8 && Math.abs(d2NetQty) > 1e-8) {
+      virtualD1PeakUrpPct.delete(String(r.runId));
       console.log(`[VIRTUAL-CLEANUP] D1 is flat. Flattening orphaned D2 position for run ${r.runId}`);
       const flattenSide = d2NetQty > 0 ? "sell" : "buy";
       const cleanup = await dispatchTrendArbFlattenSecondary({
@@ -340,6 +347,45 @@ async function monitorActiveVirtualRuns(params: {
     );
 
     const latestRisk = await loadLiveRiskSettings(env.strategyId, env.runtime);
+
+    const urpVirt = unrealizedProfitPercent({
+      markPrice,
+      entryPrice: entry,
+      side: d1Side,
+    });
+    const beTrig = latestRisk.d1BreakevenTriggerPct;
+    const vRunKey = String(r.runId);
+    const prevPeakV = virtualD1PeakUrpPct.get(vRunKey) ?? urpVirt;
+    const peakVirt = Math.max(prevPeakV, urpVirt);
+    virtualD1PeakUrpPct.set(vRunKey, peakVirt);
+    const softBeVirt =
+      beTrig > 0 && peakVirt >= beTrig && urpVirt <= 0;
+    if (softBeVirt) {
+      virtualD1PeakUrpPct.delete(vRunKey);
+      const nonce = `soft_be_${beTrig}pct_${Date.now()}`;
+      const closeSide = d1Side === "long" ? "sell" : "buy";
+      const res = await dispatchTrendArbClosePrimary({
+        strategyId: env.strategyId,
+        symbol: r.openSymbol ?? env.runtime.symbol,
+        quantity: Math.abs(d1NetQty).toFixed(6),
+        side: closeSide,
+        markPrice,
+        targetUserIds: [r.userId],
+        targetRunIds: [String(r.runId)],
+        correlationNonce: nonce,
+        metadataReason: `soft_be_entry_${beTrig}pct_peak`,
+      });
+      tradingLog("info", "ta_trend_arb_close_primary", {
+        runId: r.runId,
+        reason: `soft_be_entry_${beTrig}pct_peak`,
+        urp: urpVirt,
+        peak: peakVirt,
+        jobs: res.ok ? res.jobsEnqueued : 0,
+        virtual: true,
+      });
+      parts.push(`vclose_d1:soft_be:${r.runId}`);
+      continue;
+    }
 
     const voRows = await db
       .select({
@@ -467,9 +513,10 @@ async function monitorActiveVirtualRuns(params: {
 }
 
 /**
- * Stateful poll: primary position, D1 risk exits (TP / SL / soft trailing breakeven only — never HalfTrend),
+ * Stateful poll: primary position, D1 risk exits (hard TP / hard SL / optional soft breakeven —
+ * never HalfTrend),
  * Delta 2 ladder hedges, D2 cleanup when D1 flat.
- * Swallows venue/DB errors — returns `primaryFlat: true` on read failure so we do not stack entries blindly.
+ * On venue/DB read failure, returns `primaryFlat: false` so the worker does not enqueue new D1 while state is unknown.
  */
 export async function pollTrendArbRiskAndHedges(params: {
   env: TrendArbitrageEnv;
@@ -498,7 +545,7 @@ export async function pollTrendArbRiskAndHedges(params: {
         runId: scope.runId,
         error: cred.error,
       });
-      return { primaryFlat: true, detail: `primary_creds:${cred.error}` };
+      return { primaryFlat: false, detail: `primary_creds:${cred.error}` };
     }
 
     const product = await resolveDeltaIndiaProductId(env.runtime.symbol);
@@ -507,7 +554,7 @@ export async function pollTrendArbRiskAndHedges(params: {
         symbol: env.runtime.symbol,
         error: product.error,
       });
-      return { primaryFlat: true, detail: `product:${product.error}` };
+      return { primaryFlat: false, detail: `product:${product.error}` };
     }
 
     const posRes = await fetchDeltaIndiaPosition({
@@ -520,7 +567,7 @@ export async function pollTrendArbRiskAndHedges(params: {
         runId: scope.runId,
         error: posRes.error,
       });
-      return { primaryFlat: true, detail: `position_fetch:${posRes.error}` };
+      return { primaryFlat: false, detail: `position_fetch:${posRes.error}` };
     }
 
     const pos = posRes.position;
@@ -629,7 +676,9 @@ export async function pollTrendArbRiskAndHedges(params: {
 
     const hardSlHit = urp <= -d1Sl;
     const hardTpHit = urp >= d1Tp;
-    const softBeHit = peak >= Math.max(0.1, d1Tp / 2) && urp <= 0;
+    const beTrig = liveRisk.d1BreakevenTriggerPct;
+    const softBeArmed = beTrig > 0 && peak >= beTrig;
+    const softBeHit = softBeArmed && urp <= 0;
 
     let monD2 = "D2: n/a (no secondary exchange)";
     if (scope.secondaryExchangeConnectionId) {
@@ -642,16 +691,16 @@ export async function pollTrendArbRiskAndHedges(params: {
     );
 
     console.log(
-      `[EXIT-CHECK] Trade #${scope.runId}: D1 — URP ${urp.toFixed(2)}% (SL ≤-${d1Sl}%, TP +${d1Tp}%, peak ${peak.toFixed(2)}%) | hard_sl=${hardSlHit} hard_tp=${hardTpHit} soft_be=${softBeHit}`,
+      `[EXIT-CHECK] Trade #${scope.runId}: D1 — URP ${urp.toFixed(2)}% peak ${peak.toFixed(2)}% (SL ≤-${d1Sl}%, TP +${d1Tp}%, BE trigger ≥${beTrig}% armed=${softBeArmed}) | hard_sl=${hardSlHit} hard_tp=${hardTpHit} soft_be=${softBeHit}`,
     );
 
-    // D1 flatten only on configured risk / trail — not on HalfTrend direction changes.
+    // D1 flatten on hard TP/SL or soft breakeven (after peak ≥ trigger, exit at ≤ entry URP).
     if (hardSlHit || hardTpHit || softBeHit) {
       const reason = hardSlHit
         ? `hard_sl_${d1Sl}pct`
         : hardTpHit
           ? `hard_tp_${d1Tp}pct`
-          : "soft_be_trail";
+          : `soft_be_entry_${beTrig}pct_peak`;
       const nonce = `${reason}_${Date.now()}`;
       const closeSide = d1Side === "long" ? "sell" : "buy";
       const res = await dispatchTrendArbClosePrimary({
@@ -665,6 +714,7 @@ export async function pollTrendArbRiskAndHedges(params: {
         correlationNonce: nonce,
         metadataReason: reason,
       });
+      d1PeakUrpPct.delete(scope.runId);
       tradingLog("info", "ta_trend_arb_close_primary", {
         runId: scope.runId,
         reason,
@@ -838,7 +888,7 @@ export async function pollTrendArbRiskAndHedges(params: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     tradingLog("warn", "ta_trend_arb_poll_exception", { runId: scope.runId, error: msg });
-    return { primaryFlat: true, detail: `poll_exception:${msg}` };
+    return { primaryFlat: false, detail: `poll_exception:${msg}` };
   }
 }
 
