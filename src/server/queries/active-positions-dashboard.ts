@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import {
   hedgeScalpingConfigSchema,
@@ -14,6 +14,7 @@ import { db } from "@/server/db";
 import {
   botOrders,
   botPositions,
+  hedgeScalpingVirtualRuns,
   strategies,
   userStrategySubscriptions,
   users,
@@ -22,6 +23,7 @@ import {
   virtualStrategyRuns,
 } from "@/server/db/schema";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
+import { hedgeScalpingD1BreakevenArmed } from "@/server/trading/hedge-scalping/engine-math";
 
 const QTY_EPS = 1e-8;
 
@@ -298,9 +300,12 @@ type HedgeScalpingDisplaySettings = {
   d2QtyPctOfCapital: number;
   d1TargetProfitPct: number;
   d1StopLossPct: number;
+  d1BreakevenTriggerPct: number;
   d2TargetProfitPct: number;
   d2StopLossPct: number;
 };
+
+type HedgeScalpingVirtualRunRow = typeof hedgeScalpingVirtualRuns.$inferSelect;
 
 function parseHedgeScalpingDisplaySettings(
   settingsJson: Record<string, unknown> | null | undefined,
@@ -314,9 +319,43 @@ function parseHedgeScalpingDisplaySettings(
     d2QtyPctOfCapital: d2.stepQtyPct,
     d1TargetProfitPct: Math.max(0, d1.targetProfitPct),
     d1StopLossPct: Math.max(0, d1.stopLossPct),
+    d1BreakevenTriggerPct: Math.max(0, d1.breakevenTriggerPct),
     d2TargetProfitPct: Math.max(0, d2.targetProfitPct),
     d2StopLossPct: Math.max(0, d2.stopLossPct),
   };
+}
+
+function parseHsD1HedgeRunId(correlationId: string | null | undefined): string | null {
+  const m = /^hs_d1_([0-9a-f-]{36})$/i.exec(correlationId ?? "");
+  return m?.[1] ?? null;
+}
+
+function firstHsD1HedgeRunIdFromOrders(
+  orderRows: { correlationId: string | null }[],
+): string | null {
+  for (const row of orderRows) {
+    const id = parseHsD1HedgeRunId(row.correlationId);
+    if (id) return id;
+  }
+  return null;
+}
+
+async function loadHedgeScalpingVirtualRunsForOrderRowBundles(
+  bundles: { orderRows: { correlationId: string | null }[] }[],
+): Promise<Map<string, HedgeScalpingVirtualRunRow>> {
+  const ids = new Set<string>();
+  for (const b of bundles) {
+    for (const row of b.orderRows) {
+      const id = parseHsD1HedgeRunId(row.correlationId);
+      if (id) ids.add(id);
+    }
+  }
+  if (!db || ids.size === 0) return new Map();
+  const rows = await db
+    .select()
+    .from(hedgeScalpingVirtualRuns)
+    .where(inArray(hedgeScalpingVirtualRuns.runId, [...ids]));
+  return new Map(rows.map((r) => [r.runId, r]));
 }
 
 function parseHsD2EntryCorrelation(
@@ -370,18 +409,35 @@ function computePctBasedExitPrices(params: {
 function augmentHedgeScalpingLegExitPrices(
   leg: ActivePositionLeg,
   settings: HedgeScalpingDisplaySettings | null,
+  hedgeRun: HedgeScalpingVirtualRunRow | null = null,
 ): ActivePositionLeg {
   if (!settings || !isHedgeScalpingStrategySlug(leg.strategySlug)) return leg;
   const entry = leg.displayAvgEntryPrice ?? leg.avgEntryPrice;
   if (leg.account === "D1") {
+    const ex = computePctBasedExitPrices({
+      side: leg.side,
+      entry,
+      targetProfitPct: settings.d1TargetProfitPct,
+      stopLossPct: settings.d1StopLossPct,
+    });
+    let stopLossPrice = ex.stopLossPrice;
+    if (hedgeRun && hedgeRun.status === "active") {
+      const entryHs = num(hedgeRun.d1EntryPrice);
+      const maxFav = num(hedgeRun.maxFavorablePrice);
+      if (
+        entryHs > 0 &&
+        hedgeScalpingD1BreakevenArmed(hedgeRun.d1Side, entryHs, maxFav, {
+          targetProfitPct: settings.d1TargetProfitPct,
+          breakevenTriggerPct: settings.d1BreakevenTriggerPct,
+        })
+      ) {
+        stopLossPrice = entryHs;
+      }
+    }
     return {
       ...leg,
-      ...computePctBasedExitPrices({
-        side: leg.side,
-        entry,
-        targetProfitPct: settings.d1TargetProfitPct,
-        stopLossPct: settings.d1StopLossPct,
-      }),
+      ...ex,
+      stopLossPrice,
     };
   }
   return {
@@ -416,6 +472,7 @@ function buildHedgeScalpingVirtualLegs(params: {
   orderRows: HedgeScalpingOrderRow[];
   markBySymbol: Map<string, number>;
   hedgeSettings: HedgeScalpingDisplaySettings | null;
+  hedgeRun: HedgeScalpingVirtualRunRow | null;
 }): ActivePositionLeg[] {
   const d1Rows = params.orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
   const d2RowsAll = params.orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
@@ -459,7 +516,7 @@ function buildHedgeScalpingVirtualLegs(params: {
     qtyPctOfCapital: params.hedgeSettings?.d1QtyPctOfCapital ?? null,
   });
   if (l1) {
-    legs.push(augmentHedgeScalpingLegExitPrices(l1, params.hedgeSettings));
+    legs.push(augmentHedgeScalpingLegExitPrices(l1, params.hedgeSettings, params.hedgeRun));
   }
 
   const clipIds = [...clipMap.keys()].sort((a, b) => {
@@ -489,7 +546,7 @@ function buildHedgeScalpingVirtualLegs(params: {
       legKeySuffix: `clip:${clipId}`,
     });
     if (l2) {
-      legs.push(augmentHedgeScalpingLegExitPrices(l2, params.hedgeSettings));
+      legs.push(augmentHedgeScalpingLegExitPrices(l2, params.hedgeSettings, null));
     }
   }
 
@@ -509,7 +566,7 @@ function buildHedgeScalpingVirtualLegs(params: {
       qtyPctOfCapital: params.hedgeSettings?.d2QtyPctOfCapital ?? null,
     });
     if (l2) {
-      legs.push(augmentHedgeScalpingLegExitPrices(l2, params.hedgeSettings));
+      legs.push(augmentHedgeScalpingLegExitPrices(l2, params.hedgeSettings, null));
     }
   }
 
@@ -752,6 +809,10 @@ export async function getUserVirtualActivePositionGroups(
     });
   }
 
+  const hedgeByRunId = await loadHedgeScalpingVirtualRunsForOrderRowBundles(
+    runCtx.filter((r) => r.isHs).map((r) => ({ orderRows: r.orderRows })),
+  );
+
   const markBySymbol = await fetchMarksForSymbols(allSyms);
 
   for (const run of runCtx) {
@@ -765,6 +826,8 @@ export async function getUserVirtualActivePositionGroups(
       orderRows: run.orderRows,
     });
     if (isHs) {
+      const hsHedgeId = firstHsD1HedgeRunIdFromOrders(run.orderRows);
+      const hedgeRow = hsHedgeId ? (hedgeByRunId.get(hsHedgeId) ?? null) : null;
       legs.push(
         ...buildHedgeScalpingVirtualLegs({
           userId,
@@ -775,6 +838,7 @@ export async function getUserVirtualActivePositionGroups(
           orderRows: run.orderRows,
           markBySymbol,
           hedgeSettings: run.hedgeSettings,
+          hedgeRun: hedgeRow,
         }),
       );
     } else {
@@ -997,10 +1061,16 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     });
   }
 
+  const hedgeByRunId = await loadHedgeScalpingVirtualRunsForOrderRowBundles(
+    vctx.filter((c) => c.isHs).map((c) => ({ orderRows: c.orderRows })),
+  );
+
   const markBySymbol = await fetchMarksForSymbols(symbolBatch);
 
   for (const c of vctx) {
     if (c.isHs) {
+      const hsHedgeId = firstHsD1HedgeRunIdFromOrders(c.orderRows);
+      const hedgeRow = hsHedgeId ? (hedgeByRunId.get(hsHedgeId) ?? null) : null;
       legs.push(
         ...buildHedgeScalpingVirtualLegs({
           userId: c.userId,
@@ -1012,6 +1082,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
           orderRows: c.orderRows,
           markBySymbol,
           hedgeSettings: c.hedgeSettings,
+          hedgeRun: hedgeRow,
         }),
       );
     } else {

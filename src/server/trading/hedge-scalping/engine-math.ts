@@ -110,6 +110,32 @@ function breakevenArmed(
     : maxFavorablePrice <= triggerPrice + eps;
 }
 
+/**
+ * True once favorable excursion (tracked in `maxFavorablePrice`) has reached the breakeven
+ * trigger — same rule as `evaluateHedgeScalpingState` / poller D1 exit logic.
+ */
+export function hedgeScalpingD1BreakevenArmed(
+  d1Side: "LONG" | "SHORT",
+  entry: number,
+  maxFavorablePrice: number,
+  d1: { targetProfitPct: number; breakevenTriggerPct: number },
+): boolean {
+  if (!(entry > 0) || !Number.isFinite(maxFavorablePrice)) return false;
+  const targetPrice = d1TargetPrice(d1Side, entry, d1.targetProfitPct);
+  const beTriggerPrice = d1BreakevenTriggerPrice(
+    d1Side,
+    entry,
+    targetPrice,
+    d1.breakevenTriggerPct,
+  );
+  return breakevenArmed(
+    d1Side,
+    maxFavorablePrice,
+    beTriggerPrice,
+    d1.breakevenTriggerPct,
+  );
+}
+
 function d1CloseIntent(
   d1Side: "LONG" | "SHORT",
   entry: number,
