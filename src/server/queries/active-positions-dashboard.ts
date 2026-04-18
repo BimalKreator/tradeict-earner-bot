@@ -1,5 +1,9 @@
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
+import {
+  hedgeScalpingConfigSchema,
+  isHedgeScalpingStrategySlug,
+} from "@/lib/hedge-scalping-config";
 import { trendArbStrategyConfigSchema } from "@/lib/trend-arb-strategy-config";
 import {
   classifyTrendArbAccount,
@@ -76,6 +80,8 @@ export type UserClosedLegHistoryRow = {
   profitPercent: number | null;
   closedAt: string;
   qtyPctOfCapital: number | null;
+  /** Hedge scalping: D2 exit row → ladder step from matching entry correlation. */
+  d2LadderStep?: number | null;
 };
 
 export type UserActivePositionGroup = {
@@ -83,6 +89,7 @@ export type UserActivePositionGroup = {
   strategyName: string;
   strategySlug: string;
   isTrendArb: boolean;
+  isHedgeScalping: boolean;
   legs: ActivePositionLeg[];
   closedLegs: UserClosedLegHistoryRow[];
   activePnlUsd: number;
@@ -212,6 +219,9 @@ function buildLegVirtual(params: {
   activeClipCount?: number | null;
   displayNetQtyOverride?: number | null;
   displayAvgEntryPriceOverride?: number | null;
+  d2LadderStep?: number | null;
+  /** Disambiguate multiple virtual legs per account (e.g. hedge-scalping D2 clips). */
+  legKeySuffix?: string | null;
 }): ActivePositionLeg | null {
   const openWindowOrders = extractCurrentOpenLedgerWindow(params.orders);
   const derivedSym =
@@ -234,8 +244,12 @@ function buildLegVirtual(params: {
       ? netQty * (mark - avgEntryPrice)
       : dOpen.unrealizedPnlUsd;
 
+  const key =
+    params.legKeySuffix && params.legKeySuffix.length > 0
+      ? `v:${params.virtualRunId}:${params.account}:${params.legKeySuffix}`
+      : `v:${params.virtualRunId}:${params.account}`;
   return {
-    key: `v:${params.virtualRunId}:${params.account}`,
+    key,
     mode: "virtual",
     userId: params.userId,
     userLabel: params.userLabel,
@@ -255,6 +269,7 @@ function buildLegVirtual(params: {
     markPrice: mark,
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
     activeClipCount: params.activeClipCount ?? null,
+    d2LadderStep: params.d2LadderStep ?? undefined,
   };
 }
 
@@ -327,6 +342,60 @@ function parseTrendArbDisplaySettings(
   };
 }
 
+type HedgeScalpingDisplaySettings = {
+  d1QtyPctOfCapital: number;
+  d2QtyPctOfCapital: number;
+  d1TargetProfitPct: number;
+  d1StopLossPct: number;
+  d2TargetProfitPct: number;
+  d2StopLossPct: number;
+};
+
+function parseHedgeScalpingDisplaySettings(
+  settingsJson: Record<string, unknown> | null | undefined,
+): HedgeScalpingDisplaySettings | null {
+  const parsed = hedgeScalpingConfigSchema.safeParse(settingsJson ?? null);
+  if (!parsed.success) return null;
+  const d1 = parsed.data.delta1;
+  const d2 = parsed.data.delta2;
+  return {
+    d1QtyPctOfCapital: d1.baseQtyPct,
+    d2QtyPctOfCapital: d2.stepQtyPct,
+    d1TargetProfitPct: Math.max(0, d1.targetProfitPct),
+    d1StopLossPct: Math.max(0, d1.stopLossPct),
+    d2TargetProfitPct: Math.max(0, d2.targetProfitPct),
+    d2StopLossPct: Math.max(0, d2.stopLossPct),
+  };
+}
+
+function parseHsD2EntryCorrelation(
+  correlationId: string | null,
+): { step: number; clipId: string } | null {
+  const m = /^hs_d2_step(\d+)_([0-9a-f-]{36})$/i.exec(correlationId ?? "");
+  if (!m) return null;
+  const step = Number(m[1]);
+  const clipId = m[2]!;
+  if (!Number.isFinite(step) || step < 1) return null;
+  return { step, clipId };
+}
+
+function parseHsD2ExitClipId(correlationId: string | null): string | null {
+  const m = /^hs_d2_exit_([0-9a-f-]{36})_/i.exec(correlationId ?? "");
+  return m?.[1] ?? null;
+}
+
+function hedgeScalpingD2StepFromClipId(
+  clipId: string,
+  orderRows: { correlationId: string | null }[],
+): number | null {
+  const id = clipId.toLowerCase();
+  for (const row of orderRows) {
+    const parsed = parseHsD2EntryCorrelation(row.correlationId);
+    if (parsed && parsed.clipId.toLowerCase() === id) return parsed.step;
+  }
+  return null;
+}
+
 function computeTrendArbExitPrices(params: {
   side: "long" | "short";
   entry: number | null;
@@ -376,6 +445,156 @@ function augmentTrendArbLegExitPrices(
     };
   }
   return leg;
+}
+
+/** Adds target/stop from saved hedge-scalping % (D1 anchor + per D2 scalp clip). */
+function augmentHedgeScalpingLegExitPrices(
+  leg: ActivePositionLeg,
+  settings: HedgeScalpingDisplaySettings | null,
+): ActivePositionLeg {
+  if (!settings || !isHedgeScalpingStrategySlug(leg.strategySlug)) return leg;
+  const entry = leg.displayAvgEntryPrice ?? leg.avgEntryPrice;
+  if (leg.account === "D1") {
+    return {
+      ...leg,
+      ...computeTrendArbExitPrices({
+        side: leg.side,
+        entry,
+        targetProfitPct: settings.d1TargetProfitPct,
+        stopLossPct: settings.d1StopLossPct,
+      }),
+    };
+  }
+  return {
+    ...leg,
+    ...computeTrendArbExitPrices({
+      side: leg.side,
+      entry,
+      targetProfitPct: settings.d2TargetProfitPct,
+      stopLossPct: settings.d2StopLossPct,
+    }),
+  };
+}
+
+type HedgeScalpingOrderRow = {
+  symbol: string;
+  side: string;
+  quantity: string;
+  fillPrice: string | null;
+  status: string;
+  correlationId: string | null;
+  signalAction: string | null;
+  createdAt: Date;
+};
+
+function buildHedgeScalpingVirtualLegs(params: {
+  userId: string;
+  userLabel?: string;
+  virtualRunId: string;
+  strategyId: string;
+  strategyName: string;
+  strategySlug: string;
+  orderRows: HedgeScalpingOrderRow[];
+  markBySymbol: Map<string, number>;
+  hedgeSettings: HedgeScalpingDisplaySettings | null;
+}): ActivePositionLeg[] {
+  const d1Rows = params.orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
+  const d2RowsAll = params.orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
+  const d2Rows = [...d2RowsAll].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+  type Bucket = { step: number; rows: HedgeScalpingOrderRow[] };
+  const clipMap = new Map<string, Bucket>();
+
+  for (const row of d2Rows) {
+    const entry = parseHsD2EntryCorrelation(row.correlationId);
+    if (entry) {
+      const b = clipMap.get(entry.clipId) ?? { step: entry.step, rows: [] };
+      b.step = entry.step;
+      b.rows.push(row);
+      clipMap.set(entry.clipId, b);
+      continue;
+    }
+    const exitClipId = parseHsD2ExitClipId(row.correlationId);
+    if (exitClipId) {
+      const b = clipMap.get(exitClipId) ?? { step: 0, rows: [] };
+      b.rows.push(row);
+      clipMap.set(exitClipId, b);
+    }
+  }
+
+  const legs: ActivePositionLeg[] = [];
+
+  const pOrd = ordersToLedgerRows(
+    [...d1Rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()),
+  );
+  const l1 = buildLegVirtual({
+    userId: params.userId,
+    userLabel: params.userLabel,
+    virtualRunId: params.virtualRunId,
+    strategyId: params.strategyId,
+    strategyName: params.strategyName,
+    strategySlug: params.strategySlug,
+    account: "D1",
+    orders: pOrd,
+    markBySymbol: params.markBySymbol,
+    qtyPctOfCapital: params.hedgeSettings?.d1QtyPctOfCapital ?? null,
+  });
+  if (l1) {
+    legs.push(augmentHedgeScalpingLegExitPrices(l1, params.hedgeSettings));
+  }
+
+  const clipIds = [...clipMap.keys()].sort((a, b) => {
+    const sa = clipMap.get(a)!.step;
+    const sb = clipMap.get(b)!.step;
+    if (sa !== sb) return sa - sb;
+    return a.localeCompare(b);
+  });
+
+  for (const clipId of clipIds) {
+    const bucket = clipMap.get(clipId)!;
+    const sortedRows = [...bucket.rows].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    const clipLedger = ordersToLedgerRows(sortedRows);
+    const stepForLeg = bucket.step > 0 ? bucket.step : null;
+    const l2 = buildLegVirtual({
+      userId: params.userId,
+      userLabel: params.userLabel,
+      virtualRunId: params.virtualRunId,
+      strategyId: params.strategyId,
+      strategyName: params.strategyName,
+      strategySlug: params.strategySlug,
+      account: "D2",
+      orders: clipLedger,
+      markBySymbol: params.markBySymbol,
+      qtyPctOfCapital: params.hedgeSettings?.d2QtyPctOfCapital ?? null,
+      d2LadderStep: stepForLeg,
+      legKeySuffix: `clip:${clipId}`,
+    });
+    if (l2) {
+      legs.push(augmentHedgeScalpingLegExitPrices(l2, params.hedgeSettings));
+    }
+  }
+
+  const hasD2Leg = legs.some((l) => l.account === "D2");
+  if (!hasD2Leg && d2Rows.length > 0) {
+    const sOrd = ordersToLedgerRows(d2Rows);
+    const l2 = buildLegVirtual({
+      userId: params.userId,
+      userLabel: params.userLabel,
+      virtualRunId: params.virtualRunId,
+      strategyId: params.strategyId,
+      strategyName: params.strategyName,
+      strategySlug: params.strategySlug,
+      account: "D2",
+      orders: sOrd,
+      markBySymbol: params.markBySymbol,
+      qtyPctOfCapital: params.hedgeSettings?.d2QtyPctOfCapital ?? null,
+    });
+    if (l2) {
+      legs.push(augmentHedgeScalpingLegExitPrices(l2, params.hedgeSettings));
+    }
+  }
+
+  return legs;
 }
 
 /** D2 entry clips (excludes flatten / per-clip TP exits); includes ladder `_d2l` and legacy `..._d2_<time>_sN_`. */
@@ -537,7 +756,11 @@ function latestEntryDisplayForAccount(params: {
         ? (params.account === "D2"
             ? classifyTrendArbAccount({ correlationId: row.correlationId }) === "secondary"
             : classifyTrendArbAccount({ correlationId: row.correlationId }) === "primary")
-        : params.account === "D1",
+        : isHedgeScalpingStrategySlug(params.strategySlug)
+          ? params.account === "D2"
+            ? parseHsD2EntryCorrelation(row.correlationId) != null
+            : (row.correlationId ?? "").startsWith("hs_d1_")
+          : params.account === "D1",
     );
   if (filtered.length === 0) return null;
   const latest = filtered[filtered.length - 1]!;
@@ -555,6 +778,7 @@ function buildClosedLegHistoryRows(params: {
   virtualRunId: string;
   strategySlug: string;
   strategySettings: TrendArbDisplaySettings | null;
+  hedgeSettings?: HedgeScalpingDisplaySettings | null;
   orderRows: {
     id: string;
     symbol: string;
@@ -569,6 +793,7 @@ function buildClosedLegHistoryRows(params: {
     createdAt: Date;
   }[];
 }): UserClosedLegHistoryRow[] {
+  const hedgeSettings = params.hedgeSettings ?? null;
   return params.orderRows
     .filter((row) => {
       if (!(row.status === "filled" || row.status === "partial_fill")) return false;
@@ -576,9 +801,15 @@ function buildClosedLegHistoryRows(params: {
       return row.fillPrice != null;
     })
     .map((row) => {
+      const isHs = isHedgeScalpingStrategySlug(params.strategySlug);
       const isD2 = isTrendArbSlug(params.strategySlug)
         ? classifyTrendArbAccount({ correlationId: row.correlationId }) === "secondary"
-        : false;
+        : isHs
+          ? /^hs_d2_/i.test(row.correlationId ?? "")
+          : false;
+      const exitClipId = isHs && isD2 ? parseHsD2ExitClipId(row.correlationId) : null;
+      const d2LadderStep =
+        exitClipId != null ? hedgeScalpingD2StepFromClipId(exitClipId, params.orderRows) : null;
       return {
         key: `closed:${params.virtualRunId}:${row.id}`,
         account: (isD2 ? "D2" : "D1") as "D1" | "D2",
@@ -590,8 +821,9 @@ function buildClosedLegHistoryRows(params: {
         profitPercent: row.profitPercent != null ? Number(row.profitPercent) : null,
         closedAt: row.createdAt.toISOString(),
         qtyPctOfCapital: isD2
-          ? params.strategySettings?.d2QtyPctOfCapital ?? null
-          : params.strategySettings?.d1QtyPctOfCapital ?? null,
+          ? hedgeSettings?.d2QtyPctOfCapital ?? params.strategySettings?.d2QtyPctOfCapital ?? null
+          : hedgeSettings?.d1QtyPctOfCapital ?? params.strategySettings?.d1QtyPctOfCapital ?? null,
+        d2LadderStep: isHs && isD2 ? d2LadderStep : undefined,
       };
     })
     .sort((a, b) => new Date(b.closedAt).getTime() - new Date(a.closedAt).getTime());
@@ -687,6 +919,8 @@ export async function getUserVirtualActivePositionGroups(
     }[];
     ledger: LedgerOrderRow[];
     isTa: boolean;
+    isHs: boolean;
+    hedgeSettings: HedgeScalpingDisplaySettings | null;
   };
   const runCtx: RunCtx[] = [];
   const allSyms: string[] = [];
@@ -718,7 +952,9 @@ export async function getUserVirtualActivePositionGroups(
 
     const ledger = ordersToLedgerRows(orderRows);
     const isTa = isTrendArbSlug(run.strategySlug);
+    const isHs = isHedgeScalpingStrategySlug(run.strategySlug);
     const strategySettings = parseTrendArbDisplaySettings(run.strategySettingsJson);
+    const hedgeSettings = parseHedgeScalpingDisplaySettings(run.strategySettingsJson);
 
     if (isTa) {
       const pOrd = ledger.filter((o) => classifyTrendArbAccount(o) === "primary");
@@ -726,6 +962,11 @@ export async function getUserVirtualActivePositionGroups(
       if (pOrd.length > 0) allSyms.push(pOrd[pOrd.length - 1]!.symbol);
       if (sOrd.length > 0) allSyms.push(sOrd[sOrd.length - 1]!.symbol);
       if (run.openSymbol) allSyms.push(run.openSymbol);
+    } else if (isHs && orderRows.length > 0) {
+      const d1Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
+      const d2Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
+      const symRow = d1Rows[d1Rows.length - 1] ?? d2Rows[d2Rows.length - 1];
+      if (symRow) allSyms.push(symRow.symbol);
     } else if (ledger.length > 0) {
       allSyms.push(ledger[ledger.length - 1]!.symbol);
     }
@@ -755,6 +996,8 @@ export async function getUserVirtualActivePositionGroups(
       })),
       ledger,
       isTa,
+      isHs,
+      hedgeSettings,
     });
   }
 
@@ -762,12 +1005,14 @@ export async function getUserVirtualActivePositionGroups(
 
   for (const run of runCtx) {
     const isTa = run.isTa;
+    const isHs = run.isHs;
     const ledger = run.ledger;
     const legs: ActivePositionLeg[] = [];
     const closedLegs = buildClosedLegHistoryRows({
       virtualRunId: run.runId,
       strategySlug: run.strategySlug,
       strategySettings: run.strategySettings,
+      hedgeSettings: run.hedgeSettings,
       orderRows: run.orderRows,
     });
     if (isTa) {
@@ -845,6 +1090,19 @@ export async function getUserVirtualActivePositionGroups(
         });
         if (l2) legs.push(augmentTrendArbLegExitPrices(l2, run.strategySettings));
       }
+    } else if (isHs) {
+      legs.push(
+        ...buildHedgeScalpingVirtualLegs({
+          userId,
+          virtualRunId: run.runId,
+          strategyId: run.strategyId,
+          strategyName: run.strategyName,
+          strategySlug: run.strategySlug,
+          orderRows: run.orderRows,
+          markBySymbol,
+          hedgeSettings: run.hedgeSettings,
+        }),
+      );
     } else {
       const l = buildLegVirtual({
         userId,
@@ -871,6 +1129,7 @@ export async function getUserVirtualActivePositionGroups(
       strategyName: run.strategyName,
       strategySlug: run.strategySlug,
       isTrendArb: isTa,
+      isHedgeScalping: isHs,
       legs,
       closedLegs,
       activePnlUsd,
@@ -918,6 +1177,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     strategyName: string;
     strategySlug: string;
     strategySettings: TrendArbDisplaySettings | null;
+    hedgeSettings: HedgeScalpingDisplaySettings | null;
     openNetQty: string;
     openAvgEntryPrice: string;
     openSymbol: string | null;
@@ -934,6 +1194,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     }[];
     ledger: LedgerOrderRow[];
     isTa: boolean;
+    isHs: boolean;
     label: string;
   };
   const vctx: VRunCtx[] = [];
@@ -962,6 +1223,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
 
     const ledger = ordersToLedgerRows(orderRows);
     const isTa = isTrendArbSlug(run.strategySlug);
+    const isHs = isHedgeScalpingStrategySlug(run.strategySlug);
     const label = userDisplayName(run.userEmail, run.userName);
 
     if (isTa) {
@@ -971,6 +1233,11 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       if (sOrd.length > 0) symbolBatch.push(sOrd[sOrd.length - 1]!.symbol);
       // Ensure the open-symbol (used for D1 leg override math) has a mark cached.
       if (run.openSymbol) symbolBatch.push(run.openSymbol);
+    } else if (isHs && orderRows.length > 0) {
+      const d1Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
+      const d2Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
+      const symRow = d1Rows[d1Rows.length - 1] ?? d2Rows[d2Rows.length - 1];
+      if (symRow) symbolBatch.push(symRow.symbol);
     } else if (ledger.length > 0) {
       symbolBatch.push(ledger[ledger.length - 1]!.symbol);
     }
@@ -982,6 +1249,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       strategyName: run.strategyName,
       strategySlug: run.strategySlug,
       strategySettings: parseTrendArbDisplaySettings(run.strategySettingsJson),
+      hedgeSettings: parseHedgeScalpingDisplaySettings(run.strategySettingsJson),
       openNetQty: String(run.openNetQty ?? "0"),
       openAvgEntryPrice: String(run.openAvgEntryPrice ?? "0"),
       openSymbol: run.openSymbol,
@@ -998,6 +1266,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       })),
       ledger,
       isTa,
+      isHs,
       label,
     });
   }
@@ -1146,6 +1415,20 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         });
         if (l2) legs.push(augmentTrendArbLegExitPrices(l2, c.strategySettings));
       }
+    } else if (c.isHs) {
+      legs.push(
+        ...buildHedgeScalpingVirtualLegs({
+          userId: c.userId,
+          userLabel: c.label,
+          virtualRunId: c.runId,
+          strategyId: c.strategyId,
+          strategyName: c.strategyName,
+          strategySlug: c.strategySlug,
+          orderRows: c.orderRows,
+          markBySymbol,
+          hedgeSettings: c.hedgeSettings,
+        }),
+      );
     } else {
       const l = buildLegVirtual({
         userId: c.userId,

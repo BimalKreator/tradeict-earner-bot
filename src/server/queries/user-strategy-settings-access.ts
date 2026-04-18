@@ -1,6 +1,12 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 
+import {
+  hedgeScalpingConfigSchema,
+  isHedgeScalpingStrategySlug,
+  parseAllowedSymbolsList,
+} from "@/lib/hedge-scalping-config";
+import { extractHedgeScalpingSymbolFromRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
 import { db } from "@/server/db";
 import {
   strategies,
@@ -28,6 +34,9 @@ export type UserStrategySettingsPageData = {
   secondaryExchangeConnectionId: string | null;
   deltaConnections: { id: string; accountLabel: string }[];
   canEditSettings: boolean;
+  isHedgeScalpingStrategy: boolean;
+  hedgeScalpingAllowedSymbols: string[];
+  initialHedgeScalpingSymbol: string | null;
 };
 
 const EDITABLE_RUN_STATUSES = new Set<RunRow["status"]>([
@@ -58,12 +67,14 @@ export async function getUserStrategySettingsPageData(
       strategyName: strategies.name,
       recommendedCapitalInr: strategies.recommendedCapitalInr,
       maxLeverage: strategies.maxLeverage,
+      strategySettingsJson: strategies.settingsJson,
       runId: userStrategyRuns.id,
       runStatus: userStrategyRuns.status,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
       secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
     })
     .from(userStrategySubscriptions)
     .innerJoin(
@@ -89,6 +100,19 @@ export async function getUserStrategySettingsPageData(
 
   const deltaConnections = await listUserDeltaIndiaExchangeConnections(userId);
 
+  const isHedgeScalpingStrategy = isHedgeScalpingStrategySlug(row.strategySlug);
+  const hedgeScalpingAllowedSymbols = isHedgeScalpingStrategy
+    ? (() => {
+        const p = hedgeScalpingConfigSchema.safeParse(row.strategySettingsJson);
+        return p.success ? parseAllowedSymbolsList(p.data.general.allowedSymbols) : [];
+      })()
+    : [];
+  const savedSym = extractHedgeScalpingSymbolFromRunSettingsJson(row.runSettingsJson)?.trim().toUpperCase();
+  const initialHedgeScalpingSymbol =
+    savedSym && hedgeScalpingAllowedSymbols.includes(savedSym)
+      ? savedSym
+      : (hedgeScalpingAllowedSymbols[0] ?? null);
+
   return {
     strategyId: row.strategyId,
     strategySlug: row.strategySlug,
@@ -111,5 +135,8 @@ export async function getUserStrategySettingsPageData(
       accountLabel: c.accountLabel,
     })),
     canEditSettings,
+    isHedgeScalpingStrategy,
+    hedgeScalpingAllowedSymbols,
+    initialHedgeScalpingSymbol,
   };
 }

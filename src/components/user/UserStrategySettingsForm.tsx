@@ -35,6 +35,9 @@ export function UserStrategySettingsForm({
   deltaConnections = [],
   runStatus = "ready_to_activate",
   canEditSettings = false,
+  isHedgeScalpingStrategy = false,
+  hedgeScalpingAllowedSymbols = [],
+  initialHedgeScalpingSymbol = null,
 }: {
   strategySlug?: string;
   constraints?: UserStrategySettingsConstraints;
@@ -45,6 +48,9 @@ export function UserStrategySettingsForm({
   deltaConnections?: { id: string; accountLabel: string }[];
   runStatus?: string;
   canEditSettings?: boolean;
+  isHedgeScalpingStrategy?: boolean;
+  hedgeScalpingAllowedSymbols?: string[];
+  initialHedgeScalpingSymbol?: string | null;
 }) {
   const safeConstraints = useMemo<UserStrategySettingsConstraints>(
     () => ({
@@ -142,6 +148,49 @@ export function UserStrategySettingsForm({
           </p>
         ) : null}
       </GlassPanel>
+
+      {isHedgeScalpingStrategy && hedgeScalpingAllowedSymbols.length > 0 ? (
+        <GlassPanel className="space-y-3 border border-white/[0.08]">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Hedge scalping · instrument
+          </h2>
+          <p className="text-xs text-[var(--text-muted)]">
+            Choose which listed contract this run follows. Your selection is saved on this
+            strategy run for the trading worker.
+          </p>
+          <div>
+            <label
+              htmlFor="hedge_scalping_symbol"
+              className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+            >
+              Symbol
+            </label>
+            <select
+              id="hedge_scalping_symbol"
+              name="hedge_scalping_symbol"
+              required
+              defaultValue={
+                initialHedgeScalpingSymbol && hedgeScalpingAllowedSymbols.includes(initialHedgeScalpingSymbol)
+                  ? initialHedgeScalpingSymbol
+                  : hedgeScalpingAllowedSymbols[0]
+              }
+              disabled={pending}
+              className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
+            >
+              {hedgeScalpingAllowedSymbols.map((sym) => (
+                <option key={sym} value={sym}>
+                  {sym}
+                </option>
+              ))}
+            </select>
+            {state.fieldErrors.hedge_scalping_symbol ? (
+              <p className="mt-1 text-sm text-amber-200" role="alert">
+                {state.fieldErrors.hedge_scalping_symbol}
+              </p>
+            ) : null}
+          </div>
+        </GlassPanel>
+      ) : null}
 
       {runStatus === "active" ? (
         <p className="text-sm text-sky-200/90">

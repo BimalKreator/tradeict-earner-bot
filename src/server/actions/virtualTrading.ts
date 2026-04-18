@@ -4,6 +4,12 @@ import { and, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import {
+  hedgeScalpingConfigSchema,
+  isHedgeScalpingStrategySlug,
+  parseAllowedSymbolsList,
+} from "@/lib/hedge-scalping-config";
+import { withHedgeScalpingRunSymbol } from "@/lib/user-strategy-run-settings-json";
 import { requireUserId } from "@/server/auth/require-user";
 import {
   strategies,
@@ -53,6 +59,8 @@ export async function startVirtualStrategyRunAction(
     const [s] = await db
       .select({
         maxLev: strategies.maxLeverage,
+        slug: strategies.slug,
+        settingsJson: strategies.settingsJson,
       })
       .from(strategies)
       .where(eq(strategies.id, strategyId))
@@ -60,6 +68,22 @@ export async function startVirtualStrategyRunAction(
 
     const defaultLev = s?.maxLev != null ? String(s.maxLev) : "5";
     const now = new Date();
+
+    let runSettingsJson: Record<string, unknown> | null = null;
+    if (s && isHedgeScalpingStrategySlug(s.slug)) {
+      const parsed = hedgeScalpingConfigSchema.safeParse(s.settingsJson);
+      const allowed = parsed.success
+        ? parseAllowedSymbolsList(parsed.data.general.allowedSymbols)
+        : [];
+      if (allowed.length === 0) {
+        return { error: "This hedge-scalping strategy has no allowed symbols configured." };
+      }
+      const sym = String(formData.get("hedge_scalping_symbol") ?? "").trim().toUpperCase();
+      if (!sym || !allowed.includes(sym)) {
+        return { error: "Choose a valid symbol before starting paper trading." };
+      }
+      runSettingsJson = withHedgeScalpingRunSymbol(null, sym);
+    }
 
     await db
       .insert(virtualStrategyRuns)
@@ -73,6 +97,7 @@ export async function startVirtualStrategyRunAction(
         virtualUsedMarginUsd: "0",
         virtualRealizedPnlUsd: "0",
         openNetQty: "0",
+        runSettingsJson,
         activatedAt: now,
         updatedAt: now,
       })
@@ -82,6 +107,7 @@ export async function startVirtualStrategyRunAction(
           status: "active",
           pausedAt: null,
           updatedAt: now,
+          ...(runSettingsJson != null ? { runSettingsJson } : {}),
         },
       });
 

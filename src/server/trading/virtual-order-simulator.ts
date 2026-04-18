@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
@@ -78,6 +78,62 @@ async function resolveFillPriceUsd(
     /* ignore */
   }
   return null;
+}
+
+/** Candle key shared by `..._d1_<key>_...` and `..._d2_<key>_s0` initial hedge correlations. */
+function trendArbInitialD2BundleCandleKey(correlationId: string | null | undefined): string | null {
+  if (!correlationId) return null;
+  const m = /_d2_(\d+)_s0(?:_|$)/i.exec(correlationId);
+  return m?.[1] ?? null;
+}
+
+/**
+ * When the worker simulates initial D2 after D1, pin fill to D1's fill for the same bundle
+ * so D2 step-1 entry does not drift to ticker/candle fallback if D2 payload lacks mark_price.
+ */
+async function alignTrendArbInitialD2FillToPrimaryBundle(params: {
+  payload: TradingExecutionJobPayload;
+  virtualRunId: string;
+  strategyId: string;
+  resolvedPrice: number;
+}): Promise<number> {
+  const { payload: p, virtualRunId, strategyId, resolvedPrice } = params;
+  if (!db) return resolvedPrice;
+
+  const bundleKey = trendArbInitialD2BundleCandleKey(p.correlationId);
+  if (bundleKey == null) return resolvedPrice;
+
+  const pattern = `%_d1_${bundleKey}_%`;
+
+  const [primaryRow] = await db
+    .select({ fillPrice: virtualBotOrders.fillPrice })
+    .from(virtualBotOrders)
+    .where(
+      and(
+        eq(virtualBotOrders.virtualRunId, virtualRunId),
+        eq(virtualBotOrders.strategyId, strategyId),
+        ilike(virtualBotOrders.correlationId, pattern),
+        inArray(virtualBotOrders.status, ["filled", "partial_fill"]),
+      ),
+    )
+    .orderBy(desc(virtualBotOrders.createdAt))
+    .limit(1);
+
+  const d1Px = primaryRow?.fillPrice != null ? num(primaryRow.fillPrice) : NaN;
+  if (!(d1Px > 0)) return resolvedPrice;
+
+  const driftPct =
+    resolvedPrice > 0 ? Math.abs(d1Px - resolvedPrice) / resolvedPrice : 0;
+  if (driftPct > 1e-4) {
+    tradingLog("info", "virtual_trendarb_d2_s0_fill_aligned_to_d1", {
+      virtualRunId,
+      correlationId: p.correlationId,
+      resolvedPrice,
+      d1FillPrice: d1Px,
+      driftPct: Number(driftPct.toFixed(6)),
+    });
+  }
+  return d1Px;
 }
 
 type SimResult = {
@@ -234,10 +290,17 @@ export async function simulateVirtualOrder(params: {
   }
 
   const signedDelta = p.side === "buy" ? qtyNum : -qtyNum;
-  const price = await resolveFillPriceUsd(p);
+  let price = await resolveFillPriceUsd(p);
   if (price == null || !(price > 0)) {
     return { ok: false, error: "virtual_mark_price_unavailable" };
   }
+
+  price = await alignTrendArbInitialD2FillToPrimaryBundle({
+    payload: p,
+    virtualRunId: row.virtualRunId,
+    strategyId: row.strategyId,
+    resolvedPrice: price,
+  });
 
   const now = new Date();
   const internalClientOrderId = generateInternalClientOrderId();

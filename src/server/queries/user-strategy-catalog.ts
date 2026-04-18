@@ -1,5 +1,10 @@
 import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 
+import {
+  hedgeScalpingConfigSchema,
+  isHedgeScalpingStrategySlug,
+  parseAllowedSymbolsList,
+} from "@/lib/hedge-scalping-config";
 import { mergeStrategyPricing } from "@/lib/user-strategy-pricing";
 import { db } from "@/server/db";
 import {
@@ -18,6 +23,7 @@ export type CatalogStrategyRow = {
   riskLabel: string;
   recommendedCapitalInr: string | null;
   performanceChartJson: unknown;
+  settingsJson: unknown;
 };
 
 export type UserStrategyCardModel = CatalogStrategyRow & {
@@ -25,6 +31,8 @@ export type UserStrategyCardModel = CatalogStrategyRow & {
   revenueSharePercent: string;
   hasPricingOverride: boolean;
   subscriptionUx: "subscribed" | "pending_activation" | "subscribe";
+  /** Hedge Scalping: symbols the user may choose when starting paper trading. */
+  hedgeScalpingSymbolOptions: string[] | null;
 };
 
 /**
@@ -44,6 +52,7 @@ export async function listPublicActiveStrategies(): Promise<CatalogStrategyRow[]
       riskLabel: strategies.riskLabel,
       recommendedCapitalInr: strategies.recommendedCapitalInr,
       performanceChartJson: strategies.performanceChartJson,
+      settingsJson: strategies.settingsJson,
     })
     .from(strategies)
     .where(
@@ -62,6 +71,7 @@ export async function listPublicActiveStrategies(): Promise<CatalogStrategyRow[]
     recommendedCapitalInr: r.recommendedCapitalInr
       ? String(r.recommendedCapitalInr)
       : null,
+    settingsJson: r.settingsJson,
   }));
 }
 
@@ -241,12 +251,21 @@ export async function getUserStrategyCatalog(
       ? subscriptionUxForStrategy(subRows, s.id, now)
       : "subscribe";
 
+    const hedgeScalpingSymbolOptions = isHedgeScalpingStrategySlug(s.slug)
+      ? (() => {
+          const parsed = hedgeScalpingConfigSchema.safeParse(s.settingsJson);
+          if (!parsed.success) return [];
+          return parseAllowedSymbolsList(parsed.data.general.allowedSymbols);
+        })()
+      : null;
+
     return {
       ...s,
       monthlyFeeInr: merged.monthlyFeeInr,
       revenueSharePercent: merged.revenueSharePercent,
       hasPricingOverride: merged.hasOverride,
       subscriptionUx,
+      hedgeScalpingSymbolOptions,
     };
   });
 }

@@ -99,7 +99,11 @@ export function UserStrategyCatalogCard({
         ) : null}
 
         <div className="mt-auto flex flex-col gap-2 pt-1">
-          <VirtualPaperCta strategyId={strategy.id} sessionUserId={sessionUserId} />
+          <VirtualPaperCta
+            strategyId={strategy.id}
+            sessionUserId={sessionUserId}
+            hedgeScalpingSymbolOptions={strategy.hedgeScalpingSymbolOptions}
+          />
           {strategy.subscriptionUx === "subscribed" ? (
             <span className="inline-flex w-full items-center justify-center rounded-xl border border-emerald-500/35 bg-emerald-500/10 py-2.5 text-sm font-medium text-emerald-100">
               Subscribed

@@ -126,6 +126,9 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
         deltaConnections={data?.deltaConnections ?? []}
         runStatus={data?.runStatus ?? "ready_to_activate"}
         canEditSettings={data?.canEditSettings ?? false}
+        isHedgeScalpingStrategy={data?.isHedgeScalpingStrategy ?? false}
+        hedgeScalpingAllowedSymbols={data?.hedgeScalpingAllowedSymbols ?? []}
+        initialHedgeScalpingSymbol={data?.initialHedgeScalpingSymbol ?? null}
       />
     </div>
   );

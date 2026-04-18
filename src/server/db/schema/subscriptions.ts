@@ -1,6 +1,7 @@
 import {
   boolean,
   index,
+  jsonb,
   numeric,
   pgTable,
   text,
@@ -83,6 +84,8 @@ export const userStrategyRuns = pgTable(
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     lastStateReason: text("last_state_reason"),
+    /** User overrides (e.g. Hedge Scalping `hedgeScalping.symbol`). */
+    runSettingsJson: jsonb("run_settings_json").$type<Record<string, unknown> | null>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

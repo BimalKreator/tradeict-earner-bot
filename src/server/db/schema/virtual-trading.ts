@@ -70,6 +70,8 @@ export const virtualStrategyRuns = pgTable(
       scale: 8,
     }),
     openSymbol: text("open_symbol"),
+    /** User overrides for this paper run (e.g. Hedge Scalping symbol). */
+    runSettingsJson: jsonb("run_settings_json").$type<Record<string, unknown> | null>(),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

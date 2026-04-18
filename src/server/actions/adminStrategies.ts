@@ -10,6 +10,14 @@ import {
   parsePerformanceChartJsonText,
 } from "@/lib/strategy-performance-chart";
 import {
+  defaultHedgeScalpingConfig,
+  hedgeScalpingConfigSchema,
+  hedgeScalpingTimeframeSchema,
+  isHedgeScalpingStrategySlug,
+  parseAllowedSymbolsList,
+  type HedgeScalpingConfig,
+} from "@/lib/hedge-scalping-config";
+import {
   trendArbTimeframeSchema,
   trendArbStrategyConfigSchema,
   type TrendArbStrategyConfig,
@@ -252,6 +260,100 @@ function parseTrendArbConfigFromForm(
   return { ok: true, value: cfgParsed.data };
 }
 
+function parseFiniteNumberField(
+  raw: unknown,
+  fieldLabel: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  const s = String(raw ?? "").trim();
+  if (!s) return { ok: false, error: `${fieldLabel} is required.` };
+  const n = Number(s);
+  if (!Number.isFinite(n)) {
+    return { ok: false, error: `${fieldLabel} must be a valid number.` };
+  }
+  return { ok: true, value: n };
+}
+
+function parseHedgeScalpingConfigFromForm(
+  formData: FormData,
+): { ok: true; value: HedgeScalpingConfig } | { ok: false; fieldErrors: Record<string, string[]> } {
+  const allowedSymbols = String(formData.get("hs_allowed_symbols") ?? "").trim();
+  const timeframeRaw = String(formData.get("hs_general_timeframe") ?? "").trim();
+  const timeframe = hedgeScalpingTimeframeSchema.safeParse(timeframeRaw);
+
+  const amp = parseFiniteNumberField(
+    formData.get("hs_general_half_trend_amplitude"),
+    "HalfTrend amplitude",
+  );
+  const d1Base = parsePercentField(formData.get("hs_d1_base_qty_pct"), "D1 base qty %");
+  const d1Tp = parsePercentField(formData.get("hs_d1_target_profit_pct"), "D1 target profit %");
+  const d1Sl = parsePercentField(formData.get("hs_d1_stop_loss_pct"), "D1 stop loss %");
+  const d1Be = parsePercentField(
+    formData.get("hs_d1_breakeven_trigger_pct"),
+    "D1 breakeven trigger %",
+  );
+  const d2Move = parsePercentField(formData.get("hs_d2_step_move_pct"), "D2 step move %");
+  const d2Qty = parsePercentField(formData.get("hs_d2_step_qty_pct"), "D2 step qty %");
+  const d2Tp = parsePercentField(formData.get("hs_d2_target_profit_pct"), "D2 target profit %");
+  const d2Sl = parsePercentField(formData.get("hs_d2_stop_loss_pct"), "D2 stop loss %");
+
+  const parseErrors: Record<string, string[]> = {};
+  if (!allowedSymbols) {
+    parseErrors.hs_allowed_symbols = ["Allowed symbols are required."];
+  } else if (parseAllowedSymbolsList(allowedSymbols).length === 0) {
+    parseErrors.hs_allowed_symbols = ["Enter at least one valid symbol (comma-separated)."];
+  }
+  if (!timeframe.success) parseErrors.hs_general_timeframe = ["Timeframe is invalid."];
+  if (!amp.ok) parseErrors.hs_general_half_trend_amplitude = [amp.error];
+  if (!d1Base.ok) parseErrors.hs_d1_base_qty_pct = [d1Base.error];
+  if (!d1Tp.ok) parseErrors.hs_d1_target_profit_pct = [d1Tp.error];
+  if (!d1Sl.ok) parseErrors.hs_d1_stop_loss_pct = [d1Sl.error];
+  if (!d1Be.ok) parseErrors.hs_d1_breakeven_trigger_pct = [d1Be.error];
+  if (!d2Move.ok) parseErrors.hs_d2_step_move_pct = [d2Move.error];
+  if (!d2Qty.ok) parseErrors.hs_d2_step_qty_pct = [d2Qty.error];
+  if (!d2Tp.ok) parseErrors.hs_d2_target_profit_pct = [d2Tp.error];
+  if (!d2Sl.ok) parseErrors.hs_d2_stop_loss_pct = [d2Sl.error];
+  if (Object.keys(parseErrors).length > 0) {
+    return { ok: false, fieldErrors: parseErrors };
+  }
+
+  const cfgParsed = hedgeScalpingConfigSchema.safeParse({
+    general: {
+      allowedSymbols,
+      timeframe: timeframe.success ? timeframe.data : "5m",
+      halfTrendAmplitude: amp.ok ? amp.value : 2,
+    },
+    delta1: {
+      baseQtyPct: d1Base.ok ? d1Base.value : 100,
+      targetProfitPct: d1Tp.ok ? d1Tp.value : 5,
+      stopLossPct: d1Sl.ok ? d1Sl.value : 1,
+      breakevenTriggerPct: d1Be.ok ? d1Be.value : 30,
+    },
+    delta2: {
+      stepMovePct: d2Move.ok ? d2Move.value : 0.5,
+      stepQtyPct: d2Qty.ok ? d2Qty.value : 10,
+      targetProfitPct: d2Tp.ok ? d2Tp.value : 0.5,
+      stopLossPct: d2Sl.ok ? d2Sl.value : 5,
+    },
+  });
+
+  if (!cfgParsed.success) {
+    const errs: Record<string, string[]> = {};
+    for (const iss of cfgParsed.error.issues) {
+      const path = iss.path.join(".");
+      if (path === "general.allowedSymbols" || path.startsWith("general.")) {
+        errs.hs_allowed_symbols = [iss.message];
+      } else if (path.startsWith("delta1")) {
+        errs.hs_d1_base_qty_pct = [iss.message];
+      } else if (path.startsWith("delta2")) {
+        errs.hs_d2_step_move_pct = [iss.message];
+      }
+    }
+    return { ok: false, fieldErrors: errs };
+  }
+
+  return { ok: true, value: cfgParsed.data };
+}
+
 export async function createStrategyAction(
   _prev: StrategyFormState,
   formData: FormData,
@@ -330,6 +432,9 @@ export async function createStrategyAction(
         recommendedCapitalInr: cap.value,
         maxLeverage: lev.value,
         performanceChartJson: chartDb,
+        settingsJson: isHedgeScalpingStrategySlug(slugRaw)
+          ? defaultHedgeScalpingConfig()
+          : null,
         updatedAt: now,
       })
       .returning({ id: strategies.id });
@@ -427,7 +532,14 @@ export async function updateStrategyAction(
     updatedAt: now,
   };
 
-  if (existing.slug.trim().toLowerCase().includes("trend-arb")) {
+  const slugNorm = existing.slug.trim().toLowerCase();
+  if (isHedgeScalpingStrategySlug(existing.slug)) {
+    const parsedHs = parseHedgeScalpingConfigFromForm(formData);
+    if (!parsedHs.ok) {
+      return { fieldErrors: parsedHs.fieldErrors };
+    }
+    patch.settingsJson = parsedHs.value;
+  } else if (slugNorm.includes("trend-arb")) {
     const parsedTrend = parseTrendArbConfigFromForm(formData);
     if (!parsedTrend.ok) {
       return { fieldErrors: parsedTrend.fieldErrors };

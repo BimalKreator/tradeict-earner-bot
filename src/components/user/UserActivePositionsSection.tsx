@@ -33,7 +33,15 @@ function formatExitPx(v: number | null | undefined): string {
   return v.toFixed(2);
 }
 
-function legLabel(leg: UserActivePositionGroup["legs"][number]): string {
+function legLabel(
+  leg: UserActivePositionGroup["legs"][number],
+  g: Pick<UserActivePositionGroup, "isTrendArb" | "isHedgeScalping">,
+): string {
+  if (g.isHedgeScalping) {
+    if (leg.account === "D1") return "Anchor (D1)";
+    if (leg.d2LadderStep != null) return `Scalp (Step ${leg.d2LadderStep})`;
+    return "Scalp (D2)";
+  }
   if (leg.account === "D1") return "Delta 1";
   if (leg.d2LadderStep != null) {
     const n = leg.activeClipCount != null && leg.activeClipCount > 1 ? ` · ${leg.activeClipCount} clips` : "";
@@ -43,6 +51,18 @@ function legLabel(leg: UserActivePositionGroup["legs"][number]): string {
     return `Delta 2 (Active Clips: ${leg.activeClipCount})`;
   }
   return "Delta 2";
+}
+
+function closedLegLabel(
+  leg: UserActivePositionGroup["closedLegs"][number],
+  g: Pick<UserActivePositionGroup, "isHedgeScalping">,
+): string {
+  if (g.isHedgeScalping) {
+    if (leg.account === "D1") return "Anchor (D1)";
+    if (leg.d2LadderStep != null) return `Scalp (Step ${leg.d2LadderStep})`;
+    return "Scalp (D2)";
+  }
+  return leg.account === "D1" ? "Delta 1" : "Delta 2";
 }
 
 export function UserActivePositionsSection({
@@ -147,7 +167,12 @@ export function UserActivePositionsSection({
                   <div>
                     <h3 className="text-lg font-semibold text-white">{g.strategyName}</h3>
                     <p className="text-xs text-slate-500">
-                      {g.isTrendArb ? "Trend arb · Delta 1 (primary) & Delta 2 (hedge)" : "Single account"} · Run{" "}
+                      {g.isTrendArb
+                        ? "Trend arb · Delta 1 (primary) & Delta 2 (hedge)"
+                        : g.isHedgeScalping
+                          ? "Hedge scalping · Anchor (D1) & scalp clips (D2)"
+                          : "Single account"}{" "}
+                      · Run{" "}
                       <span className="font-mono text-[11px] text-slate-400">{g.runId.slice(0, 8)}…</span>
                     </p>
                   </div>
@@ -216,7 +241,7 @@ export function UserActivePositionsSection({
                       {openLegs.length > 0 ? (
                         openLegs.map((leg) => (
                           <tr key={leg.key} className="border-t border-white/[0.06] bg-black/25">
-                            <td className="px-3 py-3 font-semibold text-sky-200 sm:px-4">{legLabel(leg)}</td>
+                            <td className="px-3 py-3 font-semibold text-sky-200 sm:px-4">{legLabel(leg, g)}</td>
                             <td className="px-3 py-3 font-medium sm:px-4">{leg.symbol}</td>
                             <td className="px-3 py-3 capitalize sm:px-4">
                               {sideFromNetQty(leg.side, leg.netQty)}
@@ -298,7 +323,7 @@ export function UserActivePositionsSection({
                               {paginatedClosedLegs.map((leg) => (
                                 <tr key={leg.key} className="border-t border-white/[0.06] bg-black/15">
                                   <td className="px-4 py-3 font-semibold text-sky-200">
-                                    {leg.account === "D1" ? "Delta 1" : "Delta 2"}
+                                    {closedLegLabel(leg, g)}
                                   </td>
                                   <td className="px-4 py-3 font-medium">{leg.symbol}</td>
                                   <td className="px-4 py-3 capitalize">{leg.side}</td>

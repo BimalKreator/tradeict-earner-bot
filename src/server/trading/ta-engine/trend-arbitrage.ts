@@ -750,42 +750,42 @@ export async function runTrendArbitrageOnce(
         targetRunIds: [c.executionScope.runId],
       }
     : {};
-  const [primaryDispatch, secondaryDispatch] = await Promise.all([
-    dispatchTrendArbPrimaryEntry({
-      strategyId: c.strategyId,
-      symbol: c.runtime.symbol || c.symbol,
-      quantity: c.runtime.d1EntryQty,
-      entryQtyPct: c.runtime.d1EntryQtyPct,
-      stopLossPct: c.runtime.d1StopLossPct,
-      targetProfitPct: c.runtime.d1TargetProfitPct,
-      side: d1Side,
-      candleTime: bar.time,
-      markPrice: barCloseLive,
-      ...dispatchScope,
-    }),
-    dispatchTrendArbSecondaryHedgeClip({
-      strategyId: c.strategyId,
-      symbol: c.runtime.symbol || c.symbol,
-      candleTime: bar.time,
-      stepIndex: 0,
-      side: d2Side,
-      forceSide: d2Side,
-      markPrice: barCloseLive,
-      quantity: computeD2StepQuantityFromD1Qty({
-        d1Qty: c.runtime.d1EntryQty,
-        stepQtyPct: c.runtime.d2StepQtyPct,
-        fallbackQty: c.runtime.d2StepQty,
-      }),
+  // Enqueue D1 before D2 so workers tend to fill primary first; virtual D2 can then
+  // align its synthetic fill to the realized D1 price for the same candle bundle.
+  const primaryDispatch = await dispatchTrendArbPrimaryEntry({
+    strategyId: c.strategyId,
+    symbol: c.runtime.symbol || c.symbol,
+    quantity: c.runtime.d1EntryQty,
+    entryQtyPct: c.runtime.d1EntryQtyPct,
+    stopLossPct: c.runtime.d1StopLossPct,
+    targetProfitPct: c.runtime.d1TargetProfitPct,
+    side: d1Side,
+    candleTime: bar.time,
+    markPrice: barCloseLive,
+    ...dispatchScope,
+  });
+  const secondaryDispatch = await dispatchTrendArbSecondaryHedgeClip({
+    strategyId: c.strategyId,
+    symbol: c.runtime.symbol || c.symbol,
+    candleTime: bar.time,
+    stepIndex: 0,
+    side: d2Side,
+    forceSide: d2Side,
+    markPrice: barCloseLive,
+    quantity: computeD2StepQuantityFromD1Qty({
+      d1Qty: c.runtime.d1EntryQty,
       stepQtyPct: c.runtime.d2StepQtyPct,
-      targetProfitPct: c.runtime.d2TargetProfitPct,
-      applyCapitalSplitSizing: true,
-      d1ClipQtyPct: c.runtime.d1EntryQtyPct,
-      d2DisplayStep: 1,
-      d2StepLabel: "D2 Step 1",
-      correlationIdOverride: d2InitialCorrelationId,
-      ...dispatchScope,
+      fallbackQty: c.runtime.d2StepQty,
     }),
-  ]);
+    stepQtyPct: c.runtime.d2StepQtyPct,
+    targetProfitPct: c.runtime.d2TargetProfitPct,
+    applyCapitalSplitSizing: true,
+    d1ClipQtyPct: c.runtime.d1EntryQtyPct,
+    d2DisplayStep: 1,
+    d2StepLabel: "D2 Step 1",
+    correlationIdOverride: d2InitialCorrelationId,
+    ...dispatchScope,
+  });
 
   if (!primaryDispatch.ok || !secondaryDispatch.ok) {
     const dispatchError =

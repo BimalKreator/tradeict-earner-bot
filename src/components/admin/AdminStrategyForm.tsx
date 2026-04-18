@@ -47,6 +47,7 @@ export function AdminStrategyForm(props: Props) {
           recommendedCapitalInr: "",
           maxLeverage: "",
           performanceChartJsonText: "[]",
+          hedgeScalping: null,
           trendArb: null,
         } satisfies AdminStrategyFormDefaults);
 
@@ -55,6 +56,12 @@ export function AdminStrategyForm(props: Props) {
     (d.slug ?? "").trim().toLowerCase().includes("trend-arb") &&
     d?.trendArb != null;
   const trendArbDefaults = showTrendArbAdvanced ? d?.trendArb ?? null : null;
+
+  const showHedgeScalpingAdvanced =
+    props.mode === "edit" &&
+    (d.slug ?? "").trim().toLowerCase().includes("hedge-scalping") &&
+    d?.hedgeScalping != null;
+  const hedgeScalpingDefaults = showHedgeScalpingAdvanced ? d.hedgeScalping : null;
 
   return (
     <GlassPanel className="space-y-6">
@@ -538,6 +545,232 @@ export function AdminStrategyForm(props: Props) {
                     className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
                   />
                   {fieldError(state.fieldErrors, "trend_arb_d2_stop_loss_pct")}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {hedgeScalpingDefaults ? (
+          <div className="space-y-4 rounded-xl border border-[var(--border-glass)] bg-black/20 p-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+              Hedge Scalping (dual account) — settings
+            </h3>
+            <p className="text-xs text-[var(--text-muted)]">
+              Phase 1: configuration only. Slug must contain <span className="font-mono">hedge-scalping</span>.
+            </p>
+
+            <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                General
+              </h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor={`${baseId}-hs-allowed-symbols`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Allowed symbols (comma-separated)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-allowed-symbols`}
+                    name="hs_allowed_symbols"
+                    required
+                    placeholder="BTCUSD, ETHUSD, SOLUSD"
+                    defaultValue={hedgeScalpingDefaults.allowedSymbols}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_allowed_symbols")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-timeframe`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Timeframe
+                  </label>
+                  <select
+                    id={`${baseId}-hs-timeframe`}
+                    name="hs_general_timeframe"
+                    required
+                    defaultValue={hedgeScalpingDefaults.timeframe}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  >
+                    <option value="1m">1m</option>
+                    <option value="3m">3m</option>
+                    <option value="5m">5m</option>
+                    <option value="15m">15m</option>
+                    <option value="30m">30m</option>
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                  </select>
+                  {fieldError(state.fieldErrors, "hs_general_timeframe")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-ht-amp`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    HalfTrend amplitude
+                  </label>
+                  <input
+                    id={`${baseId}-hs-ht-amp`}
+                    name="hs_general_half_trend_amplitude"
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    defaultValue={hedgeScalpingDefaults.halfTrendAmplitude}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_general_half_trend_amplitude")}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                Delta 1 (main account)
+              </h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d1-base`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Base qty (% of capital)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d1-base`}
+                    name="hs_d1_base_qty_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta1BaseQtyPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d1_base_qty_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d1-tp`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Target profit (%)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d1-tp`}
+                    name="hs_d1_target_profit_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta1TargetProfitPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d1_target_profit_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d1-sl`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Stop loss (%)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d1-sl`}
+                    name="hs_d1_stop_loss_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta1StopLossPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d1_stop_loss_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d1-be`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Breakeven trigger (% of target)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d1-be`}
+                    name="hs_d1_breakeven_trigger_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta1BreakevenTriggerPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  <p className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">
+                    When profit reaches this % of the D1 target, move stop to entry (breakeven).
+                  </p>
+                  {fieldError(state.fieldErrors, "hs_d1_breakeven_trigger_pct")}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-[var(--border-glass)]/70 bg-black/20 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                Delta 2 (scalp account)
+              </h4>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d2-move`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Step move (%)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d2-move`}
+                    name="hs_d2_step_move_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta2StepMovePct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d2_step_move_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d2-qty`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Step qty (% of D1 qty)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d2-qty`}
+                    name="hs_d2_step_qty_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta2StepQtyPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d2_step_qty_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d2-tp`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Target profit (% per scalp)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d2-tp`}
+                    name="hs_d2_target_profit_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta2TargetProfitPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d2_target_profit_pct")}
+                </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-d2-sl`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Stop loss (%)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-d2-sl`}
+                    name="hs_d2_stop_loss_pct"
+                    required
+                    defaultValue={hedgeScalpingDefaults.delta2StopLossPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  {fieldError(state.fieldErrors, "hs_d2_stop_loss_pct")}
                 </div>
               </div>
             </div>

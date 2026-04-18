@@ -5,9 +5,15 @@ import { revalidatePath } from "next/cache";
 import type { ZodIssue } from "zod";
 
 import {
+  hedgeScalpingConfigSchema,
+  isHedgeScalpingStrategySlug,
+  parseAllowedSymbolsList,
+} from "@/lib/hedge-scalping-config";
+import {
   createUserStrategyRunSettingsSchema,
   type UserStrategySettingsConstraints,
 } from "@/lib/user-strategy-settings-schema";
+import { withHedgeScalpingRunSymbol } from "@/lib/user-strategy-run-settings-json";
 import { requireUserId } from "@/server/auth/require-user";
 import { logAuditEvent } from "@/server/audit/audit-logger";
 import type { Database } from "@/server/db";
@@ -98,12 +104,14 @@ export async function updateUserStrategySettingsAction(
       strategySlug: strategies.slug,
       recommendedCapitalInr: strategies.recommendedCapitalInr,
       maxLeverage: strategies.maxLeverage,
+      strategySettingsJson: strategies.settingsJson,
       runId: userStrategyRuns.id,
       runStatus: userStrategyRuns.status,
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
       secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
     })
     .from(userStrategySubscriptions)
     .innerJoin(
@@ -210,6 +218,32 @@ export async function updateUserStrategySettingsAction(
   const oldPrimary = row.primaryExchangeConnectionId;
   const oldSecondary = row.secondaryExchangeConnectionId;
 
+  const hedgeSymRaw = String(formData.get("hedge_scalping_symbol") ?? "").trim().toUpperCase();
+  let runSettingsPatch: Record<string, unknown> | null | undefined;
+  if (isHedgeScalpingStrategySlug(row.strategySlug)) {
+    const parsed = hedgeScalpingConfigSchema.safeParse(row.strategySettingsJson);
+    const allowed = parsed.success
+      ? parseAllowedSymbolsList(parsed.data.general.allowedSymbols)
+      : [];
+    if (allowed.length === 0) {
+      return {
+        ok: false,
+        message: "This strategy has no allowed trading symbols configured.",
+        fieldErrors: {
+          hedge_scalping_symbol: "Strategy configuration is incomplete — contact support.",
+        },
+      };
+    }
+    if (!hedgeSymRaw || !allowed.includes(hedgeSymRaw)) {
+      return {
+        ok: false,
+        message: "Pick a valid symbol for this strategy.",
+        fieldErrors: { hedge_scalping_symbol: "Choose one of the allowed symbols." },
+      };
+    }
+    runSettingsPatch = withHedgeScalpingRunSymbol(row.runSettingsJson, hedgeSymRaw);
+  }
+
   let newCapitalStr = toNumericString(cap);
   let newLeverageStr: string | null;
 
@@ -237,6 +271,7 @@ export async function updateUserStrategySettingsAction(
         leverage: newLeverageStr,
         primaryExchangeConnectionId: primaryNext,
         secondaryExchangeConnectionId: secondaryNext,
+        ...(runSettingsPatch != null ? { runSettingsJson: runSettingsPatch } : {}),
         updatedAt: now,
       })
       .where(eq(userStrategyRuns.id, row.runId));
@@ -259,6 +294,7 @@ export async function updateUserStrategySettingsAction(
           leverage: newLeverageStr,
           primary_exchange_connection_id: primaryNext,
           secondary_exchange_connection_id: secondaryNext,
+          ...(hedgeSymRaw ? { hedge_scalping_symbol: hedgeSymRaw } : {}),
         },
         strategy_slug: row.strategySlug,
         subscription_id: row.subscriptionId,
