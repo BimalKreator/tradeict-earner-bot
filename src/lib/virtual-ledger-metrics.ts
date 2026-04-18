@@ -24,25 +24,13 @@ export function isFilledOrder(status: string): boolean {
   return status === "filled" || status === "partial_fill";
 }
 
-/**
- * Delta-2 (hedge) orders: live/initial use `..._d2_...` in the correlation id.
- * Virtual follow-up clips from `trend-arb-poll` use `ta_trendarb_<strategyId>_v_<runId>_s<step>_<nonce>`
- * (no `_d2_` substring) — those must still classify as secondary for ledger/dashboard parity.
- */
-export function isTrendArbSecondaryCorrelationId(
-  correlationId: string | null | undefined,
-): boolean {
-  const cid = (correlationId ?? "").toLowerCase();
-  if (cid.includes("delta2")) return true;
-  if (cid.includes("_d2_")) return true;
-  if (cid.includes("_d2l")) return true;
-  if (cid.includes("_d2x")) return true;
-  if (cid.startsWith("ta_trendarb_") && /_v_.+?_s\d+_/i.test(cid)) return true;
-  return false;
-}
-
-export function classifyTrendArbAccount(order: { correlationId: string | null }): AccountKey {
-  return isTrendArbSecondaryCorrelationId(order.correlationId) ? "secondary" : "primary";
+/** Hedge-scalping virtual D2 clips use `hs_d2_*` correlations; D1 uses `hs_d1_*`. */
+export function classifyHedgeScalpingVirtualDualAccount(order: {
+  correlationId: string | null;
+}): AccountKey {
+  const cid = (order.correlationId ?? "").toLowerCase();
+  if (cid.startsWith("hs_d2_")) return "secondary";
+  return "primary";
 }
 
 export type LedgerDerivedMetrics = {
@@ -120,8 +108,4 @@ export function deriveLedgerMetrics(
     openSymbol,
     avgEntryPrice: avg,
   };
-}
-
-export function isTrendArbSlug(slug: string): boolean {
-  return slug.trim().toLowerCase().includes("trend-arb");
 }

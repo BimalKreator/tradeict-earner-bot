@@ -17,7 +17,7 @@ module.exports = {
     {
       name: "tradeict-worker",
       script: "npm",
-      args: "run trading:trend-arb-worker",
+      args: "run trading:hedge-scalping-worker",
       cwd: __dirname,
       instances: 1,
       exec_mode: "fork",

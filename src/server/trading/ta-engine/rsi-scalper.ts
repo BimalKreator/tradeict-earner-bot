@@ -51,8 +51,8 @@ export function resolutionToSeconds(resolution: string): number {
   return n * mult;
 }
 
-/** Minimum closed bars we aim for after `filterClosedCandles` (worker + pulse). */
-export const TREND_ARB_TARGET_CLOSED_BARS = 300;
+/** Minimum closed bars we aim for after `filterClosedCandles` (chart workers). */
+export const TA_CHART_TARGET_CLOSED_BARS = 300;
 
 /**
  * Delta product symbols are usually **no underscore** (e.g. `BTCUSDT`). `BTC_USDT` often returns an empty
@@ -74,9 +74,9 @@ export function normalizeDeltaCandlesSymbol(baseUrl: string, rawSymbol: string):
  * Seconds of history to request so we retain ≥ `minClosedBars` fully closed candles (current bar excluded)
  * plus slack for ATR(100) and rounding.
  */
-export function computeTrendArbLookbackSeconds(
+export function computeChartLookbackSeconds(
   resolutionSec: number,
-  minClosedBars = TREND_ARB_TARGET_CLOSED_BARS,
+  minClosedBars = TA_CHART_TARGET_CLOSED_BARS,
 ): number {
   const slackBars = 50;
   return Math.ceil((minClosedBars + slackBars) * resolutionSec);

@@ -2,144 +2,12 @@
 
 import { useEffect, useState } from "react";
 
+import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
 import { formatUsdAmount } from "@/lib/format-inr";
-import {
-  TREND_ARB_D1_TP_PCT,
-  TREND_ARB_HEDGE_STEP_PCT,
-} from "@/server/trading/ta-engine/trend-arb-constants";
 import type {
   AdminLivePositionRow,
   AdminStrategyStatusRow,
 } from "@/server/queries/active-positions-dashboard";
-
-function livePnlPct(row: Pick<AdminLivePositionRow, "avgEntryPrice" | "markPrice" | "side">): number | null {
-  if (!(row.avgEntryPrice != null && row.avgEntryPrice > 0 && row.markPrice != null && row.markPrice > 0)) {
-    return null;
-  }
-  const raw = ((row.markPrice - row.avgEntryPrice) / row.avgEntryPrice) * 100;
-  return row.side === "long" ? raw : -raw;
-}
-
-function StrategyPulseCell({
-  pulse,
-  row,
-}: {
-  pulse: NonNullable<AdminLivePositionRow["strategyPulse"]>;
-  row?: AdminLivePositionRow;
-}) {
-  const isActiveD1 = row?.account === "D1" && pulse.d1Status === "Active";
-  if (isActiveD1 && row) {
-    const pnlPct = livePnlPct(row);
-    const stepPct = TREND_ARB_HEDGE_STEP_PCT * 100;
-    const stepNow = pnlPct != null && Number.isFinite(pnlPct) ? Math.max(0, pnlPct) : 0;
-    const nextStepMultiple = Math.floor(stepNow / stepPct) + 1;
-    const entry = row.avgEntryPrice ?? 0;
-    const mark = row.markPrice ?? 0;
-    const targetTp =
-      row.side === "long"
-        ? entry * (1 + TREND_ARB_D1_TP_PCT)
-        : entry * (1 - TREND_ARB_D1_TP_PCT);
-    const nextHedgeTarget =
-      row.side === "long"
-        ? entry * (1 + (TREND_ARB_HEDGE_STEP_PCT * nextStepMultiple))
-        : entry * (1 - (TREND_ARB_HEDGE_STEP_PCT * nextStepMultiple));
-    const remainingMovePct =
-      mark > 0 ? Math.abs(((nextHedgeTarget - mark) / mark) * 100) : NaN;
-    const pnlStr = pnlPct == null ? "N/A" : `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
-    const remainingStr = Number.isFinite(remainingMovePct)
-      ? `${remainingMovePct.toFixed(2)}%`
-      : "N/A";
-
-    return (
-      <ul className="list-none space-y-2 text-[10px] leading-snug">
-        <li className="text-emerald-400/95">
-          <span className="mr-1">✅</span>
-          D1 State:{" "}
-          <span className="font-semibold text-slate-100">
-            [Active {row.side === "long" ? "Long" : "Short"}]
-          </span>
-        </li>
-        <li className={pnlPct != null && pnlPct >= 0 ? "text-emerald-400/95" : "text-orange-300/95"}>
-          <span className="mr-1">{pnlPct != null && pnlPct >= 0 ? "✅" : "⏳"}</span>
-          Current PnL: <span className="font-semibold tabular-nums text-slate-100">[{pnlStr}]</span>
-        </li>
-        <li className="text-sky-300/95">
-          <span className="mr-1">⏳</span>
-          Next D2 Hedge:{" "}
-          <span className="font-semibold tabular-nums text-slate-100">
-            [{nextHedgeTarget > 0 ? nextHedgeTarget.toFixed(2) : "N/A"}]{" "}
-            <span className="text-slate-300">(Remaining: {remainingStr})</span>
-          </span>
-        </li>
-        <li className="text-emerald-400/95">
-          <span className="mr-1">✅</span>
-          Target:{" "}
-          <span className="font-semibold tabular-nums text-slate-100">
-            [{targetTp > 0 ? targetTp.toFixed(2) : "N/A"}]
-          </span>
-        </li>
-      </ul>
-    );
-  }
-
-  const h = pulse.history;
-  const historyReady = pulse.barsReady === "OK" && h.closedBars >= h.targetBars;
-  const trendLabel = pulse.trendDirection;
-  const priceLabel = pulse.priceVsHt;
-  const trendPriceAligned =
-    (trendLabel === "Long" && priceLabel === "Above") ||
-    (trendLabel === "Short" && priceLabel === "Below");
-  const priceColorClass = trendPriceAligned ? "text-emerald-400/95" : "text-orange-300/95";
-
-  const historyLine = historyReady ? (
-    <span className="text-emerald-400/95">
-      <span className="mr-1">✅</span>
-      Bars:{" "}
-      <span className="font-semibold tabular-nums">
-        [{h.targetBars}/{h.targetBars} OK]
-      </span>
-      <span className="text-emerald-500/80"> (loaded {h.closedBars} closed)</span>
-      <span className="ml-1 font-mono text-[9px] text-emerald-600/90">· raw {h.rawBars}</span>
-      <span className="ml-1 font-mono text-[9px] text-emerald-700/80">{h.symbolFetched}</span>
-    </span>
-  ) : (
-    <span className="text-amber-300/95">
-      <span className="mr-1">⏳</span>
-      Bars:{" "}
-      <span className="font-semibold tabular-nums text-amber-100">
-        [{h.closedBars}/{h.targetBars}]
-      </span>{" "}
-      — need closed history (raw {h.rawBars})
-      <br />
-      <span className="font-mono text-[9px] text-amber-200/80">
-        {h.symbolRequested} → {h.symbolFetched}
-      </span>
-    </span>
-  );
-
-  return (
-    <ul className="list-none space-y-2 text-[10px] leading-snug">
-      <li>{historyLine}</li>
-      <li className="text-slate-200">
-        <span className="mr-1">✅</span>
-        Trend:{" "}
-        <span className="font-semibold tabular-nums text-slate-100">[{trendLabel}]</span>
-      </li>
-      <li className={priceColorClass}>
-        <span className="mr-1">{trendPriceAligned ? "✅" : "⏳"}</span>
-        Price vs HT:{" "}
-        <span className="font-semibold tabular-nums text-slate-100">[{priceLabel}]</span>
-      </li>
-      <li className={pulse.d1Status === "Active" ? "text-emerald-400/95" : "text-amber-300/95"}>
-        <span className="mr-1">{pulse.d1Status === "Active" ? "✅" : "⏳"}</span>
-        D1 Entry:{" "}
-        <span className="font-semibold text-slate-100">
-          [{pulse.d1Status === "Active" ? "Active" : "Crossover Wait"}]
-        </span>
-      </li>
-    </ul>
-  );
-}
 
 function signedUsdText(v: number): string {
   const absTxt = formatUsdAmount(String(Math.abs(v)));
@@ -178,6 +46,13 @@ function accountLabel(row: AdminLivePositionRow): string {
     return `D2 (Active Clips: ${row.activeClipCount})`;
   }
   return "D2";
+}
+
+function strategyContextLabel(row: AdminLivePositionRow): string {
+  if (isHedgeScalpingStrategySlug(row.strategySlug)) {
+    return "Hedge scalping · HalfTrend + bar-driven virtual poller";
+  }
+  return "—";
 }
 
 async function closeRunAndRefresh(params: {
@@ -271,7 +146,7 @@ export function AdminLiveTradeMonitor({
                 <th className="px-3 py-2">Strategy</th>
                 <th className="px-3 py-2">Symbol</th>
                 <th className="px-3 py-2">Account</th>
-                <th className="px-3 py-2 min-w-[140px]">Strategy pulse</th>
+                <th className="px-3 py-2 min-w-[140px]">Strategy context</th>
                 <th className="px-3 py-2">Mode</th>
                 <th className="px-3 py-2">Trader</th>
                 <th className="px-3 py-2">Side</th>
@@ -294,12 +169,8 @@ export function AdminLiveTradeMonitor({
                   <td className="px-3 py-2 text-sky-200/90">
                     {accountLabel(row)}
                   </td>
-                  <td className="px-3 py-2 align-top text-slate-400">
-                    {row.strategyPulse ? (
-                      <StrategyPulseCell pulse={row.strategyPulse} row={row} />
-                    ) : (
-                      "—"
-                    )}
+                  <td className="px-3 py-2 align-top text-slate-400 text-[10px] leading-snug">
+                    {strategyContextLabel(row)}
                   </td>
                   <td className="px-3 py-2 capitalize text-slate-400">{row.mode}</td>
                   <td className="px-3 py-2 text-slate-300">{row.userLabel ?? "—"}</td>
@@ -370,7 +241,6 @@ export function AdminLiveTradeMonitor({
                   <th className="px-3 py-2">Strategy</th>
                   <th className="px-3 py-2">Mode</th>
                   <th className="px-3 py-2 min-w-[220px]">Traders</th>
-                  <th className="px-3 py-2 min-w-[180px]">Strategy Pulse</th>
                 </tr>
               </thead>
               <tbody>
@@ -382,9 +252,6 @@ export function AdminLiveTradeMonitor({
                     <td className="px-3 py-2 capitalize text-slate-400">{row.mode}</td>
                     <td className="px-3 py-2 text-[11px] leading-snug text-slate-400">
                       {row.participatingUsers || "—"}
-                    </td>
-                    <td className="px-3 py-2 align-top text-slate-400">
-                      <StrategyPulseCell pulse={row.strategyPulse} />
                     </td>
                   </tr>
                 ))}

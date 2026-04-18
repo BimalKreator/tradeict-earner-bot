@@ -82,15 +82,18 @@ export function computeHedgeScalpingD1Qty(params: {
   markPrice: number;
   baseQtyPct: number;
 }): number {
-  const { balanceUsd, markPrice, baseQtyPct } = params;
+  const { markPrice, baseQtyPct } = params;
+  const balanceUsd = Math.max(0, params.balanceUsd);
   if (!(markPrice > 0) || !(balanceUsd > 0)) return 0;
-  const positionUsd = balanceUsd * (baseQtyPct / 100);
+  const pct = Math.min(100, Math.max(0, baseQtyPct));
+  const positionUsd = Math.min(balanceUsd * (pct / 100), balanceUsd);
   return positionUsd / markPrice;
 }
 
 export function computeHedgeScalpingD2StepQty(d1Qty: number, stepQtyPct: number): number {
   if (!(d1Qty > 0)) return 0;
-  return d1Qty * (stepQtyPct / 100);
+  const pct = Math.min(100, Math.max(0, stepQtyPct));
+  return d1Qty * (pct / 100);
 }
 
 export function hsCorrelationD1Entry(hedgeRunId: string): string {

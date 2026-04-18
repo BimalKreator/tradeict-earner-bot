@@ -1,8 +1,8 @@
 import { formatUsdAmount } from "@/lib/format-inr";
+import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
 import {
-  classifyTrendArbAccount,
+  classifyHedgeScalpingVirtualDualAccount,
   deriveLedgerMetrics,
-  isTrendArbSlug,
   num,
 } from "@/lib/virtual-ledger-metrics";
 import type {
@@ -108,9 +108,13 @@ export function VirtualRunSection({
   orders: VirtualOrderLedgerRow[];
 }) {
   const equity = num(run.virtualAvailableCashUsd) + num(run.virtualUsedMarginUsd);
-  const isMultiAccountTrendArb = isTrendArbSlug(run.strategySlug);
-  const primaryOrders = orders.filter((o) => classifyTrendArbAccount(o) === "primary");
-  const secondaryOrders = orders.filter((o) => classifyTrendArbAccount(o) === "secondary");
+  const isMultiAccountHedgeScalping = isHedgeScalpingStrategySlug(run.strategySlug);
+  const primaryOrders = orders.filter(
+    (o) => classifyHedgeScalpingVirtualDualAccount(o) === "primary",
+  );
+  const secondaryOrders = orders.filter(
+    (o) => classifyHedgeScalpingVirtualDualAccount(o) === "secondary",
+  );
   const splitCapital = num(run.virtualCapitalUsd) / 2;
   const primaryMetrics = deriveAccountMetrics(primaryOrders, splitCapital);
   const secondaryMetrics = deriveAccountMetrics(secondaryOrders, splitCapital);
@@ -314,7 +318,7 @@ export function VirtualRunSection({
       </div>
 
       <div className="mt-6">
-        {isMultiAccountTrendArb ? (
+        {isMultiAccountHedgeScalping ? (
           <div className="space-y-4">
             <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-4">
               <p className="text-[10px] uppercase tracking-wide text-sky-200/80">

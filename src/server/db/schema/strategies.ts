@@ -9,14 +9,13 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { HedgeScalpingConfig } from "@/lib/hedge-scalping-config";
-import type { TrendArbStrategyConfig } from "@/lib/trend-arb-strategy-config";
 import {
   strategyRiskLabelEnum,
   strategyStatusEnum,
   strategyVisibilityEnum,
 } from "./enums";
 
-export type { HedgeScalpingConfig, TrendArbStrategyConfig };
+export type { HedgeScalpingConfig };
 
 export const strategies = pgTable(
   "strategies",
@@ -56,17 +55,11 @@ export const strategies = pgTable(
      * Admin-only strategy execution config (engine-specific).
      * User-facing catalog/subscription UI must never render these internals.
      *
-     * Trend-arbitrage (`TrendArbStrategyConfig`) includes e.g. `delta1.d1BreakevenTriggerPct`
-     * for optional soft breakeven (trail stop to entry after peak URP reaches the threshold).
-     *
-     * Hedge Scalping dual-account (`HedgeScalpingConfig`) uses `general` (allowedSymbols list,
-     * timeframe, HalfTrend amplitude), `delta1`, and `delta2` — see `hedgeScalpingConfigSchema`.
+     * Hedge Scalping (`HedgeScalpingConfig`) uses `general` (allowedSymbols list, timeframe,
+     * HalfTrend amplitude), `delta1`, and `delta2` — see `hedgeScalpingConfigSchema`.
      */
     settingsJson: jsonb("settings_json").$type<
-      | Record<string, unknown>
-      | TrendArbStrategyConfig
-      | HedgeScalpingConfig
-      | null
+      Record<string, unknown> | HedgeScalpingConfig | null
     >(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

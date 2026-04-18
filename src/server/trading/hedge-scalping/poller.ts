@@ -5,6 +5,7 @@ import {
   parseAllowedSymbolsList,
   type HedgeScalpingConfig,
 } from "@/lib/hedge-scalping-config";
+import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
 import { extractHedgeScalpingSymbolFromRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
 import { db } from "@/server/db";
 import {
@@ -48,6 +49,18 @@ import {
 } from "./virtual-integration";
 
 const LOG = "[HS-POLLER]";
+
+/** Mark for the user’s venue symbol; avoids sizing with the worker’s candle mark when symbols differ. */
+async function hedgeScalpingMarkUsdOrFallback(
+  symbol: string | null | undefined,
+  workerMark: number,
+): Promise<number> {
+  const sym = symbol?.trim();
+  if (!sym) return workerMark;
+  const px = await fetchDeltaIndiaTickerMarkPrice({ symbol: sym });
+  if (px != null && Number.isFinite(px) && px > 0) return px;
+  return workerMark;
+}
 
 function num(raw: string | number | null | undefined): number {
   const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
@@ -377,7 +390,10 @@ async function processOneActiveRun(params: {
     return;
   }
 
-  const mark = currentMarkPrice;
+  const resolvedSymbol = await db!.transaction(async (tx) =>
+    resolveHedgeScalpingTradingSymbol(tx, run.userId, run.strategyId, cfg),
+  );
+  const mark = await hedgeScalpingMarkUsdOrFallback(resolvedSymbol, currentMarkPrice);
   const entry = num(run.d1EntryPrice);
   const prevMax = num(run.maxFavorablePrice);
   const merged = mergeMaxFavorable(run.d1Side, prevMax, mark);
@@ -571,8 +587,6 @@ export async function pollHedgeScalpingVirtualTrades(
       const d1Side = sig;
       const d2Side = hedgeScalpingD2Side(d1Side);
       const now = new Date();
-      const entryStr = fmt(currentMarkPrice);
-      const maxFavStr = entryStr;
 
       try {
         await db.transaction(async (tx) => {
@@ -593,18 +607,21 @@ export async function pollHedgeScalpingVirtualTrades(
             );
             return;
           }
+          const markUsd = await hedgeScalpingMarkUsdOrFallback(symbol, currentMarkPrice);
+          const entryStr = fmt(markUsd);
+          const maxFavStr = entryStr;
           const paper = await loadVirtualPaperRunForSizing(tx, paperRunId);
           if (!paper) return;
           const balanceUsd = hedgeSizingBalanceUsd(paper);
           const d1QtyNum = computeHedgeScalpingD1Qty({
             balanceUsd,
-            markPrice: currentMarkPrice,
+            markPrice: markUsd,
             baseQtyPct: cfg.delta1.baseQtyPct,
           });
           const d2StepQty = computeHedgeScalpingD2StepQty(d1QtyNum, cfg.delta2.stepQtyPct);
           if (!(d1QtyNum > 0) || !(d2StepQty > 0)) {
             console.warn(
-              `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} mark=${currentMarkPrice}`,
+              `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} markUsd=${markUsd} workerMark=${currentMarkPrice}`,
             );
             return;
           }
@@ -647,7 +664,7 @@ export async function pollHedgeScalpingVirtualTrades(
             symbol,
             side: hedgeOpenSide(d1Side),
             quantity: d1QtyNum,
-            fillPrice: currentMarkPrice,
+            fillPrice: markUsd,
             correlationId: hsCorrelationD1Entry(hedgeRunId),
             signalAction: "entry",
             realizedPnlUsd: null,
@@ -660,7 +677,7 @@ export async function pollHedgeScalpingVirtualTrades(
             symbol,
             side: hedgeOpenSide(d2Side),
             quantity: d2StepQty,
-            fillPrice: currentMarkPrice,
+            fillPrice: markUsd,
             correlationId: hsCorrelationD2Entry(1, clipId),
             signalAction: "entry",
             realizedPnlUsd: null,

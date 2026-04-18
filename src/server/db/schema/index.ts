@@ -19,5 +19,4 @@ export * from "./compliance";
 export * from "./operations";
 export * from "./settings";
 export * from "./rateLimit";
-export * from "./trend-arb";
 export * from "./hedge-scalping";

@@ -3,15 +3,13 @@ import { cookies } from "next/headers";
 
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { verifySessionToken } from "@/lib/session";
-import {
-  classifyTrendArbAccount,
-  deriveLedgerMetrics,
-  type LedgerOrderRow,
-} from "@/lib/virtual-ledger-metrics";
+import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
+import { deriveLedgerMetrics, type LedgerOrderRow } from "@/lib/virtual-ledger-metrics";
 import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
 import { db } from "@/server/db";
 import {
   botPositions,
+  strategies,
   userStrategyRuns,
   userStrategySubscriptions,
   virtualBotOrders,
@@ -38,10 +36,12 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
       id: virtualStrategyRuns.id,
       userId: virtualStrategyRuns.userId,
       strategyId: virtualStrategyRuns.strategyId,
+      strategySlug: strategies.slug,
       openNetQty: virtualStrategyRuns.openNetQty,
       openSymbol: virtualStrategyRuns.openSymbol,
     })
     .from(virtualStrategyRuns)
+    .innerJoin(strategies, eq(virtualStrategyRuns.strategyId, strategies.id))
     .where(eq(virtualStrategyRuns.id, runId))
     .limit(1);
   if (!run) return { ok: false as const, error: "virtual_run_not_found" };
@@ -72,8 +72,13 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
     correlationId: row.correlationId,
     createdAt: row.createdAt,
   }));
-  const d1Orders = ledger.filter((order) => classifyTrendArbAccount(order) === "primary");
-  const d2Orders = ledger.filter((order) => classifyTrendArbAccount(order) === "secondary");
+  const slug = run.strategySlug ?? "";
+  const d1Orders = isHedgeScalpingStrategySlug(slug)
+    ? ledger.filter((o) => (o.correlationId ?? "").toLowerCase().startsWith("hs_d1_"))
+    : ledger;
+  const d2Orders = isHedgeScalpingStrategySlug(slug)
+    ? ledger.filter((o) => (o.correlationId ?? "").toLowerCase().startsWith("hs_d2_"))
+    : [];
   const d1State = deriveLedgerMetrics(d1Orders, null);
   const d2State = deriveLedgerMetrics(d2Orders, null);
   const legClosures = [

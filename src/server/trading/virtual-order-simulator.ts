@@ -1,7 +1,12 @@
-import { and, desc, eq, ilike, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 
+import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
 import { db } from "@/server/db";
-import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema";
+import {
+  strategies,
+  virtualBotOrders,
+  virtualStrategyRuns,
+} from "@/server/db/schema";
 import type { TradingExecutionJobPayload } from "@/server/db/schema";
 
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
@@ -80,18 +85,11 @@ async function resolveFillPriceUsd(
   return null;
 }
 
-/** Candle key shared by `..._d1_<key>_...` and `..._d2_<key>_s0` initial hedge correlations. */
-function trendArbInitialD2BundleCandleKey(correlationId: string | null | undefined): string | null {
-  if (!correlationId) return null;
-  const m = /_d2_(\d+)_s0(?:_|$)/i.exec(correlationId);
-  return m?.[1] ?? null;
-}
-
 /**
- * When the worker simulates initial D2 after D1, pin fill to D1's fill for the same bundle
- * so D2 step-1 entry does not drift to ticker/candle fallback if D2 payload lacks mark_price.
+ * When hedge-scalping simulates initial D2 (step 0) after D1, pin fill to the latest D1 entry
+ * fill for the same virtual run so the hedge leg does not drift vs ticker/candle fallback.
  */
-async function alignTrendArbInitialD2FillToPrimaryBundle(params: {
+async function alignHedgeScalpingInitialD2FillToD1(params: {
   payload: TradingExecutionJobPayload;
   virtualRunId: string;
   strategyId: string;
@@ -100,10 +98,8 @@ async function alignTrendArbInitialD2FillToPrimaryBundle(params: {
   const { payload: p, virtualRunId, strategyId, resolvedPrice } = params;
   if (!db) return resolvedPrice;
 
-  const bundleKey = trendArbInitialD2BundleCandleKey(p.correlationId);
-  if (bundleKey == null) return resolvedPrice;
-
-  const pattern = `%_d1_${bundleKey}_%`;
+  const cid = (p.correlationId ?? "").toLowerCase();
+  if (!cid.startsWith("hs_d2_step0_")) return resolvedPrice;
 
   const [primaryRow] = await db
     .select({ fillPrice: virtualBotOrders.fillPrice })
@@ -112,7 +108,8 @@ async function alignTrendArbInitialD2FillToPrimaryBundle(params: {
       and(
         eq(virtualBotOrders.virtualRunId, virtualRunId),
         eq(virtualBotOrders.strategyId, strategyId),
-        ilike(virtualBotOrders.correlationId, pattern),
+        sql`LOWER(${virtualBotOrders.correlationId}) LIKE 'hs_d1_%'`,
+        sql`LOWER(${virtualBotOrders.correlationId}) NOT LIKE 'hs_d1_exit%'`,
         inArray(virtualBotOrders.status, ["filled", "partial_fill"]),
       ),
     )
@@ -125,7 +122,7 @@ async function alignTrendArbInitialD2FillToPrimaryBundle(params: {
   const driftPct =
     resolvedPrice > 0 ? Math.abs(d1Px - resolvedPrice) / resolvedPrice : 0;
   if (driftPct > 1e-4) {
-    tradingLog("info", "virtual_trendarb_d2_s0_fill_aligned_to_d1", {
+    tradingLog("info", "virtual_hs_d2_step0_fill_aligned_to_d1", {
       virtualRunId,
       correlationId: p.correlationId,
       resolvedPrice,
@@ -160,9 +157,12 @@ function applyVirtualFill(params: {
   price: number;
   symbol: string;
   openSymbol: string | null;
+  /** Hedge-scalping D2 entry: allow fill when wallet cash is already tied up by D1 (dual-account hedge). */
+  bypassCashMarginSufficiencyCheck?: boolean;
 }): { ok: true; out: SimResult } | { ok: false; error: string } {
   let { Q, avg, usedMargin, cash, realized, lev } = params;
   const { signedDelta, price, symbol, openSymbol } = params;
+  const bypassMarginCheck = params.bypassCashMarginSufficiencyCheck === true;
 
   if (Math.abs(signedDelta) < EPS) {
     return { ok: false, error: "virtual_zero_quantity" };
@@ -187,7 +187,7 @@ function applyVirtualFill(params: {
   while (Math.abs(rem) > EPS) {
     if (Math.abs(Q) < EPS) {
       const im = (Math.abs(rem) * price) / lev;
-      if (im > cash + 1e-6) {
+      if (!bypassMarginCheck && im > cash + 1e-6) {
         return {
           ok: false,
           error: `virtual_insufficient_margin need=${im.toFixed(2)} have=${cash.toFixed(2)}`,
@@ -212,7 +212,7 @@ function applyVirtualFill(params: {
         (oldAbs * (avg ?? price) + addAbs * price) / newAbs;
       const newUsed = (newAbs * newAvg) / lev;
       const deltaIm = newUsed - usedMargin;
-      if (deltaIm > cash + 1e-6) {
+      if (!bypassMarginCheck && deltaIm > cash + 1e-6) {
         return {
           ok: false,
           error: `virtual_insufficient_margin_add need=${deltaIm.toFixed(2)} have=${cash.toFixed(2)}`,
@@ -295,12 +295,22 @@ export async function simulateVirtualOrder(params: {
     return { ok: false, error: "virtual_mark_price_unavailable" };
   }
 
-  price = await alignTrendArbInitialD2FillToPrimaryBundle({
+  price = await alignHedgeScalpingInitialD2FillToD1({
     payload: p,
     virtualRunId: row.virtualRunId,
     strategyId: row.strategyId,
     resolvedPrice: price,
   });
+
+  let hedgeScalpingStrategy = false;
+  if (db) {
+    const [sr] = await db
+      .select({ slug: strategies.slug })
+      .from(strategies)
+      .where(eq(strategies.id, row.strategyId))
+      .limit(1);
+    hedgeScalpingStrategy = isHedgeScalpingStrategySlug(sr?.slug ?? "");
+  }
 
   const now = new Date();
   const internalClientOrderId = generateInternalClientOrderId();
@@ -356,6 +366,14 @@ export async function simulateVirtualOrder(params: {
               : null)
           : null;
 
+      const signalAction = p.signalAction ?? "entry";
+      const cid = (p.correlationId ?? "").toLowerCase();
+      const bypassHsD2EntryMargin =
+        hedgeScalpingStrategy &&
+        signalAction === "entry" &&
+        cid.startsWith("hs_d2_") &&
+        !cid.startsWith("hs_d2_exit_");
+
       const sim = applyVirtualFill({
         Q: Number.isFinite(Q) ? Q : 0,
         avg: avgForSim,
@@ -367,6 +385,7 @@ export async function simulateVirtualOrder(params: {
         price,
         symbol: p.symbol,
         openSymbol: run.openSymbol,
+        bypassCashMarginSufficiencyCheck: bypassHsD2EntryMargin,
       });
 
       if (!sim.ok) {

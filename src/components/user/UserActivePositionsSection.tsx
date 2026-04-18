@@ -35,22 +35,22 @@ function formatExitPx(v: number | null | undefined): string {
 
 function legLabel(
   leg: UserActivePositionGroup["legs"][number],
-  g: Pick<UserActivePositionGroup, "isTrendArb" | "isHedgeScalping">,
+  g: Pick<UserActivePositionGroup, "isHedgeScalping">,
 ): string {
   if (g.isHedgeScalping) {
     if (leg.account === "D1") return "Anchor (D1)";
     if (leg.d2LadderStep != null) return `Scalp (Step ${leg.d2LadderStep})`;
     return "Scalp (D2)";
   }
-  if (leg.account === "D1") return "Delta 1";
+  if (leg.account === "D1") return "D1";
   if (leg.d2LadderStep != null) {
     const n = leg.activeClipCount != null && leg.activeClipCount > 1 ? ` · ${leg.activeClipCount} clips` : "";
-    return `Delta 2 · Step ${leg.d2LadderStep}${n}`;
+    return `D2 · Step ${leg.d2LadderStep}${n}`;
   }
   if (leg.activeClipCount != null) {
-    return `Delta 2 (Active Clips: ${leg.activeClipCount})`;
+    return `D2 (Active Clips: ${leg.activeClipCount})`;
   }
-  return "Delta 2";
+  return "D2";
 }
 
 function closedLegLabel(
@@ -62,7 +62,7 @@ function closedLegLabel(
     if (leg.d2LadderStep != null) return `Scalp (Step ${leg.d2LadderStep})`;
     return "Scalp (D2)";
   }
-  return leg.account === "D1" ? "Delta 1" : "Delta 2";
+  return leg.account === "D1" ? "D1" : "D2";
 }
 
 export function UserActivePositionsSection({
@@ -167,11 +167,9 @@ export function UserActivePositionsSection({
                   <div>
                     <h3 className="text-lg font-semibold text-white">{g.strategyName}</h3>
                     <p className="text-xs text-slate-500">
-                      {g.isTrendArb
-                        ? "Trend arb · Delta 1 (primary) & Delta 2 (hedge)"
-                        : g.isHedgeScalping
-                          ? "Hedge scalping · Anchor (D1) & scalp clips (D2)"
-                          : "Single account"}{" "}
+                      {g.isHedgeScalping
+                        ? "Hedge scalping · Anchor (D1) & scalp clips (D2)"
+                        : "Open legs"}{" "}
                       · Run{" "}
                       <span className="font-mono text-[11px] text-slate-400">{g.runId.slice(0, 8)}…</span>
                     </p>

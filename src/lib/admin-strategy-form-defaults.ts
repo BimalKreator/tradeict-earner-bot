@@ -6,10 +6,6 @@ import {
   isHedgeScalpingStrategySlug,
   type HedgeScalpingTimeframe,
 } from "@/lib/hedge-scalping-config";
-import {
-  isTrendArbitrageStrategySlug,
-  trendArbStrategyConfigSchema,
-} from "@/lib/trend-arb-strategy-config";
 
 export type AdminStrategyFormDefaults = {
   slug: string;
@@ -33,21 +29,6 @@ export type AdminStrategyFormDefaults = {
     delta1BreakevenTriggerPct: string;
     delta2StepMovePct: string;
     delta2StepQtyPct: string;
-    delta2TargetProfitPct: string;
-    delta2StopLossPct: string;
-  } | null;
-  trendArb: {
-    symbol: string;
-    capitalAllocationPct: string;
-    indicatorAmplitude: string;
-    indicatorChannelDeviation: string;
-    indicatorTimeframe: "1m" | "15m" | "1h" | "4h" | "1d";
-    delta1EntryQtyPct: string;
-    delta1TargetProfitPct: string;
-    delta1StopLossPct: string;
-    delta1BreakevenTriggerPct: string;
-    delta2StepQtyPct: string;
-    delta2StepMovePct: string;
     delta2TargetProfitPct: string;
     delta2StopLossPct: string;
   } | null;
@@ -78,22 +59,9 @@ export function strategyDefaultsFromRow(row: {
         : "paused";
 
   const isHedgeScalping = isHedgeScalpingStrategySlug(row.slug);
-  /** Hedge scalping takes precedence if slug matches both patterns. */
-  const isTrendArb =
-    !isHedgeScalping && isTrendArbitrageStrategySlug(row.slug);
-  const trendArbParsed = isTrendArb
-    ? trendArbStrategyConfigSchema.safeParse(row.settingsJson)
-    : null;
   const hedgeParsed = isHedgeScalping
     ? hedgeScalpingConfigSchema.safeParse(row.settingsJson)
     : null;
-  const rawTrendSettings = (row.settingsJson ?? {}) as Record<string, unknown>;
-  const rawDelta1 = (rawTrendSettings.delta1 ?? {}) as Record<string, unknown>;
-  const rawDelta2 = (rawTrendSettings.delta2 ?? {}) as Record<string, unknown>;
-  const rawIndicatorSettings = (rawTrendSettings.indicatorSettings ?? {}) as Record<
-    string,
-    unknown
-  >;
 
   const rawHs = (row.settingsJson ?? {}) as Record<string, unknown>;
   const rawHsGeneral = (rawHs.general ?? {}) as Record<string, unknown>;
@@ -188,79 +156,6 @@ export function strategyDefaultsFromRow(row: {
             hedgeParsed?.success
               ? hedgeParsed.data.delta2.stopLossPct
               : ((rawHsD2.stopLossPct as number | undefined) ?? hsFallback.delta2.stopLossPct),
-          ),
-        },
-    trendArb: !isTrendArb
-      ? null
-      : {
-          symbol:
-            (trendArbParsed?.success
-              ? trendArbParsed.data.symbol
-              : (rawTrendSettings.symbol as string | undefined)) ?? "BTC_USDT",
-          capitalAllocationPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.capitalAllocationPct
-              : ((rawTrendSettings.capitalAllocationPct as number | undefined) ?? 100),
-          ),
-          indicatorAmplitude: String(
-            trendArbParsed?.success
-              ? (trendArbParsed.data.indicatorSettings.amplitude ?? 9)
-              : ((rawIndicatorSettings.amplitude as number | undefined) ?? 9),
-          ),
-          indicatorChannelDeviation: String(
-            trendArbParsed?.success
-              ? (trendArbParsed.data.indicatorSettings.channelDeviation ?? 2)
-              : ((rawIndicatorSettings.channelDeviation as number | undefined) ?? 2),
-          ),
-          indicatorTimeframe:
-            trendArbParsed?.success
-              ? trendArbParsed.data.indicatorSettings.timeframe
-              : ((rawIndicatorSettings.timeframe as
-                    | "1m"
-                    | "15m"
-                    | "1h"
-                    | "4h"
-                    | "1d"
-                    | undefined) ?? "4h"),
-          delta1EntryQtyPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta1.entryQtyPct
-              : ((rawDelta1.entryQtyPct as number | undefined) ?? 100),
-          ),
-          delta1TargetProfitPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta1.targetProfitPct
-              : ((rawDelta1.targetProfitPct as number | undefined) ?? 1),
-          ),
-          delta1StopLossPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta1.stopLossPct
-              : ((rawDelta1.stopLossPct as number | undefined) ?? 3),
-          ),
-          delta1BreakevenTriggerPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta1.d1BreakevenTriggerPct
-              : ((rawDelta1.d1BreakevenTriggerPct as number | undefined) ?? 0),
-          ),
-          delta2StepQtyPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta2.stepQtyPct
-              : ((rawDelta2.stepQtyPct as number | undefined) ?? 10),
-          ),
-          delta2StepMovePct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta2.stepMovePct
-              : ((rawDelta2.stepMovePct as number | undefined) ?? 1),
-          ),
-          delta2TargetProfitPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta2.targetProfitPct
-              : ((rawDelta2.targetProfitPct as number | undefined) ?? 1),
-          ),
-          delta2StopLossPct: String(
-            trendArbParsed?.success
-              ? trendArbParsed.data.delta2.stopLossPct
-              : ((rawDelta2.stopLossPct as number | undefined) ?? 3),
           ),
         },
   };
