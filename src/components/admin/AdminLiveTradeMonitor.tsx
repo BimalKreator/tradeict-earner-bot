@@ -146,6 +146,11 @@ function signedUsdText(v: number): string {
   return v < 0 ? `-${absTxt}` : absTxt;
 }
 
+function formatExitPx(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return v.toFixed(2);
+}
+
 function sideFromNetQty(side: "long" | "short", netQty: number): "long" | "short" {
   if (Number.isFinite(netQty) && Math.abs(netQty) > 1e-10) {
     return netQty > 0 ? "long" : "short";
@@ -260,7 +265,7 @@ export function AdminLiveTradeMonitor({
 
       {rows.length > 0 ? (
         <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
-          <table className="min-w-[1100px] w-full text-left text-xs text-slate-200">
+          <table className="min-w-[1220px] w-full text-left text-xs text-slate-200">
             <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-3 py-2">Strategy</th>
@@ -272,6 +277,8 @@ export function AdminLiveTradeMonitor({
                 <th className="px-3 py-2">Side</th>
                 <th className="px-3 py-2">Qty</th>
                 <th className="px-3 py-2">Entry</th>
+                <th className="px-3 py-2">Target</th>
+                <th className="px-3 py-2">Stop loss</th>
                 <th className="px-3 py-2">Current</th>
                 <th className="px-3 py-2">Live PnL</th>
                 <th className="px-3 py-2">Realized PnL</th>
@@ -303,6 +310,8 @@ export function AdminLiveTradeMonitor({
                   <td className="px-3 py-2 tabular-nums text-slate-300">
                     {row.displayAvgEntryPrice != null ? row.displayAvgEntryPrice.toFixed(2) : "—"}
                   </td>
+                  <td className="px-3 py-2 tabular-nums text-slate-300">{formatExitPx(row.targetPrice)}</td>
+                  <td className="px-3 py-2 tabular-nums text-slate-300">{formatExitPx(row.stopLossPrice)}</td>
                   <td className="px-3 py-2 tabular-nums text-slate-300">
                     {row.markPrice != null ? row.markPrice.toFixed(2) : "—"}
                   </td>

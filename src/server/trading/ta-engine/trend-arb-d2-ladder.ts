@@ -128,7 +128,8 @@ function readMetaSnapshot(raw: Record<string, unknown> | null | undefined): Reco
 
 export function parseD2DisplayStepFromCorrelation(correlationId: string | null | undefined): number | null {
   const cid = (correlationId ?? "").toLowerCase();
-  const mL = cid.match(/_d2l(\d+)_/);
+  // Ladder adds: `..._d2L3_` / `..._d2l3_` (underscore after step digit optional at EOS).
+  const mL = cid.match(/_d2l(\d+)(?:_|$)/);
   if (mL) {
     const n = Number(mL[1]);
     return Number.isFinite(n) && n >= 1 && n <= TREND_ARB_D2_MAX_DISPLAY_STEP ? n : null;
@@ -145,13 +146,21 @@ export function parseD2DisplayStepFromCorrelation(correlationId: string | null |
 }
 
 function displayStepFromOrder(o: D2LadderOrderRow): number | null {
+  /** Correlation ids encode the true step (`_d2L2_`, `_s0` → step 1); prefer them over snapshots. */
+  const fromCorrelation = parseD2DisplayStepFromCorrelation(o.correlationId);
+  if (fromCorrelation != null) return fromCorrelation;
+
   const snap = readMetaSnapshot(o.rawSubmitResponse);
-  const fromMeta = snap.d2_display_step;
-  if (typeof fromMeta === "number" && Number.isFinite(fromMeta)) {
-    const n = Math.round(fromMeta);
-    if (n >= 1 && n <= TREND_ARB_D2_MAX_DISPLAY_STEP) return n;
+  const raw = snap.d2_display_step ?? snap.hedge_step;
+  let n: number | null = null;
+  if (typeof raw === "number" && Number.isFinite(raw)) n = Math.round(raw);
+  else if (typeof raw === "string") {
+    const parsed = Number(String(raw).trim());
+    if (Number.isFinite(parsed)) n = Math.round(parsed);
   }
-  return parseD2DisplayStepFromCorrelation(o.correlationId);
+  if (n != null && n >= 1 && n <= TREND_ARB_D2_MAX_DISPLAY_STEP) return n;
+  if (n === 0) return 1;
+  return null;
 }
 
 function inferSignalAction(o: D2LadderOrderRow): string {

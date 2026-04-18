@@ -28,6 +28,11 @@ function qtyDisplay(netQty: number, qtyPctOfCapital: number | null): string {
   return pct ? `${netQty.toFixed(6)} (${pct})` : netQty.toFixed(6);
 }
 
+function formatExitPx(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return v.toFixed(2);
+}
+
 function legLabel(leg: UserActivePositionGroup["legs"][number]): string {
   if (leg.account === "D1") return "Delta 1";
   if (leg.d2LadderStep != null) {
@@ -195,39 +200,49 @@ export function UserActivePositionsSection({
                   <table className="min-w-full text-left text-sm text-slate-200">
                     <thead className="bg-black/50 text-[10px] uppercase tracking-wide text-slate-500">
                       <tr>
-                        <th className="px-4 py-3">Leg</th>
-                        <th className="px-4 py-3">Symbol</th>
-                        <th className="px-4 py-3">Side</th>
-                        <th className="px-4 py-3">Qty</th>
-                        <th className="px-4 py-3">Entry</th>
-                        <th className="px-4 py-3">Current price</th>
-                        <th className="px-4 py-3">Live PnL</th>
-                        <th className="px-4 py-3">Realized PnL</th>
+                        <th className="px-3 py-3 sm:px-4">Leg</th>
+                        <th className="px-3 py-3 sm:px-4">Symbol</th>
+                        <th className="px-3 py-3 sm:px-4">Side</th>
+                        <th className="px-3 py-3 sm:px-4">Qty</th>
+                        <th className="px-3 py-3 sm:px-4">Entry</th>
+                        <th className="min-w-[4.25rem] px-3 py-3 sm:min-w-0 sm:px-4">Target</th>
+                        <th className="min-w-[4.25rem] px-3 py-3 sm:min-w-0 sm:px-4">Stop loss</th>
+                        <th className="px-3 py-3 sm:px-4">Current</th>
+                        <th className="px-3 py-3 sm:px-4">Live PnL</th>
+                        <th className="px-3 py-3 sm:px-4">Realized PnL</th>
                       </tr>
                     </thead>
                     <tbody>
                       {openLegs.length > 0 ? (
                         openLegs.map((leg) => (
                           <tr key={leg.key} className="border-t border-white/[0.06] bg-black/25">
-                            <td className="px-4 py-3 font-semibold text-sky-200">{legLabel(leg)}</td>
-                            <td className="px-4 py-3 font-medium">{leg.symbol}</td>
-                            <td className="px-4 py-3 capitalize">{sideFromNetQty(leg.side, leg.netQty)}</td>
-                            <td className="px-4 py-3 tabular-nums text-slate-300">
+                            <td className="px-3 py-3 font-semibold text-sky-200 sm:px-4">{legLabel(leg)}</td>
+                            <td className="px-3 py-3 font-medium sm:px-4">{leg.symbol}</td>
+                            <td className="px-3 py-3 capitalize sm:px-4">
+                              {sideFromNetQty(leg.side, leg.netQty)}
+                            </td>
+                            <td className="px-3 py-3 tabular-nums text-slate-300 sm:px-4">
                               {qtyDisplay(leg.displayNetQty, leg.qtyPctOfCapital)}
                             </td>
-                            <td className="px-4 py-3 tabular-nums text-slate-300">
+                            <td className="px-3 py-3 tabular-nums text-slate-300 sm:px-4">
                               {leg.displayAvgEntryPrice != null ? leg.displayAvgEntryPrice.toFixed(2) : "—"}
                             </td>
-                            <td className="px-4 py-3 tabular-nums text-white">
+                            <td className="px-3 py-3 tabular-nums text-slate-200 sm:px-4">
+                              {formatExitPx(leg.targetPrice)}
+                            </td>
+                            <td className="px-3 py-3 tabular-nums text-slate-200 sm:px-4">
+                              {formatExitPx(leg.stopLossPrice)}
+                            </td>
+                            <td className="px-3 py-3 tabular-nums text-white sm:px-4">
                               {leg.markPrice != null ? leg.markPrice.toFixed(2) : "—"}
                             </td>
                             <td
-                              className={`px-4 py-3 tabular-nums text-lg font-semibold ${leg.unrealizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
+                              className={`px-3 py-3 tabular-nums text-base font-semibold sm:px-4 sm:text-lg ${leg.unrealizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
                             >
                               {signedUsdText(leg.unrealizedPnlUsd)}
                             </td>
                             <td
-                              className={`px-4 py-3 tabular-nums font-semibold ${leg.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
+                              className={`px-3 py-3 tabular-nums font-semibold sm:px-4 ${leg.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
                             >
                               {signedUsdText(leg.realizedPnlUsd)}
                             </td>
@@ -235,7 +250,7 @@ export function UserActivePositionsSection({
                         ))
                       ) : (
                         <tr className="border-t border-white/[0.06] bg-black/25">
-                          <td colSpan={8} className="px-4 py-4 text-sm text-slate-400">
+                          <td colSpan={10} className="px-4 py-4 text-sm text-slate-400">
                             No currently open legs for this run.
                           </td>
                         </tr>

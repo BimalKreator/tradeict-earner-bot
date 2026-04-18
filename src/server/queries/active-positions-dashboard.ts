@@ -60,6 +60,9 @@ export type ActivePositionLeg = {
   activeClipCount: number | null;
   /** One open D2 ladder clip row (Trend Arb); unset = combined D2 leg. */
   d2LadderStep?: number | null;
+  /** Trend-arb: approximate exit prices from strategy % (per leg / clip). */
+  targetPrice?: number | null;
+  stopLossPrice?: number | null;
 };
 
 export type UserClosedLegHistoryRow = {
@@ -301,6 +304,10 @@ function buildLegReal(params: {
 type TrendArbDisplaySettings = {
   d1QtyPctOfCapital: number;
   d2QtyPctOfCapital: number;
+  d1TargetProfitPct: number;
+  d1StopLossPct: number;
+  d2TargetProfitPct: number;
+  d2StopLossPct: number;
 };
 
 function parseTrendArbDisplaySettings(
@@ -308,10 +315,67 @@ function parseTrendArbDisplaySettings(
 ): TrendArbDisplaySettings | null {
   const parsed = trendArbStrategyConfigSchema.safeParse(settingsJson ?? null);
   if (!parsed.success) return null;
+  const d1 = parsed.data.delta1;
+  const d2 = parsed.data.delta2;
   return {
-    d1QtyPctOfCapital: parsed.data.delta1.entryQtyPct,
-    d2QtyPctOfCapital: parsed.data.delta2.stepQtyPct,
+    d1QtyPctOfCapital: d1.entryQtyPct,
+    d2QtyPctOfCapital: d2.stepQtyPct,
+    d1TargetProfitPct: Math.max(0, d1.targetProfitPct),
+    d1StopLossPct: Math.max(0, d1.stopLossPct),
+    d2TargetProfitPct: Math.max(0, d2.targetProfitPct),
+    d2StopLossPct: Math.max(0, d2.stopLossPct),
   };
+}
+
+function computeTrendArbExitPrices(params: {
+  side: "long" | "short";
+  entry: number | null;
+  targetProfitPct: number;
+  stopLossPct: number;
+}): { targetPrice: number | null; stopLossPrice: number | null } {
+  const { side, entry, targetProfitPct, stopLossPct } = params;
+  if (entry == null || !(entry > 0) || !Number.isFinite(entry)) {
+    return { targetPrice: null, stopLossPrice: null };
+  }
+  const tpFrac = Math.max(0, targetProfitPct) / 100;
+  const slFrac = Math.max(0, stopLossPct) / 100;
+  const targetPrice =
+    tpFrac > 0 ? (side === "long" ? entry * (1 + tpFrac) : entry * (1 - tpFrac)) : null;
+  const stopLossPrice =
+    slFrac > 0 ? (side === "long" ? entry * (1 - slFrac) : entry * (1 + slFrac)) : null;
+  return { targetPrice, stopLossPrice };
+}
+
+/** Adds target/stop from saved strategy % (D1 or combined D2; ladder clips set prices in builder). */
+function augmentTrendArbLegExitPrices(
+  leg: ActivePositionLeg,
+  settings: TrendArbDisplaySettings | null,
+): ActivePositionLeg {
+  if (!settings || !isTrendArbSlug(leg.strategySlug)) return leg;
+  const entry = leg.displayAvgEntryPrice ?? leg.avgEntryPrice;
+  if (leg.account === "D1") {
+    return {
+      ...leg,
+      ...computeTrendArbExitPrices({
+        side: leg.side,
+        entry,
+        targetProfitPct: settings.d1TargetProfitPct,
+        stopLossPct: settings.d1StopLossPct,
+      }),
+    };
+  }
+  if (leg.account === "D2" && leg.d2LadderStep == null) {
+    return {
+      ...leg,
+      ...computeTrendArbExitPrices({
+        side: leg.side,
+        entry,
+        targetProfitPct: settings.d2TargetProfitPct,
+        stopLossPct: settings.d2StopLossPct,
+      }),
+    };
+  }
+  return leg;
 }
 
 /** D2 entry clips (excludes flatten / per-clip TP exits); includes ladder `_d2l` and legacy `..._d2_<time>_sN_`. */
@@ -372,6 +436,7 @@ function buildTrendArbD2LadderClipLegs(params: {
   markBySymbol: Map<string, number>;
   symbolFallback: string;
   qtyPctOfCapital: number | null;
+  riskSettings: TrendArbDisplaySettings | null;
 }): ActivePositionLeg[] {
   const d2Open = deriveLedgerMetrics(extractCurrentOpenLedgerWindow(params.sLedger), null);
   if (Math.abs(d2Open.openNetQty) <= QTY_EPS) return [];
@@ -400,6 +465,7 @@ function buildTrendArbD2LadderClipLegs(params: {
     const displayQty = clip.qty;
     const netQty = d2IsShort ? -displayQty : displayQty;
     const avgEntryPrice = clip.entryPx;
+    const side = legSide(netQty);
     const unrealizedPnlUsd =
       mark != null &&
       mark > 0 &&
@@ -411,6 +477,14 @@ function buildTrendArbD2LadderClipLegs(params: {
     const baseKey = params.mode === "virtual" ? `v:${id}:D2` : `r:${id}:D2:${params.symbolFallback}`;
     const cid = clip.correlationId.trim();
     const keyTail = cid.length > 0 ? cid.slice(-24) : `noid`;
+    const { targetPrice, stopLossPrice } = params.riskSettings
+      ? computeTrendArbExitPrices({
+          side,
+          entry: avgEntryPrice,
+          targetProfitPct: params.riskSettings.d2TargetProfitPct,
+          stopLossPct: params.riskSettings.d2StopLossPct,
+        })
+      : { targetPrice: null, stopLossPrice: null };
     return {
       key: `${baseKey}:s${clip.displayStep}:${keyTail}`,
       mode: params.mode,
@@ -423,7 +497,7 @@ function buildTrendArbD2LadderClipLegs(params: {
       strategySlug: params.strategySlug,
       account: "D2",
       symbol: sym,
-      side: legSide(netQty),
+      side,
       netQty,
       avgEntryPrice,
       displayNetQty: displayQty,
@@ -435,6 +509,8 @@ function buildTrendArbD2LadderClipLegs(params: {
       /** Per-row: omit global clip count so labels stay "Step N", not "Step N · K clips" on every line. */
       activeClipCount: null,
       d2LadderStep: clip.displayStep,
+      targetPrice,
+      stopLossPrice,
     };
   });
 }
@@ -742,8 +818,9 @@ export async function getUserVirtualActivePositionGroups(
         markBySymbol,
         symbolFallback: run.openSymbol ?? pOrd[pOrd.length - 1]?.symbol ?? "—",
         qtyPctOfCapital: run.strategySettings?.d2QtyPctOfCapital ?? null,
+        riskSettings: run.strategySettings,
       });
-      if (l1) legs.push(l1);
+      if (l1) legs.push(augmentTrendArbLegExitPrices(l1, run.strategySettings));
       if (d2ClipLegs.length > 0) {
         legs.push(...d2ClipLegs);
       } else {
@@ -766,7 +843,7 @@ export async function getUserVirtualActivePositionGroups(
           qtyPctOfCapital: run.strategySettings?.d2QtyPctOfCapital ?? null,
           activeClipCount: deriveTrendArbSecondaryClipCount(sOrd, d2OpenNetQty),
         });
-        if (l2) legs.push(l2);
+        if (l2) legs.push(augmentTrendArbLegExitPrices(l2, run.strategySettings));
       }
     } else {
       const l = buildLegVirtual({
@@ -1041,8 +1118,9 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         markBySymbol,
         symbolFallback: c.openSymbol ?? pOrd[pOrd.length - 1]?.symbol ?? "—",
         qtyPctOfCapital: c.strategySettings?.d2QtyPctOfCapital ?? null,
+        riskSettings: c.strategySettings,
       });
-      if (l1) legs.push(l1);
+      if (l1) legs.push(augmentTrendArbLegExitPrices(l1, c.strategySettings));
       if (d2ClipLegs.length > 0) {
         legs.push(...d2ClipLegs);
       } else {
@@ -1066,7 +1144,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
           qtyPctOfCapital: c.strategySettings?.d2QtyPctOfCapital ?? null,
           activeClipCount: deriveTrendArbSecondaryClipCount(sOrd, d2OpenNetQty),
         });
-        if (l2) legs.push(l2);
+        if (l2) legs.push(augmentTrendArbLegExitPrices(l2, c.strategySettings));
       }
     } else {
       const l = buildLegVirtual({
@@ -1159,6 +1237,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         markBySymbol,
         symbolFallback: r.symbol,
         qtyPctOfCapital: r.strategySettings?.d2QtyPctOfCapital ?? null,
+        riskSettings: r.strategySettings,
       });
       if (d2ClipLegs.length > 0) {
         legs.push(...d2ClipLegs);
@@ -1181,7 +1260,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
           deriveLedgerMetrics(extractCurrentOpenLedgerWindow(secLedger), null).openNetQty,
         ),
       });
-      if (lrFallback) legs.push(lrFallback);
+      if (lrFallback) legs.push(augmentTrendArbLegExitPrices(lrFallback, r.strategySettings));
       continue;
     }
 
@@ -1223,7 +1302,13 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
             )
           : null,
     });
-    if (lr) legs.push(lr);
+    if (lr) {
+      legs.push(
+        isTrendArbSlug(r.strategySlug)
+          ? augmentTrendArbLegExitPrices(lr, r.strategySettings)
+          : lr,
+      );
+    }
   }
 
   const partMap = buildParticipationMapFromLegs(legs, userInfo);
