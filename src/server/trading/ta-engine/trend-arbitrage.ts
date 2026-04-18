@@ -45,6 +45,7 @@ import {
   trendArbSecondaryCorrelationId,
   type TrendArbSide,
 } from "./trend-arb-dispatch";
+import { pollHedgeScalpingVirtualTrades } from "../hedge-scalping/poller";
 import {
   hasAnyOpenTrendArbD1PositionForStrategy,
   pollTrendArbRiskAndHedges,
@@ -577,6 +578,12 @@ export async function runTrendArbitrageOnce(
     }
   } else {
     pollDetail = vMon.detail;
+  }
+
+  try {
+    await pollHedgeScalpingVirtualTrades(candles, barCloseLive);
+  } catch (error) {
+    console.error("[HS-POLLER-ERROR]", error);
   }
 
   if (primaryFlat) {

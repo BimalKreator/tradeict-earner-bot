@@ -20,16 +20,18 @@ function closedBarsForSignal(candles: Candle[]): Candle[] {
 }
 
 function logHedgeScalpingSignal(params: {
-  price: number;
+  livePrice: number;
+  closedPrice: number;
   htValue: number;
   state: HedgeScalpingState;
   signal: HedgeScalpingSignal;
 }): void {
-  const { price, htValue, state, signal } = params;
-  const px = Number.isFinite(price) ? price.toFixed(2) : String(price);
+  const { livePrice, closedPrice, htValue, state, signal } = params;
+  const live = Number.isFinite(livePrice) ? livePrice.toFixed(2) : String(livePrice);
+  const closed = Number.isFinite(closedPrice) ? closedPrice.toFixed(2) : String(closedPrice);
   const ht = Number.isFinite(htValue) ? htValue.toFixed(4) : String(htValue);
   console.log(
-    `${HS_LOG_PREFIX} price=${px} ht=${ht} prevTrend=${state.previousTrend} newTrend=${state.currentTrend} signal=${signal}`,
+    `${HS_LOG_PREFIX} livePrice=${live} closedPrice=${closed} ht=${ht} prevTrend=${state.previousTrend} newTrend=${state.currentTrend} signal=${signal}`,
   );
 }
 
@@ -49,8 +51,10 @@ export function detectHedgeScalpingSignal(
 
   if (closed.length < 2) {
     const noopState: HedgeScalpingState = { previousTrend: 0, currentTrend: 0 };
+    const livePx = candles.at(-1)?.close ?? NaN;
     logHedgeScalpingSignal({
-      price: closed.at(-1)?.close ?? NaN,
+      livePrice: livePx,
+      closedPrice: closed.at(-1)?.close ?? NaN,
       htValue: NaN,
       state: noopState,
       signal: "WAIT",
@@ -74,8 +78,8 @@ export function detectHedgeScalpingSignal(
   const previousTrend = previousHt.trend;
   const state: HedgeScalpingState = { previousTrend, currentTrend };
 
-  const lastClose = closed[closed.length - 1]!.close;
-  const price = lastClose;
+  const closedPrice = closed[closed.length - 1]!.close;
+  const livePrice = candles[candles.length - 1]!.close;
   const htValue = latestHt.htValue;
 
   let signal: HedgeScalpingSignal = "WAIT";
@@ -85,6 +89,6 @@ export function detectHedgeScalpingSignal(
     signal = "SHORT";
   }
 
-  logHedgeScalpingSignal({ price, htValue, state, signal });
+  logHedgeScalpingSignal({ livePrice, closedPrice, htValue, state, signal });
   return signal;
 }
