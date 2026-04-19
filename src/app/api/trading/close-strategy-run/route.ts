@@ -4,11 +4,17 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { verifySessionToken } from "@/lib/session";
 import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
-import { deriveLedgerMetrics, type LedgerOrderRow } from "@/lib/virtual-ledger-metrics";
+import {
+  classifyHedgeScalpingVirtualDualAccount,
+  deriveLedgerMetrics,
+  type LedgerOrderRow,
+} from "@/lib/virtual-ledger-metrics";
 import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
 import { db } from "@/server/db";
 import {
   botPositions,
+  hedgeScalpingVirtualClips,
+  hedgeScalpingVirtualRuns,
   strategies,
   userStrategyRuns,
   userStrategySubscriptions,
@@ -27,6 +33,49 @@ type CloseMode = "virtual" | "real";
 
 function oppositeSideForNet(netQty: number): "buy" | "sell" {
   return netQty > 0 ? "sell" : "buy";
+}
+
+/** Hedge D1 entry correlation only: `hs_d1_<runId>` (not `hs_d1_exit_...`). */
+function parseHsD1HedgeRunIdFromCorrelation(correlationId: string | null | undefined): string | null {
+  const m = /^hs_d1_([0-9a-f-]{36})$/i.exec(correlationId ?? "");
+  return m?.[1] ?? null;
+}
+
+function parseHedgeRunIdFromVirtualLedger(ledger: LedgerOrderRow[]): string | null {
+  for (const o of ledger) {
+    const id = parseHsD1HedgeRunIdFromCorrelation(o.correlationId);
+    if (id) return id;
+  }
+  return null;
+}
+
+async function finalizeHedgeScalpingVirtualRunOnManualClose(params: {
+  hedgeRunId: string;
+  userId: string;
+  strategyId: string;
+}): Promise<void> {
+  if (!db) return;
+  const now = new Date();
+  await db
+    .update(hedgeScalpingVirtualRuns)
+    .set({ status: "completed", closedAt: now })
+    .where(
+      and(
+        eq(hedgeScalpingVirtualRuns.runId, params.hedgeRunId),
+        eq(hedgeScalpingVirtualRuns.userId, params.userId),
+        eq(hedgeScalpingVirtualRuns.strategyId, params.strategyId),
+        eq(hedgeScalpingVirtualRuns.status, "active"),
+      ),
+    );
+  await db
+    .update(hedgeScalpingVirtualClips)
+    .set({ status: "completed", closedAt: now })
+    .where(
+      and(
+        eq(hedgeScalpingVirtualClips.runId, params.hedgeRunId),
+        eq(hedgeScalpingVirtualClips.status, "active"),
+      ),
+    );
 }
 
 async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: boolean) {
@@ -73,14 +122,18 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
     createdAt: row.createdAt,
   }));
   const slug = run.strategySlug ?? "";
-  const d1Orders = isHedgeScalpingStrategySlug(slug)
-    ? ledger.filter((o) => (o.correlationId ?? "").toLowerCase().startsWith("hs_d1_"))
-    : ledger;
-  const d2Orders = isHedgeScalpingStrategySlug(slug)
-    ? ledger.filter((o) => (o.correlationId ?? "").toLowerCase().startsWith("hs_d2_"))
-    : [];
-  const d1State = deriveLedgerMetrics(d1Orders, null);
-  const d2State = deriveLedgerMetrics(d2Orders, null);
+  const d1State = isHedgeScalpingStrategySlug(slug)
+    ? deriveLedgerMetrics(
+        ledger.filter((o) => classifyHedgeScalpingVirtualDualAccount(o) === "primary"),
+        null,
+      )
+    : deriveLedgerMetrics(ledger, null);
+  const d2State = isHedgeScalpingStrategySlug(slug)
+    ? deriveLedgerMetrics(
+        ledger.filter((o) => classifyHedgeScalpingVirtualDualAccount(o) === "secondary"),
+        null,
+      )
+    : deriveLedgerMetrics([], null);
   const legClosures = [
     {
       account: "D1" as const,
@@ -95,6 +148,17 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
   ].filter((leg) => Math.abs(leg.netQty) > 1e-8 && leg.symbol);
 
   if (legClosures.length === 0) {
+    if (isHedgeScalpingStrategySlug(slug)) {
+      const openNet = Number(String(run.openNetQty ?? "0").trim());
+      const hedgeRunId = parseHedgeRunIdFromVirtualLedger(ledger);
+      if (hedgeRunId && Math.abs(openNet) < 1e-8) {
+        await finalizeHedgeScalpingVirtualRunOnManualClose({
+          hedgeRunId,
+          userId: run.userId,
+          strategyId: run.strategyId,
+        });
+      }
+    }
     return { ok: true as const, closed: 0, detail: "already_flat" };
   }
 
@@ -127,6 +191,16 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
     const sim = await simulateVirtualOrder({ payload, row: elig.row });
     if (!sim.ok) return { ok: false as const, error: sim.error };
     closed += 1;
+  }
+  if (isHedgeScalpingStrategySlug(slug)) {
+    const hedgeRunId = parseHedgeRunIdFromVirtualLedger(ledger);
+    if (hedgeRunId) {
+      await finalizeHedgeScalpingVirtualRunOnManualClose({
+        hedgeRunId,
+        userId: run.userId,
+        strategyId: run.strategyId,
+      });
+    }
   }
   return { ok: true as const, closed, detail: "virtual_closed" };
 }

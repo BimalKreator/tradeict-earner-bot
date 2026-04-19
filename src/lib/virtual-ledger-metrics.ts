@@ -24,12 +24,20 @@ export function isFilledOrder(status: string): boolean {
   return status === "filled" || status === "partial_fill";
 }
 
-/** Hedge-scalping virtual D2 clips use `hs_d2_*` correlations; D1 uses `hs_d1_*`. */
+/**
+ * Hedge-scalping: D2 clips use `hs_d2_*`; D1 uses `hs_d1_*`. Manual market closes from the UI
+ * use `manual_close_virtual_<runId>_<D1|D2>_...` and must map to the same account bucket.
+ */
 export function classifyHedgeScalpingVirtualDualAccount(order: {
   correlationId: string | null;
 }): AccountKey {
   const cid = (order.correlationId ?? "").toLowerCase();
   if (cid.startsWith("hs_d2_")) return "secondary";
+  if (cid.startsWith("hs_d1_")) return "primary";
+  const manual = /manual_close_virtual_[0-9a-f-]+_(d1|d2)_/i.exec(cid);
+  if (manual) {
+    return manual[1]!.toLowerCase() === "d2" ? "secondary" : "primary";
+  }
   return "primary";
 }
 
