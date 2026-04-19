@@ -431,7 +431,9 @@ export function AdminStrategyForm(props: Props) {
                     className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
                   />
                   <p className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">
-                    When profit reaches this % of the D1 target, move stop to entry (breakeven).
+                    Reserved for future use. Virtual D1 uses a continuous 1:1 trail from the
+                    initial stop (see stop loss %), stepped by <code>max_favorable_price</code>{" "}
+                    vs entry — not this field.
                   </p>
                   {fieldError(state.fieldErrors, "hs_d1_breakeven_trigger_pct")}
                 </div>

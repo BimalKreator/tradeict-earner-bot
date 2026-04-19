@@ -64,8 +64,8 @@ export const hedgeScalpingDelta1Schema = z.object({
     .max(100, "D1 stop loss % must be <= 100.")
     .default(1),
   /**
-   * When unrealized profit reaches this fraction (%) of the D1 target, move stop to entry
-   * (breakeven lock). Expressed as 0–100 for admin UX consistency.
+   * Legacy / reserved field (not used for virtual D1 exits). D1 stop is a continuous 1:1 trail
+   * from the initial %-based stop, keyed off `max_favorable_price` vs entry.
    */
   breakevenTriggerPct: z
     .number()

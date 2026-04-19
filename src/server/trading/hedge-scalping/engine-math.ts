@@ -38,19 +38,38 @@ export function d1HardStopPrice(
 }
 
 /**
- * Price at which breakeven arming triggers: `breakevenTriggerPct` percent of the **distance**
- * from entry toward the take-profit price (not % of entry notional).
+ * Favorable point excursion vs entry using the `maxFavorablePrice` watermark (never shrinks).
+ * - LONG: max(0, maxFavorablePrice - entry)
+ * - SHORT: max(0, entry - maxFavorablePrice)
  */
-export function d1BreakevenTriggerPrice(
+export function d1FavorablePointExcursion(
   d1Side: "LONG" | "SHORT",
   entry: number,
-  targetPrice: number,
-  breakevenTriggerPct: number,
+  maxFavorablePrice: number,
 ): number {
-  const f = breakevenTriggerPct / 100;
-  return d1Side === "LONG"
-    ? entry + (targetPrice - entry) * f
-    : entry - (entry - targetPrice) * f;
+  if (!(entry > 0) || !Number.isFinite(maxFavorablePrice)) return 0;
+  if (d1Side === "LONG") {
+    return Math.max(0, maxFavorablePrice - entry);
+  }
+  return Math.max(0, entry - maxFavorablePrice);
+}
+
+/**
+ * D1 stop after continuous 1:1 trail: initial SL from entry ± stopLoss%, then move one point
+ * for each point of favorable excursion (same watermark as ladder / `maxFavorablePrice`).
+ */
+export function d1ContinuousTrailedStopPrice(
+  d1Side: "LONG" | "SHORT",
+  entry: number,
+  maxFavorablePrice: number,
+  initialStopPrice: number,
+): { favorablePoints: number; trailedStopPrice: number } {
+  const favorablePoints = d1FavorablePointExcursion(d1Side, entry, maxFavorablePrice);
+  const trailedStopPrice =
+    d1Side === "LONG"
+      ? initialStopPrice + favorablePoints
+      : initialStopPrice - favorablePoints;
+  return { favorablePoints, trailedStopPrice };
 }
 
 /**
@@ -96,53 +115,12 @@ export function maxD2LadderStepInclusive(
   return 1 + d2LadderFavorableBandFloor(favorableDistancePct, stepMovePct);
 }
 
-function breakevenArmed(
-  d1Side: "LONG" | "SHORT",
-  maxFavorablePrice: number,
-  triggerPrice: number,
-  breakevenTriggerPct: number,
-): boolean {
-  if (!(breakevenTriggerPct > 0)) return false;
-  if (!Number.isFinite(maxFavorablePrice) || !Number.isFinite(triggerPrice)) return false;
-  const eps = priceEps(triggerPrice);
-  return d1Side === "LONG"
-    ? maxFavorablePrice >= triggerPrice - eps
-    : maxFavorablePrice <= triggerPrice + eps;
-}
-
-/**
- * True once favorable excursion (tracked in `maxFavorablePrice`) has reached the breakeven
- * trigger — same rule as `evaluateHedgeScalpingState` / poller D1 exit logic.
- */
-export function hedgeScalpingD1BreakevenArmed(
-  d1Side: "LONG" | "SHORT",
-  entry: number,
-  maxFavorablePrice: number,
-  d1: { targetProfitPct: number; breakevenTriggerPct: number },
-): boolean {
-  if (!(entry > 0) || !Number.isFinite(maxFavorablePrice)) return false;
-  const targetPrice = d1TargetPrice(d1Side, entry, d1.targetProfitPct);
-  const beTriggerPrice = d1BreakevenTriggerPrice(
-    d1Side,
-    entry,
-    targetPrice,
-    d1.breakevenTriggerPct,
-  );
-  return breakevenArmed(
-    d1Side,
-    maxFavorablePrice,
-    beTriggerPrice,
-    d1.breakevenTriggerPct,
-  );
-}
-
 function d1CloseIntent(
   d1Side: "LONG" | "SHORT",
   entry: number,
   mark: number,
   targetPrice: number,
-  hardStopPrice: number,
-  beArmed: boolean,
+  trailedStopPrice: number,
 ): HedgeScalpingIntent | null {
   const eps = priceEps(entry);
 
@@ -150,22 +128,14 @@ function d1CloseIntent(
     if (mark >= targetPrice - eps) {
       return { type: "CLOSE_ALL", reason: "D1_TARGET_HIT" };
     }
-    const effectiveStop = beArmed ? entry : hardStopPrice;
-    if (mark <= effectiveStop + eps) {
-      if (beArmed) {
-        return { type: "CLOSE_ALL", reason: "D1_BREAKEVEN_HIT" };
-      }
+    if (mark <= trailedStopPrice + eps) {
       return { type: "CLOSE_ALL", reason: "D1_SL_HIT" };
     }
   } else {
     if (mark <= targetPrice + eps) {
       return { type: "CLOSE_ALL", reason: "D1_TARGET_HIT" };
     }
-    const effectiveStop = beArmed ? entry : hardStopPrice;
-    if (mark >= effectiveStop - eps) {
-      if (beArmed) {
-        return { type: "CLOSE_ALL", reason: "D1_BREAKEVEN_HIT" };
-      }
+    if (mark >= trailedStopPrice - eps) {
       return { type: "CLOSE_ALL", reason: "D1_SL_HIT" };
     }
   }
@@ -195,14 +165,14 @@ function d2ClipExitIntent(
   return null;
 }
 
-function hasOccupiedD2Step(occupied: readonly number[], stepLevel: number): boolean {
-  return occupied.includes(stepLevel);
+function hasActiveD2ClipAtStep(clips: D2ClipState[], stepLevel: number): boolean {
+  return clips.some((c) => c.stepLevel === stepLevel);
 }
 
 /**
- * Pure state evaluation: D1 target / SL / breakeven, D2 per-clip TP/SL, and D2 ladder
- * (zigzag: open missing steps 1..max inclusive, where max = 1 + floor(favorable/stepMove),
- * accounting for the seed clip at step 1; never re-open an occupied step level).
+ * Pure state evaluation: D1 target / continuous 1:1 trailed SL, D2 per-clip TP/SL, and D2 ladder
+ * (zigzag: open step N when maxStep ≥ N and there is no **active** clip at N — completed clips
+ * do not block re-entry; each new clip uses current mark as entry for TP/SL via executor).
  *
  * Precedence: if D1 must flat, returns only `[{ type: 'CLOSE_ALL', ... }]`.
  */
@@ -221,18 +191,12 @@ export function evaluateHedgeScalpingState(
   const d2 = config.delta2;
 
   const targetPrice = d1TargetPrice(state.d1Side, entry, d1.targetProfitPct);
-  const hardStopPrice = d1HardStopPrice(state.d1Side, entry, d1.stopLossPct);
-  const beTriggerPrice = d1BreakevenTriggerPrice(
+  const initialSl = d1HardStopPrice(state.d1Side, entry, d1.stopLossPct);
+  const { trailedStopPrice } = d1ContinuousTrailedStopPrice(
     state.d1Side,
     entry,
-    targetPrice,
-    d1.breakevenTriggerPct,
-  );
-  const beArmed = breakevenArmed(
-    state.d1Side,
     state.maxFavorablePrice,
-    beTriggerPrice,
-    d1.breakevenTriggerPct,
+    initialSl,
   );
 
   const d1Exit = d1CloseIntent(
@@ -240,8 +204,7 @@ export function evaluateHedgeScalpingState(
     entry,
     mark,
     targetPrice,
-    hardStopPrice,
-    beArmed,
+    trailedStopPrice,
   );
   if (d1Exit) {
     return [d1Exit];
@@ -259,7 +222,7 @@ export function evaluateHedgeScalpingState(
   const d2Side = hedgeScalpingD2Side(state.d1Side);
 
   for (let step = 1; step <= maxStep; step += 1) {
-    if (!hasOccupiedD2Step(state.occupiedD2StepLevels, step)) {
+    if (!hasActiveD2ClipAtStep(state.activeD2Clips, step)) {
       out.push({
         type: "OPEN_D2_CLIP",
         stepLevel: step,

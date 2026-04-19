@@ -52,6 +52,4 @@ export type HedgeScalpingRunState = {
   d1EntryPrice: number;
   maxFavorablePrice: number;
   activeD2Clips: D2ClipState[];
-  /** Step levels that already have a clip row (active or completed); ladder must not reopen these. */
-  occupiedD2StepLevels: number[];
 };

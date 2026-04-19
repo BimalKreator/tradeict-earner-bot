@@ -23,7 +23,10 @@ import {
   virtualStrategyRuns,
 } from "@/server/db/schema";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
-import { hedgeScalpingD1BreakevenArmed } from "@/server/trading/hedge-scalping/engine-math";
+import {
+  d1ContinuousTrailedStopPrice,
+  d1HardStopPrice,
+} from "@/server/trading/hedge-scalping/engine-math";
 
 const QTY_EPS = 1e-8;
 
@@ -424,14 +427,19 @@ function augmentHedgeScalpingLegExitPrices(
     if (hedgeRun && hedgeRun.status === "active") {
       const entryHs = num(hedgeRun.d1EntryPrice);
       const maxFav = num(hedgeRun.maxFavorablePrice);
-      if (
-        entryHs > 0 &&
-        hedgeScalpingD1BreakevenArmed(hedgeRun.d1Side, entryHs, maxFav, {
-          targetProfitPct: settings.d1TargetProfitPct,
-          breakevenTriggerPct: settings.d1BreakevenTriggerPct,
-        })
-      ) {
-        stopLossPrice = entryHs;
+      if (entryHs > 0) {
+        const initialSl = d1HardStopPrice(
+          hedgeRun.d1Side,
+          entryHs,
+          settings.d1StopLossPct,
+        );
+        const { trailedStopPrice } = d1ContinuousTrailedStopPrice(
+          hedgeRun.d1Side,
+          entryHs,
+          maxFav,
+          initialSl,
+        );
+        stopLossPrice = trailedStopPrice;
       }
     }
     return {

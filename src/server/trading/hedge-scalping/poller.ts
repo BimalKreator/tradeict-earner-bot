@@ -20,7 +20,9 @@ import {
 import type { Candle } from "@/server/trading/ta-engine/indicators/halftrend";
 
 import {
+  d1ContinuousTrailedStopPrice,
   d1FavorableDistancePct,
+  d1HardStopPrice,
   d2LadderFavorableBandFloor,
   evaluateHedgeScalpingState,
   hedgeScalpingD2Side,
@@ -176,18 +178,13 @@ function buildRunState(
     maxFavorablePrice: string;
   },
   activeClips: { stepLevel: number; entryPrice: string; side: "LONG" | "SHORT" }[],
-  allClips: { stepLevel: number }[],
   cfg: HedgeScalpingConfig,
 ): HedgeScalpingRunState {
-  const occupiedD2StepLevels = [...new Set(allClips.map((c) => c.stepLevel))].sort(
-    (a, b) => a - b,
-  );
   return {
     d1Side: run.d1Side,
     d1EntryPrice: num(run.d1EntryPrice),
     maxFavorablePrice: num(run.maxFavorablePrice),
     activeD2Clips: activeClips.map((c) => d2ClipStateFromRow(c, cfg)),
-    occupiedD2StepLevels,
   };
 }
 
@@ -423,8 +420,19 @@ async function processOneActiveRun(params: {
       entryPrice: String(c.entryPrice),
       side: c.side,
     })),
-    clips.map((c) => ({ stepLevel: c.stepLevel })),
     cfg,
+  );
+
+  const maxFavEval = num(runForEval.maxFavorablePrice);
+  const initialD1Sl = d1HardStopPrice(run.d1Side, entry, cfg.delta1.stopLossPct);
+  const { trailedStopPrice: trailedD1Sl } = d1ContinuousTrailedStopPrice(
+    run.d1Side,
+    entry,
+    maxFavEval,
+    initialD1Sl,
+  );
+  console.log(
+    `${LOG} D1 Continuous Trail: Entry=${fmt(entry)}, MaxFav=${fmt(maxFavEval)}, InitialSL=${fmt(initialD1Sl)}, TrailedSL=${fmt(trailedD1Sl)} run=${run.runId}`,
   );
 
   const favPct = d1FavorableDistancePct(run.d1Side, entry, mark);
@@ -438,8 +446,11 @@ async function processOneActiveRun(params: {
     .filter((c) => c.status === "completed")
     .map((c) => c.stepLevel)
     .sort((a, b) => a - b);
+  const openLadderSteps = state.activeD2Clips
+    .map((c) => c.stepLevel)
+    .sort((a, b) => a - b);
   console.log(
-    `${LOG} D1 Entry: ${fmt(entry)}, Mark: ${fmt(mark)}, FavorablePct: ${favPct.toFixed(4)}%, TheoreticalStep: ${theoreticalStep} (bands=${bands}), Active/Closed Steps: active=[${activeStepLevels.join(",")}] closed=[${closedStepLevels.join(",")}] occupied=[${state.occupiedD2StepLevels.join(",")}] run=${run.runId}`,
+    `${LOG} D1 Entry: ${fmt(entry)}, Mark: ${fmt(mark)}, FavorablePct: ${favPct.toFixed(4)}%, TheoreticalStep: ${theoreticalStep} (bands=${bands}), Active/Closed Steps: active=[${activeStepLevels.join(",")}] closed=[${closedStepLevels.join(",")}] openLadderSteps=[${openLadderSteps.join(",")}] run=${run.runId}`,
   );
 
   const intents = evaluateHedgeScalpingState(state, mark, cfg);
