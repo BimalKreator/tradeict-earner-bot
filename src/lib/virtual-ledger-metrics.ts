@@ -34,7 +34,8 @@ export function classifyHedgeScalpingVirtualDualAccount(order: {
   const cid = (order.correlationId ?? "").toLowerCase();
   if (cid.startsWith("hs_d2_")) return "secondary";
   if (cid.startsWith("hs_d1_")) return "primary";
-  const manual = /manual_close_virtual_[0-9a-f-]+_(d1|d2)_/i.exec(cid);
+  // `manual_close_virtual_<virtualRunUuid>_d1_<ts>` (D1/D2 case-insensitive)
+  const manual = /^manual_close_virtual_[a-f0-9-]+_(d1|d2)/i.exec(cid);
   if (manual) {
     return manual[1]!.toLowerCase() === "d2" ? "secondary" : "primary";
   }
