@@ -189,7 +189,7 @@ async function finalizeHedgeScalpingVirtualRunTx(
   return { runs: runRows.length, clips: clipRows.length };
 }
 
-async function syncVirtualPaperRunFlatAndCompletedTx(
+async function syncVirtualPaperRunFlatAfterManualCloseTx(
   tx: HedgeScalpingDbTx,
   virtualPaperRunId: string,
 ): Promise<void> {
@@ -197,7 +197,7 @@ async function syncVirtualPaperRunFlatAndCompletedTx(
   await tx
     .update(virtualStrategyRuns)
     .set({
-      status: "completed",
+      status: "active",
       openNetQty: "0",
       openAvgEntryPrice: null,
       openSymbol: null,
@@ -259,7 +259,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
         } else {
           console.warn(`${LOG_MANUAL} already_flat_ledger — no hedge run id (ledger + DB lookup)`);
         }
-        await syncVirtualPaperRunFlatAndCompletedTx(tx, params.run.id);
+        await syncVirtualPaperRunFlatAfterManualCloseTx(tx, params.run.id);
       });
       return { ok: true, closed: 0 };
     }
@@ -422,9 +422,9 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
         console.warn(`${LOG_MANUAL} no hedge run id resolved — hedge_scalping_virtual_runs not finalized`);
       }
 
-      await syncVirtualPaperRunFlatAndCompletedTx(tx, params.run.id);
+      await syncVirtualPaperRunFlatAfterManualCloseTx(tx, params.run.id);
       console.log(
-        `${LOG_MANUAL} virtual_strategy_runs set completed + flat open fields virtualRunId=${params.run.id}`,
+        `${LOG_MANUAL} virtual_strategy_runs kept active + flat open fields virtualRunId=${params.run.id}`,
       );
 
       return closed;

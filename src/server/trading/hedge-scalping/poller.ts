@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import {
   isHedgeScalpingStrategySlug,
@@ -676,6 +676,27 @@ export async function processHedgeScalpingNewEntriesPhase(
       if (sig !== "LONG" && sig !== "SHORT") continue;
 
       const d1Side = sig;
+      const [lastRun] = await db
+        .select({
+          d1Side: hedgeScalpingVirtualRuns.d1Side,
+          runId: hedgeScalpingVirtualRuns.runId,
+          createdAt: hedgeScalpingVirtualRuns.createdAt,
+        })
+        .from(hedgeScalpingVirtualRuns)
+        .where(
+          and(
+            eq(hedgeScalpingVirtualRuns.userId, userId),
+            eq(hedgeScalpingVirtualRuns.strategyId, strat.id),
+          ),
+        )
+        .orderBy(desc(hedgeScalpingVirtualRuns.createdAt))
+        .limit(1);
+      if (lastRun && lastRun.d1Side === d1Side) {
+        console.log(
+          `${LOG} NEW_RUN skip — same trend as last run user=${userId} strategy=${strat.id} lastRun=${lastRun.runId} d1=${d1Side}`,
+        );
+        continue;
+      }
       const d2Side = hedgeScalpingD2Side(d1Side);
       if (hedgeOpenSide(d1Side) === hedgeOpenSide(d2Side)) {
         console.error(
