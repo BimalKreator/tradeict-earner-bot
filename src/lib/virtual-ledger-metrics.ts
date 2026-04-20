@@ -14,6 +14,7 @@ export type LedgerOrderRow = {
 };
 
 export type AccountKey = "primary" | "secondary";
+const CONTRACT_USD_PER_LOT = 1;
 
 export function num(s: string): number {
   const n = Number.parseFloat(s);
@@ -95,7 +96,10 @@ export function deriveLedgerMetrics(
 
     const closeAbs = Math.min(Math.abs(q), Math.abs(delta));
     const entry = avg ?? fill;
-    realized += closeAbs * Math.sign(q) * (fill - entry);
+    if (entry > 0) {
+      // Delta USD-margined contracts are fixed-lot; PnL is not raw contracts * price delta.
+      realized += closeAbs * Math.sign(q) * (((fill - entry) / entry) * CONTRACT_USD_PER_LOT);
+    }
     q += delta;
     if (Math.abs(q) < 1e-8) {
       q = 0;
@@ -108,7 +112,13 @@ export function deriveLedgerMetrics(
 
   const mark = markPrice != null && Number.isFinite(markPrice) && markPrice > 0 ? markPrice : latestMark;
   const unrealized =
-    q !== 0 && avg != null && mark != null && Number.isFinite(mark) ? q * (mark - avg) : 0;
+    q !== 0 &&
+    avg != null &&
+    mark != null &&
+    Number.isFinite(mark) &&
+    avg > 0
+      ? q * (((mark - avg) / avg) * CONTRACT_USD_PER_LOT)
+      : 0;
 
   return {
     realizedPnlUsd: realized,

@@ -15,6 +15,7 @@
     "trading:worker": "tsx src/scripts/process-trading-jobs.ts",
     "trading:ta-worker": "tsx src/scripts/run-ta-worker.ts",
     "trading:hedge-scalping-worker": "tsx src/scripts/run-hedge-scalping-worker.ts",
+    "trading:position-reconciliation-worker": "tsx src/scripts/run-position-reconciliation-worker.ts",
     "pm2:start": "pm2 start ecosystem.config.js --update-env",
     "pm2:restart": "pm2 restart ecosystem.config.js --update-env",
     "pm2:stop": "pm2 stop ecosystem.config.js",

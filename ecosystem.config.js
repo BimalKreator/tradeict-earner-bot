@@ -42,6 +42,20 @@ module.exports = {
         NODE_ENV: "production",
       },
     },
+    {
+      name: "tradeict-reconciler",
+      script: "npm",
+      args: "run trading:position-reconciliation-worker",
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      watch: false,
+      max_restarts: 10,
+      env: {
+        NODE_ENV: "production",
+      },
+    },
   ],
 };
 

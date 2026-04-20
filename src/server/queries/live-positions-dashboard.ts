@@ -4,6 +4,7 @@ import { db } from "@/server/db";
 import {
   botPositions,
   exchangeConnections,
+  livePositionReconciliations,
   strategies,
   userStrategyRuns,
   userStrategySubscriptions,
@@ -32,7 +33,11 @@ export type LiveOpenPositionRow = {
   avgEntryPrice: number | null;
   markPrice: number | null;
   unrealizedPnlUsd: number;
+  usedMarginUsd: number | null;
   openedAt: string | null;
+  reconciliationStatus: "matched" | "mismatch" | "unknown";
+  reconciledAt: string | null;
+  exchangeNetQty: number | null;
 };
 
 export type AdminLiveOpenPositionRow = LiveOpenPositionRow & {
@@ -52,6 +57,18 @@ function userDisplayName(email: string, name: string | null): string {
   const n = name?.trim();
   if (n) return n;
   return email;
+}
+
+function reconciliationStatusFromRow(params: {
+  mismatchRaw: string | null;
+  statusRaw: string | null;
+  exchangeNetQtyRaw: string | null;
+}): "matched" | "mismatch" | "unknown" {
+  if (params.statusRaw == null) return "unknown";
+  if (params.statusRaw !== "ok") return "unknown";
+  if (params.mismatchRaw === "yes") return "mismatch";
+  if (params.exchangeNetQtyRaw == null) return "unknown";
+  return "matched";
 }
 
 async function fetchMarksForSymbols(symbols: string[]): Promise<Map<string, number>> {
@@ -81,7 +98,8 @@ function unrealizedFromMark(
   ) {
     return null;
   }
-  return netQty * (mark - avgEntry);
+  // For fixed USD contracts, each contract tracks a USD slice of underlying.
+  return netQty * ((mark - avgEntry) / avgEntry);
 }
 
 export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpenPositionRow[]> {
@@ -103,8 +121,13 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
       symbol: botPositions.symbol,
       netQtyRaw: botPositions.netQuantity,
       avgEntryRaw: botPositions.averageEntryPrice,
+      leverageRaw: userStrategyRuns.leverage,
       unrealizedDb: botPositions.unrealizedPnlInr,
       openedAt: botPositions.openedAt,
+      recMismatchRaw: livePositionReconciliations.mismatch,
+      recStatusRaw: livePositionReconciliations.status,
+      recAt: livePositionReconciliations.reconciledAt,
+      recExchangeNetQtyRaw: livePositionReconciliations.exchangeNetQty,
     })
     .from(botPositions)
     .innerJoin(users, eq(botPositions.userId, users.id))
@@ -123,6 +146,13 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
     .innerJoin(
       exchangeConnections,
       eq(botPositions.exchangeConnectionId, exchangeConnections.id),
+    )
+    .leftJoin(
+      livePositionReconciliations,
+      and(
+        eq(livePositionReconciliations.exchangeConnectionId, botPositions.exchangeConnectionId),
+        eq(livePositionReconciliations.symbol, botPositions.symbol),
+      ),
     )
     .where(
       and(
@@ -147,11 +177,17 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
     const netQty = num(r.netQtyRaw);
     const avgEntry = r.avgEntryRaw != null ? num(String(r.avgEntryRaw)) : null;
     const mark = markBySymbol.get(r.symbol.trim()) ?? null;
+    const leverage = Math.max(1, num(String(r.leverageRaw ?? "1")));
     const fromMark = unrealizedFromMark(netQty, avgEntry, mark);
     const unrealizedPnlUsd =
       fromMark != null && Number.isFinite(fromMark)
         ? fromMark
         : num(String(r.unrealizedDb ?? "0"));
+    const reconciliationStatus = reconciliationStatusFromRow({
+      mismatchRaw: r.recMismatchRaw ?? null,
+      statusRaw: r.recStatusRaw ?? null,
+      exchangeNetQtyRaw: r.recExchangeNetQtyRaw != null ? String(r.recExchangeNetQtyRaw) : null,
+    });
 
     return {
       key: `live:${r.positionId}`,
@@ -170,7 +206,12 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
       avgEntryPrice: avgEntry != null && avgEntry > 0 ? avgEntry : null,
       markPrice: mark,
       unrealizedPnlUsd,
+      usedMarginUsd: Math.abs(netQty) > 0 ? Math.abs(netQty) / leverage : null,
       openedAt: r.openedAt?.toISOString() ?? null,
+      reconciliationStatus,
+      reconciledAt: r.recAt?.toISOString() ?? null,
+      exchangeNetQty:
+        r.recExchangeNetQtyRaw != null ? num(String(r.recExchangeNetQtyRaw)) : null,
     };
   });
 }
@@ -196,8 +237,13 @@ export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPosition
       symbol: botPositions.symbol,
       netQtyRaw: botPositions.netQuantity,
       avgEntryRaw: botPositions.averageEntryPrice,
+      leverageRaw: userStrategyRuns.leverage,
       unrealizedDb: botPositions.unrealizedPnlInr,
       openedAt: botPositions.openedAt,
+      recMismatchRaw: livePositionReconciliations.mismatch,
+      recStatusRaw: livePositionReconciliations.status,
+      recAt: livePositionReconciliations.reconciledAt,
+      recExchangeNetQtyRaw: livePositionReconciliations.exchangeNetQty,
     })
     .from(botPositions)
     .innerJoin(users, eq(botPositions.userId, users.id))
@@ -216,6 +262,13 @@ export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPosition
     .innerJoin(
       exchangeConnections,
       eq(botPositions.exchangeConnectionId, exchangeConnections.id),
+    )
+    .leftJoin(
+      livePositionReconciliations,
+      and(
+        eq(livePositionReconciliations.exchangeConnectionId, botPositions.exchangeConnectionId),
+        eq(livePositionReconciliations.symbol, botPositions.symbol),
+      ),
     )
     .where(
       and(
@@ -239,11 +292,17 @@ export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPosition
     const netQty = num(r.netQtyRaw);
     const avgEntry = r.avgEntryRaw != null ? num(String(r.avgEntryRaw)) : null;
     const mark = markBySymbol.get(r.symbol.trim()) ?? null;
+    const leverage = Math.max(1, num(String(r.leverageRaw ?? "1")));
     const fromMark = unrealizedFromMark(netQty, avgEntry, mark);
     const unrealizedPnlUsd =
       fromMark != null && Number.isFinite(fromMark)
         ? fromMark
         : num(String(r.unrealizedDb ?? "0"));
+    const reconciliationStatus = reconciliationStatusFromRow({
+      mismatchRaw: r.recMismatchRaw ?? null,
+      statusRaw: r.recStatusRaw ?? null,
+      exchangeNetQtyRaw: r.recExchangeNetQtyRaw != null ? String(r.recExchangeNetQtyRaw) : null,
+    });
 
     return {
       key: `live:${r.positionId}`,
@@ -263,7 +322,33 @@ export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPosition
       avgEntryPrice: avgEntry != null && avgEntry > 0 ? avgEntry : null,
       markPrice: mark,
       unrealizedPnlUsd,
+      usedMarginUsd: Math.abs(netQty) > 0 ? Math.abs(netQty) / leverage : null,
       openedAt: r.openedAt?.toISOString() ?? null,
+      reconciliationStatus,
+      reconciledAt: r.recAt?.toISOString() ?? null,
+      exchangeNetQty:
+        r.recExchangeNetQtyRaw != null ? num(String(r.recExchangeNetQtyRaw)) : null,
     };
   });
+}
+
+export async function getLatestUserLiveReconciledAt(userId: string): Promise<string | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({ maxAt: sql<string | null>`max(${livePositionReconciliations.reconciledAt})` })
+    .from(livePositionReconciliations)
+    .where(eq(livePositionReconciliations.userId, userId));
+  if (!row?.maxAt) return null;
+  const d = new Date(row.maxAt);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+export async function getLatestAdminLiveReconciledAt(): Promise<string | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({ maxAt: sql<string | null>`max(${livePositionReconciliations.reconciledAt})` })
+    .from(livePositionReconciliations);
+  if (!row?.maxAt) return null;
+  const d = new Date(row.maxAt);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
 }

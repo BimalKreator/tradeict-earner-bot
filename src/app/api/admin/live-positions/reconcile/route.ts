@@ -3,15 +3,11 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { verifySessionToken } from "@/lib/session";
 import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
-import { db } from "@/server/db";
-import {
-  getAdminLiveOpenPositions,
-  getLatestAdminLiveReconciledAt,
-} from "@/server/queries/live-positions-dashboard";
+import { runLivePositionReconciliationOnce } from "@/server/trading/position-reconciliation";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function POST() {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE_NAME)?.value;
   if (!token) {
@@ -28,15 +24,6 @@ export async function GET() {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  if (!db) {
-    return Response.json({ error: "no_database" }, { status: 503 });
-  }
-
-  const positions = await getAdminLiveOpenPositions();
-  const reconciledAt = await getLatestAdminLiveReconciledAt();
-  return Response.json({
-    positions,
-    updatedAt: new Date().toISOString(),
-    reconciledAt,
-  });
+  const out = await runLivePositionReconciliationOnce();
+  return Response.json(out);
 }

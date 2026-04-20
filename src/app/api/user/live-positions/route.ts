@@ -3,7 +3,10 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { verifySessionToken } from "@/lib/session";
 import { db } from "@/server/db";
-import { getUserLiveOpenPositions } from "@/server/queries/live-positions-dashboard";
+import {
+  getLatestUserLiveReconciledAt,
+  getUserLiveOpenPositions,
+} from "@/server/queries/live-positions-dashboard";
 
 export const dynamic = "force-dynamic";
 
@@ -24,5 +27,10 @@ export async function GET() {
   }
 
   const positions = await getUserLiveOpenPositions(session.userId);
-  return Response.json({ positions, updatedAt: new Date().toISOString() });
+  const reconciledAt = await getLatestUserLiveReconciledAt(session.userId);
+  return Response.json({
+    positions,
+    updatedAt: new Date().toISOString(),
+    reconciledAt,
+  });
 }

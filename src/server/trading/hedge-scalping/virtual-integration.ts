@@ -37,14 +37,15 @@ function fmtMoney(p: number): string {
 
 /** Notional-based fee on entry + exit legs (bps of notional each). */
 export function hedgeVirtualRoundtripFeeUsd(
-  entryPx: number,
-  exitPx: number,
+  _entryPx: number,
+  _exitPx: number,
   qty: number,
   bps: number = HS_FEE_BPS,
 ): number {
   if (!(bps > 0) || !(qty > 0)) return 0;
   const r = bps / 10_000;
-  return (Math.abs(entryPx * qty) + Math.abs(exitPx * qty)) * r;
+  // Fee base for fixed-USD contracts: contracts represent USD notional units.
+  return (Math.abs(qty) + Math.abs(qty)) * r;
 }
 
 export function hedgeOpenSide(pos: "LONG" | "SHORT"): "buy" | "sell" {
@@ -62,11 +63,12 @@ export function hedgeLegGrossPnlUsd(params: {
   qty: number;
 }): number {
   const { side, entryPrice, exitPrice, qty } = params;
-  if (!(qty > 0)) return 0;
+  if (!(qty > 0) || !(entryPrice > 0) || !(exitPrice > 0)) return 0;
+  const perContractPnlUsd = (exitPrice - entryPrice) / entryPrice;
   if (side === "LONG") {
-    return (exitPrice - entryPrice) * qty;
+    return perContractPnlUsd * qty;
   }
-  return (entryPrice - exitPrice) * qty;
+  return -perContractPnlUsd * qty;
 }
 
 export function hedgeSizingBalanceUsd(virtualRun: {
@@ -140,7 +142,8 @@ export async function insertHsVirtualFilledOrder(
   const gross = params.realizedPnlUsd;
   let profitPercent: string | null = null;
   if (gross != null && qty > 0 && px > 0) {
-    const denom = qty * px;
+    // Profit % is defined on used margin; for virtual fixed-lot contracts use contract notional proxy.
+    const denom = qty;
     if (denom > 0) {
       profitPercent = ((gross / denom) * 100).toFixed(6);
     }

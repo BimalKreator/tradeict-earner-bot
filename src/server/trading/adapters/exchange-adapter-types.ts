@@ -43,6 +43,18 @@ export type OrderSyncResult =
   | OrderSyncSuccess
   | { ok: false; error: string };
 
+export type ExchangeOpenPosition = {
+  symbol: string;
+  /** Signed contracts (long +, short -). */
+  netQty: string;
+  markPrice?: string | null;
+  entryPrice?: string | null;
+};
+
+export type ExchangeOpenPositionsResult =
+  | { ok: true; positions: ExchangeOpenPosition[]; raw?: Record<string, unknown> | null }
+  | { ok: false; error: string; raw?: Record<string, unknown> | null };
+
 /**
  * Exchange-specific execution. Implementations must never log secrets.
  */
@@ -53,4 +65,13 @@ export interface ExchangeTradingAdapter {
 
   /** Optional — used to reconcile `bot_orders` with the venue. */
   syncOrderStatus(externalOrderId: string): Promise<OrderSyncResult>;
+
+  /** Optional — used for read-only position reconciliation snapshots. */
+  fetchOpenPositions?(opts?: {
+    /**
+     * Optional symbol filter. When provided, implementations may issue one call per symbol/product.
+     * Symbols should be venue symbols (e.g. BTCUSD).
+     */
+    symbols?: string[];
+  }): Promise<ExchangeOpenPositionsResult>;
 }

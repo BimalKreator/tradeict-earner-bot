@@ -14,6 +14,7 @@ import { fetchDeltaIndiaProductLeverageBounds } from "@/server/exchange/delta-pr
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
+  ExchangeOpenPositionsResult,
   ExchangeTradingAdapter,
   OrderSyncResult,
   PlaceOrderInput,
@@ -196,6 +197,62 @@ function buildPlaceOrderJsonBody(
   }
 
   return { body: JSON.stringify(payload) };
+}
+
+function parseDeltaPositionNetQty(row: Record<string, unknown>): number {
+  const size = coerceNum(row.size) ?? 0;
+  if (!(size > 0)) return 0;
+  const sideRaw = typeof row.side === "string" ? row.side.toLowerCase() : "";
+  if (sideRaw === "sell" || sideRaw === "short") return -Math.abs(size);
+  if (sideRaw === "buy" || sideRaw === "long") return Math.abs(size);
+  return Number.isFinite(size) ? size : 0;
+}
+
+function mergeBySymbolNetQty(
+  rows: {
+    symbol: string;
+    netQty: string;
+    markPrice?: string | null;
+    entryPrice?: string | null;
+  }[],
+): {
+  symbol: string;
+  netQty: string;
+  markPrice?: string | null;
+  entryPrice?: string | null;
+}[] {
+  const bySymbol = new Map<string, {
+    symbol: string;
+    netQty: number;
+    markPrice?: string | null;
+    entryPrice?: string | null;
+  }>();
+  for (const row of rows) {
+    const symbol = row.symbol.trim().toUpperCase();
+    if (!symbol) continue;
+    const net = coerceNum(row.netQty) ?? 0;
+    const existing = bySymbol.get(symbol);
+    if (!existing) {
+      bySymbol.set(symbol, {
+        symbol,
+        netQty: net,
+        markPrice: row.markPrice ?? null,
+        entryPrice: row.entryPrice ?? null,
+      });
+      continue;
+    }
+    existing.netQty += net;
+    if (existing.markPrice == null && row.markPrice != null) existing.markPrice = row.markPrice;
+    if (existing.entryPrice == null && row.entryPrice != null) existing.entryPrice = row.entryPrice;
+  }
+  return [...bySymbol.values()]
+    .filter((r) => Math.abs(r.netQty) > 1e-8)
+    .map((r) => ({
+      symbol: r.symbol,
+      netQty: String(r.netQty),
+      markPrice: r.markPrice ?? null,
+      entryPrice: r.entryPrice ?? null,
+    }));
 }
 
 /**
@@ -395,6 +452,74 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return { ok: false, error: `Delta placeOrder error: ${msg}` };
+    }
+  }
+
+  async fetchOpenPositions(opts?: { symbols?: string[] }): Promise<ExchangeOpenPositionsResult> {
+    try {
+      const symbols = [...new Set((opts?.symbols ?? [])
+        .map((s) => s.trim().toUpperCase())
+        .filter((s) => s.length > 0))];
+      if (symbols.length === 0) {
+        return { ok: true, positions: [], raw: { note: "no_symbols_requested" } };
+      }
+
+      const allRows: {
+        symbol: string;
+        netQty: string;
+        markPrice?: string | null;
+        entryPrice?: string | null;
+      }[] = [];
+      const rawBySymbol: Record<string, unknown> = {};
+
+      for (const symbol of symbols) {
+        const product = await resolveDeltaIndiaProductId(symbol);
+        if (!product.ok) {
+          return {
+            ok: false,
+            error: `Delta positions product resolve failed for ${symbol}: ${product.error}`,
+          };
+        }
+        const queryString = `?product_id=${encodeURIComponent(String(product.productId))}`;
+        const r = await this.signedFetch("GET", "/v2/positions", queryString, "");
+        rawBySymbol[symbol] = r.json;
+        if (!r.ok) {
+          return {
+            ok: false,
+            error: `Delta positions HTTP ${r.status} for ${symbol}: ${r.text.slice(0, 300)}`,
+            raw: rawBySymbol,
+          };
+        }
+        if (!deltaJsonSuccess(r.json)) {
+          return {
+            ok: false,
+            error: `Delta positions rejected for ${symbol}: ${r.text.slice(0, 300)}`,
+            raw: rawBySymbol,
+          };
+        }
+        const result = r.json.result;
+        if (!result || typeof result !== "object") continue;
+        const row = result as Record<string, unknown>;
+        const net = parseDeltaPositionNetQty(row);
+        if (Math.abs(net) <= 1e-8) continue;
+        const mark = coerceNum(row.mark_price);
+        const entry = coerceNum(row.entry_price) ?? coerceNum(row.average_entry_price);
+        const symbolRaw = row.product_symbol ?? row.symbol ?? symbol;
+        const normalizedSymbol =
+          typeof symbolRaw === "string" ? symbolRaw.trim().toUpperCase() : symbol;
+        allRows.push({
+          symbol: normalizedSymbol,
+          netQty: String(net),
+          markPrice: mark != null && mark > 0 ? String(mark) : null,
+          entryPrice: entry != null && entry > 0 ? String(entry) : null,
+        });
+      }
+
+      const positions = mergeBySymbolNetQty(allRows);
+      return { ok: true, positions, raw: rawBySymbol };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { ok: false, error: `Delta positions fetch error: ${msg}` };
     }
   }
 

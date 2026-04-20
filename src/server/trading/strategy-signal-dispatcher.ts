@@ -74,6 +74,19 @@ function mergeSignalMetadata(
   return base;
 }
 
+function shouldHonorIncomingSignalQuantity(params: {
+  signalAction: "entry" | "exit";
+  signalMetadata: Record<string, unknown>;
+}): boolean {
+  if (params.signalAction !== "entry") return true;
+  const md = params.signalMetadata;
+  if (md.force_signal_quantity === true) return true;
+  if (md.explicit_leg_quantity === true) return true;
+  const source = typeof md.source === "string" ? md.source.trim().toLowerCase() : "";
+  if (source === "hedge_scalping_poller") return true;
+  return false;
+}
+
 /**
  * Entry point for future strategy signal providers (cron, websocket, ML, etc.).
  *
@@ -97,6 +110,10 @@ export async function dispatchStrategyExecutionSignal(
   const signalAction = normalizeStrategySignalAction(signal);
   const signalMetadata = mergeSignalMetadata(signal);
   const mode = signal.executionMode ?? "both";
+  const honorIncomingSignalQuantity = shouldHonorIncomingSignalQuantity({
+    signalAction,
+    signalMetadata,
+  });
 
   const [liveRuns, virtualRuns] = await Promise.all([
     mode === "virtual_only"
@@ -131,6 +148,7 @@ export async function dispatchStrategyExecutionSignal(
     for (const exchangeConnectionId of exchangeConnectionIds) {
       let quantity = signal.quantity.trim();
       if (
+        !honorIncomingSignalQuantity &&
         signalAction === "entry" &&
         contractValueUsd != null &&
         contractValueUsd > 0

@@ -34,12 +34,9 @@ function contractsText(qty: number): string {
 }
 
 function unrealizedPnlPct(row: LiveOpenPositionRow): number | null {
-  const qty = Math.abs(row.displayQty);
-  const entry = row.avgEntryPrice;
-  if (entry == null || !Number.isFinite(entry) || entry <= 0 || qty <= 1e-12) return null;
-  const notional = qty * entry;
-  if (notional <= 1e-12) return null;
-  const pct = (row.unrealizedPnlUsd / notional) * 100;
+  const usedMargin = row.usedMarginUsd;
+  if (usedMargin == null || !Number.isFinite(usedMargin) || usedMargin <= 1e-12) return null;
+  const pct = (row.unrealizedPnlUsd / usedMargin) * 100;
   return Number.isFinite(pct) ? pct : null;
 }
 
@@ -64,6 +61,7 @@ export function LivePositionsPanel({
 }) {
   const [rows, setRows] = useState(initialRows);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [reconciledAt, setReconciledAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -80,9 +78,11 @@ export function LivePositionsPanel({
         const data = (await res.json()) as {
           positions: LiveOpenPositionRow[] | AdminLiveOpenPositionRow[];
           updatedAt?: string;
+          reconciledAt?: string | null;
         };
         setRows(data.positions);
         setUpdatedAt(data.updatedAt ?? null);
+        setReconciledAt(data.reconciledAt ?? null);
         setError(null);
       } catch {
         setError("Network error while refreshing.");
@@ -153,6 +153,11 @@ export function LivePositionsPanel({
               {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Live refresh"}
               {error ? <span className="ml-2 text-amber-400/90">· {error}</span> : null}
             </p>
+            <p className="text-[10px] uppercase tracking-wide text-slate-500">
+              {reconciledAt
+                ? `Reconciled ${new Date(reconciledAt).toLocaleTimeString()}`
+                : "Reconciliation pending"}
+            </p>
           </div>
         </div>
 
@@ -168,6 +173,7 @@ export function LivePositionsPanel({
                 <th className="px-3 py-3 sm:px-4">Symbol</th>
                 <th className="px-3 py-3 sm:px-4">Side</th>
                 <th className="px-3 py-3 sm:px-4">Qty (contracts)</th>
+                <th className="px-3 py-3 sm:px-4">Reconcile</th>
                 <th className="px-3 py-3 sm:px-4">Entry</th>
                 <th className="px-3 py-3 sm:px-4">Mark</th>
                 <th className="px-3 py-3 sm:px-4">Time</th>
@@ -191,6 +197,26 @@ export function LivePositionsPanel({
                   <td className="px-3 py-3 tabular-nums text-slate-200 sm:px-4">
                     {row.netQty < 0 ? "-" : ""}
                     {contractsText(row.netQty)}
+                  </td>
+                  <td className="px-3 py-3 sm:px-4">
+                    {row.reconciliationStatus === "mismatch" ? (
+                      <span
+                        className="inline-flex items-center rounded-full border border-amber-300/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200"
+                        title={
+                          row.exchangeNetQty != null
+                            ? `Local=${row.netQty} Delta=${row.exchangeNetQty}`
+                            : "Mismatch detected with Delta snapshot"
+                        }
+                      >
+                        ⚠️ Mismatch
+                      </span>
+                    ) : row.reconciliationStatus === "matched" ? (
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-300/80">
+                        Matched
+                      </span>
+                    ) : (
+                      <span className="text-[10px] uppercase tracking-wide text-slate-500">Unknown</span>
+                    )}
                   </td>
                   <td className="px-3 py-3 tabular-nums text-slate-300 sm:px-4">
                     {row.avgEntryPrice != null ? row.avgEntryPrice.toFixed(2) : "—"}

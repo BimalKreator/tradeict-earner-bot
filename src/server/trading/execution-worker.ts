@@ -47,6 +47,29 @@ function mapSyncStatus(
   return s;
 }
 
+function signedQtyFromFill(params: {
+  side: "buy" | "sell";
+  fallbackQty: string;
+  filledQty?: string | null;
+}): string {
+  const rawFilled = params.filledQty != null ? String(params.filledQty).trim() : "";
+  const filled = Number(rawFilled);
+  const useQty =
+    rawFilled.length > 0 && Number.isFinite(filled) && filled > 0
+      ? rawFilled
+      : params.fallbackQty;
+  return params.side === "buy" ? useQty : `-${useQty}`;
+}
+
+function isNonRetryableDeltaExecutionError(errorText: string): boolean {
+  const s = errorText.toLowerCase();
+  return (
+    s.includes("family_position_limit_exceeded") ||
+    s.includes("\"code\":\"unsupported\"") ||
+    s.includes("leverage unsupported for requested")
+  );
+}
+
 async function runPostSubmitSync(
   adapter: ExchangeTradingAdapter,
   botOrderId: string,
@@ -71,8 +94,11 @@ async function runPostSubmitSync(
       filledQty: sync.filledQty ?? null,
     });
     if (sync.status === "filled") {
-      const signed =
-        p.side === "buy" ? p.quantity : `-${p.quantity}`;
+      const signed = signedQtyFromFill({
+        side: p.side,
+        fallbackQty: p.quantity,
+        filledQty: sync.filledQty ?? null,
+      });
       await bumpBotPositionNetQuantity({
         userId: eligRow.userId,
         subscriptionId: eligRow.subscriptionId,
@@ -87,7 +113,11 @@ async function runPostSubmitSync(
     ) {
       // Emergency close UX fallback: market exits can be filled after immediate sync.
       // Flatten local position optimistically so strategy is not blocked by stale open qty.
-      const signed = p.side === "buy" ? p.quantity : `-${p.quantity}`;
+      const signed = signedQtyFromFill({
+        side: p.side,
+        fallbackQty: p.quantity,
+        filledQty: null,
+      });
       await bumpBotPositionNetQuantity({
         userId: eligRow.userId,
         subscriptionId: eligRow.subscriptionId,
@@ -526,9 +556,24 @@ export async function processOneTradingJob(
         jobId: job.id,
       });
     }
+    const nonRetryable = isNonRetryableDeltaExecutionError(place.error);
+    if (nonRetryable) {
+      await recordBotExecutionLog({
+        botOrderId,
+        level: "error",
+        message: `non_retryable_exchange_rejection: ${place.error}`,
+        rawPayload: place.raw ?? null,
+      });
+      tradingLog("warn", "job_failed_non_retryable_exchange_rejection", {
+        jobId: job.id,
+        botOrderId,
+        runId: row.runId,
+        error: place.error,
+      });
+    }
     await failTradingJobRetryOrDead(
       job.id,
-      job.attempts,
+      nonRetryable ? job.maxAttempts : job.attempts,
       job.maxAttempts,
       manualCloseErr("manual_close_worker_place_failed", place.error),
     );

@@ -20,6 +20,7 @@ import {
 
 import type { Candle } from "@/server/trading/ta-engine/indicators/halftrend";
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
+import { findEligibleRunsForStrategyExecution } from "@/server/trading/eligibility";
 
 import {
   d1ContinuousTrailedStopPrice,
@@ -93,9 +94,20 @@ type PendingLiveSignal = {
   metadata?: Record<string, unknown>;
 };
 
+type HsEntryAuditPayload = {
+  userId: string;
+  symbol: string;
+  rawContractValue: number | null;
+  normalizedUsdContractValue: number;
+  d1Qty: number;
+  d2Qty: number;
+  usedMarginUsd: number;
+};
+
 async function dispatchPendingHsLiveSignals(
   signals: PendingLiveSignal[],
-): Promise<void> {
+): Promise<{ liveJobsEnqueued: number }> {
+  let liveJobsEnqueued = 0;
   for (const s of signals) {
     try {
       const res = await dispatchStrategyExecutionSignal({
@@ -119,7 +131,12 @@ async function dispatchPendingHsLiveSignals(
         console.warn(
           `${LOG} live dispatch failed correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} err=${res.error}`,
         );
+      } else if ((res.liveJobsEnqueued ?? 0) <= 0) {
+        console.error(
+          `${LOG} live dispatch produced zero jobs correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${res.liveJobsEnqueued ?? 0}`,
+        );
       } else {
+        liveJobsEnqueued += res.liveJobsEnqueued ?? 0;
         console.log(
           `${LOG} live dispatch ok correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${res.liveJobsEnqueued ?? 0}`,
         );
@@ -131,6 +148,21 @@ async function dispatchPendingHsLiveSignals(
       );
     }
   }
+  return { liveJobsEnqueued };
+}
+
+function normalizeUsdContractValue(rawContractValueUsd: number | null, markUsd: number): number {
+  if (rawContractValueUsd != null && Number.isFinite(rawContractValueUsd) && rawContractValueUsd > 0) {
+    if (rawContractValueUsd >= 0.5) {
+      return rawContractValueUsd;
+    }
+    // Some venue payloads expose contract value in underlying units; convert to USD via mark.
+    if (markUsd > 0) {
+      const converted = rawContractValueUsd * markUsd;
+      if (Number.isFinite(converted) && converted > 0) return converted;
+    }
+  }
+  return 1;
 }
 
 async function resolveHedgeScalpingTradingSymbol(
@@ -782,6 +814,17 @@ export async function processHedgeScalpingNewEntriesPhase(
       const sig = signalAnalysis.signal;
       if (sig !== "LONG" && sig !== "SHORT") continue;
 
+      const liveEligibleRuns = await findEligibleRunsForStrategyExecution(strat.id, {
+        targetUserIds: [userId],
+        signalAction: "entry",
+      });
+      if (liveEligibleRuns.length === 0) {
+        console.warn(
+          `${LOG} NEW_RUN skip — live execution route unavailable user=${userId} strategy=${strat.id} signal=${sig}`,
+        );
+        continue;
+      }
+
       const maxEntryDistanceFromSignalPct = cfg.general.maxEntryDistanceFromSignalPct;
       const { closedPrice, htValue } = signalAnalysis;
       if (!Number.isFinite(closedPrice) || !Number.isFinite(htValue) || Math.abs(htValue) < 1e-12) {
@@ -830,6 +873,15 @@ export async function processHedgeScalpingNewEntriesPhase(
       const now = new Date();
 
       try {
+        const entryAudit = {
+          userId,
+          symbol: "",
+          rawContractValue: null,
+          normalizedUsdContractValue: 1,
+          d1Qty: 0,
+          d2Qty: 0,
+          usedMarginUsd: 0,
+        } as HsEntryAuditPayload;
         const liveSignals = await db.transaction(async (tx) => {
           const paperRunId = await resolveVirtualPaperRunId(tx, {
             userId,
@@ -854,11 +906,15 @@ export async function processHedgeScalpingNewEntriesPhase(
           const paper = await loadVirtualPaperRunForSizing(tx, paperRunId);
           if (!paper) return [] as PendingLiveSignal[];
           const balanceUsd = hedgeSizingBalanceUsd(paper);
-          let contractValueUsd = await fetchDeltaIndiaProductContractValue(symbol);
-          if (!(contractValueUsd != null && Number.isFinite(contractValueUsd) && contractValueUsd > 0)) {
-            contractValueUsd = 1;
+          const rawContractValueUsd = await fetchDeltaIndiaProductContractValue(symbol);
+          const contractValueUsd = normalizeUsdContractValue(rawContractValueUsd, markUsd);
+          if (!(rawContractValueUsd != null && Number.isFinite(rawContractValueUsd) && rawContractValueUsd > 0)) {
             console.warn(
-              `${LOG} NEW_RUN product contract_value unavailable; defaulting to 1 contract USD symbol=${symbol} user=${userId} strategy=${strat.id}`,
+              `${LOG} NEW_RUN product contract value unavailable; defaulting to 1 USD contract symbol=${symbol} user=${userId} strategy=${strat.id}`,
+            );
+          } else if (rawContractValueUsd !== contractValueUsd) {
+            console.warn(
+              `${LOG} NEW_RUN normalized contract value symbol=${symbol} raw=${rawContractValueUsd} mark=${markUsd} usd_per_contract=${contractValueUsd}`,
             );
           }
           const d1QtyNum = computeHedgeScalpingD1Qty({
@@ -867,6 +923,15 @@ export async function processHedgeScalpingNewEntriesPhase(
             baseQtyPct: cfg.delta1.baseQtyPct,
           });
           const d2StepQty = computeHedgeScalpingD2StepQty(d1QtyNum, cfg.delta2.stepQtyPct);
+          const runLeverage =
+            liveEligibleRuns.length > 0 ? Math.max(1, num(liveEligibleRuns[0]!.leverage)) : 1;
+          entryAudit.userId = userId;
+          entryAudit.symbol = symbol;
+          entryAudit.rawContractValue = rawContractValueUsd;
+          entryAudit.normalizedUsdContractValue = contractValueUsd;
+          entryAudit.d1Qty = d1QtyNum;
+          entryAudit.d2Qty = d2StepQty;
+          entryAudit.usedMarginUsd = (d1QtyNum + d2StepQty) / runLeverage;
           if (!(d1QtyNum > 0) || !(d2StepQty > 0)) {
             console.warn(
               `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} markUsd=${markUsd} workerMark=${currentMarkPrice}`,
@@ -960,7 +1025,10 @@ export async function processHedgeScalpingNewEntriesPhase(
           ];
         });
         if (liveSignals.length > 0) {
-          await dispatchPendingHsLiveSignals(liveSignals);
+          const dispatch = await dispatchPendingHsLiveSignals(liveSignals);
+          console.log(
+            `${LOG} event="hs_entry_audit" userId="${entryAudit.userId}" symbol="${entryAudit.symbol}" rawContractValue=${entryAudit.rawContractValue ?? "null"} normalizedUsdContractValue=${entryAudit.normalizedUsdContractValue} d1Qty=${entryAudit.d1Qty} d2Qty=${entryAudit.d2Qty} usedMarginUsd=${entryAudit.usedMarginUsd} liveJobsEnqueued=${dispatch.liveJobsEnqueued}`,
+          );
         }
       } catch (e) {
         const err = e as { code?: string; message?: string };

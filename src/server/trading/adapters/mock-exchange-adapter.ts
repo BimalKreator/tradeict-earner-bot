@@ -1,4 +1,5 @@
 import type {
+  ExchangeOpenPositionsResult,
   ExchangeTradingAdapter,
   OrderSyncResult,
   PlaceOrderInput,
@@ -44,5 +45,9 @@ export class MockExchangeAdapter implements ExchangeTradingAdapter {
       status: "unknown",
       raw: { mock: true, externalOrderId },
     };
+  }
+
+  async fetchOpenPositions(): Promise<ExchangeOpenPositionsResult> {
+    return { ok: true, positions: [], raw: { mock: true } };
   }
 }

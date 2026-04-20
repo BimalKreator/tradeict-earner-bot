@@ -197,6 +197,13 @@
       "when": 1776700000000,
       "tag": "0027_hedge_scalping_audit_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1776900000000,
+      "tag": "0028_position_reconciliation_observer",
+      "breakpoints": true
     }
   ]
 }
