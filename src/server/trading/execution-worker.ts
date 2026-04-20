@@ -170,6 +170,22 @@ export async function processOneTradingJob(
     manualCloseRequestId
       ? `${tag}: ${message}`
       : message;
+  let effectiveQuantity = p.quantity;
+  if (emergencyExitBypass) {
+    const rawQty = Number(String(p.quantity ?? "").trim());
+    if (Number.isFinite(rawQty) && Math.abs(rawQty) > 0 && Math.abs(rawQty) < 1) {
+      effectiveQuantity = "1";
+      tradingLog("warn", "manual_close_worker_quantity_adjusted", {
+        manualCloseRequestId,
+        jobId: job.id,
+        originalQuantity: p.quantity,
+        adjustedQuantity: effectiveQuantity,
+        reason: "fractional_contract_qty_for_delta",
+      });
+    }
+  }
+  const payloadForExecution =
+    effectiveQuantity === p.quantity ? p : { ...p, quantity: effectiveQuantity };
 
   if (manualCloseRequestId) {
     tradingLog("info", "manual_close_worker_job_claimed", {
@@ -421,7 +437,7 @@ export async function processOneTradingJob(
       symbol: p.symbol,
       side: p.side,
       orderType: p.orderType,
-      quantity: p.quantity,
+      quantity: payloadForExecution.quantity,
       limitPrice: p.limitPrice ?? null,
     });
 
@@ -464,13 +480,13 @@ export async function processOneTradingJob(
     try {
       place = await adapterRes.adapter.placeOrder({
         internalClientOrderId,
-        symbol: p.symbol,
-        side: p.side,
-        orderType: p.orderType,
-        quantity: p.quantity,
-        limitPrice: p.limitPrice ?? null,
+        symbol: payloadForExecution.symbol,
+        side: payloadForExecution.side,
+        orderType: payloadForExecution.orderType,
+        quantity: payloadForExecution.quantity,
+        limitPrice: payloadForExecution.limitPrice ?? null,
         reduceOnly: signalAction === "exit",
-        leverage: p.leverage ?? row.leverage,
+        leverage: payloadForExecution.leverage ?? row.leverage,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -523,7 +539,7 @@ export async function processOneTradingJob(
     adapterRes.adapter,
     botOrderId,
     place.externalOrderId,
-    p,
+    payloadForExecution,
     row,
   );
 

@@ -7,6 +7,7 @@ import {
   hedgeScalpingVirtualRuns,
 } from "@/server/db/schema/hedge-scalping";
 import { virtualBotOrders, virtualStrategyRuns } from "@/server/db/schema/virtual-trading";
+import { contractsFromUsdNotionalAndContractValue } from "@/server/exchange/delta-contract-sizing";
 
 import { generateInternalClientOrderId } from "@/server/trading/ids";
 
@@ -79,21 +80,27 @@ export function hedgeSizingBalanceUsd(virtualRun: {
 
 export function computeHedgeScalpingD1Qty(params: {
   balanceUsd: number;
-  markPrice: number;
+  contractValueUsd: number;
   baseQtyPct: number;
 }): number {
-  const { markPrice, baseQtyPct } = params;
+  const { contractValueUsd, baseQtyPct } = params;
   const balanceUsd = Math.max(0, params.balanceUsd);
-  if (!(markPrice > 0) || !(balanceUsd > 0)) return 0;
+  if (!(contractValueUsd > 0) || !(balanceUsd > 0)) return 0;
   const pct = Math.min(100, Math.max(0, baseQtyPct));
   const positionUsd = Math.min(balanceUsd * (pct / 100), balanceUsd);
-  return positionUsd / markPrice;
+  const rawContracts = contractsFromUsdNotionalAndContractValue({
+    notionalUsd: positionUsd,
+    contractValueUsd,
+  });
+  return rawContracts >= 1 ? rawContracts : 0;
 }
 
 export function computeHedgeScalpingD2StepQty(d1Qty: number, stepQtyPct: number): number {
   if (!(d1Qty > 0)) return 0;
   const pct = Math.min(100, Math.max(0, stepQtyPct));
-  return d1Qty * (pct / 100);
+  if (!(pct > 0)) return 0;
+  const raw = Math.floor(d1Qty * (pct / 100));
+  return raw >= 1 ? raw : 1;
 }
 
 export function hsCorrelationD1Entry(hedgeRunId: string): string {

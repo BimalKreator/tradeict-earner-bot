@@ -10,6 +10,7 @@ import type {
   DeltaWalletTransactionsSnapshot,
 } from "@/server/exchange/delta-india-wallet-types";
 import { normalizeDeltaOrderContractSize } from "@/server/exchange/delta-order-contract-size";
+import { fetchDeltaIndiaProductLeverageBounds } from "@/server/exchange/delta-product-resolver";
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
@@ -154,6 +155,11 @@ function parseEligibleLeverage(raw: string | null | undefined): number | null {
   if (!Number.isFinite(n) || n <= 0) return null;
   const floored = Math.floor(n);
   return floored >= 1 ? floored : null;
+}
+
+function isDeltaUnsupportedLeverageError(errorText: string): boolean {
+  const s = errorText.toLowerCase();
+  return s.includes("\"code\":\"unsupported\"") || s.includes("unsupported");
 }
 
 function buildPlaceOrderJsonBody(
@@ -310,7 +316,34 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
 
       const lev = parseEligibleLeverage(input.leverage ?? null);
       if (lev != null) {
-        const levRes = await this.setProductOrderLeverage(product.productId, lev);
+        let levRes = await this.setProductOrderLeverage(product.productId, lev);
+        if (!levRes.ok && isDeltaUnsupportedLeverageError(levRes.error)) {
+          const bounds = await fetchDeltaIndiaProductLeverageBounds(input.symbol);
+          const maxLev = bounds.maxLeverage;
+          const fallbackLev =
+            maxLev != null ? Math.max(1, Math.min(Math.floor(maxLev), lev)) : null;
+          if (fallbackLev != null && fallbackLev !== lev) {
+            const fallbackRes = await this.setProductOrderLeverage(product.productId, fallbackLev);
+            if (fallbackRes.ok) {
+              console.warn(
+                `[DeltaIndiaTradingAdapter] leverage fallback applied symbol=${input.symbol} requested=${lev} fallback=${fallbackLev}`,
+              );
+              levRes = { ok: true };
+            } else {
+              return {
+                ok: false,
+                error:
+                  `Delta leverage unsupported for requested=${lev}; fallback=${fallbackLev} failed: ${fallbackRes.error}`,
+              };
+            }
+          } else {
+            return {
+              ok: false,
+              error:
+                `Delta leverage unsupported for requested=${lev}; no fallback leverage metadata found for ${input.symbol}`,
+            };
+          }
+        }
         if (!levRes.ok) {
           return { ok: false, error: levRes.error };
         }

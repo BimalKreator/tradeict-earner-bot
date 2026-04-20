@@ -14,5 +14,20 @@ export function contractsFromCollateralLeverageAndContractValue(params: {
   const { collateralUsd, leverage, contractValueUsd } = params;
   if (!(collateralUsd > 0) || !(leverage > 0) || !(contractValueUsd > 0)) return 0;
   const maxNotionalUsd = collateralUsd * leverage;
-  return Math.floor(maxNotionalUsd / contractValueUsd);
+  return contractsFromUsdNotionalAndContractValue({
+    notionalUsd: maxNotionalUsd,
+    contractValueUsd,
+  });
+}
+
+/**
+ * Maps USD notional to whole Delta contracts using product `contract_value`.
+ */
+export function contractsFromUsdNotionalAndContractValue(params: {
+  notionalUsd: number;
+  contractValueUsd: number;
+}): number {
+  const { notionalUsd, contractValueUsd } = params;
+  if (!(notionalUsd > 0) || !(contractValueUsd > 0)) return 0;
+  return Math.floor(notionalUsd / contractValueUsd);
 }

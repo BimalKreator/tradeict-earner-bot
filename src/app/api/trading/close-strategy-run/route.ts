@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
@@ -15,6 +15,7 @@ import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
 import { db } from "@/server/db";
 import {
   botPositions,
+  botOrders,
   hedgeScalpingVirtualClips,
   hedgeScalpingVirtualRuns,
   strategies,
@@ -45,6 +46,12 @@ type CloseMode = "virtual" | "real";
 
 function oppositeSideForNet(netQty: number): "buy" | "sell" {
   return netQty > 0 ? "sell" : "buy";
+}
+
+function toWholeContractCloseQty(rawNetQty: number): number {
+  const absNet = Math.abs(rawNetQty);
+  if (!Number.isFinite(absNet) || absNet <= 0) return 0;
+  return Math.floor(absNet);
 }
 
 /** Hedge D1 entry correlation only: `hs_d1_<runId>` (not `hs_d1_exit_...`). */
@@ -620,6 +627,7 @@ async function closeRealRun(
 
   const positions = await db
     .select({
+      id: botPositions.id,
       symbol: botPositions.symbol,
       netQty: botPositions.netQuantity,
       exchangeConnectionId: botPositions.exchangeConnectionId,
@@ -641,9 +649,52 @@ async function closeRealRun(
   }
 
   let closed = 0;
+  let ghostFlushed = 0;
   for (const p of positions) {
     const net = Number(p.netQty ?? "0");
     if (!(Math.abs(net) > 1e-8)) continue;
+    const wholeContracts = toWholeContractCloseQty(net);
+    if (wholeContracts < 1) {
+      const [lastFilled] = await db
+        .select({
+          filledQty: botOrders.filledQty,
+          createdAt: botOrders.createdAt,
+        })
+        .from(botOrders)
+        .where(
+          and(
+            eq(botOrders.subscriptionId, run.subscriptionId),
+            eq(botOrders.exchangeConnectionId, p.exchangeConnectionId),
+            eq(botOrders.symbol, p.symbol),
+          ),
+        )
+        .orderBy(desc(botOrders.createdAt))
+        .limit(1);
+      await db
+        .update(botPositions)
+        .set({
+          netQuantity: "0",
+          averageEntryPrice: null,
+          updatedAt: new Date(),
+          metadata: sql`coalesce(${botPositions.metadata}, '{}'::jsonb) || jsonb_build_object(
+            'ghost_position_flushed_at', now(),
+            'ghost_position_previous_net_qty', ${p.netQty},
+            'ghost_position_last_filled_qty', ${lastFilled?.filledQty ?? null}
+          )`,
+        })
+        .where(eq(botPositions.id, p.id));
+      ghostFlushed += 1;
+      tradingLog("warn", "manual_close_real_too_small_flushed", {
+        requestId,
+        runId,
+        symbol: p.symbol,
+        exchangeConnectionId: p.exchangeConnectionId,
+        netQty: net,
+        detail: "position_too_small_to_close_on_delta",
+        lastFilledQty: lastFilled?.filledQty ?? null,
+      });
+      continue;
+    }
     const venue =
       p.exchangeConnectionId === run.secondaryEx
         ? "secondary"
@@ -656,7 +707,7 @@ async function closeRealRun(
       symbol: p.symbol,
       side: oppositeSideForNet(net),
       orderType: "market",
-      quantity: Math.abs(net).toFixed(8),
+      quantity: String(wholeContracts),
       actionType: "exit",
       exchangeVenue: venue,
       targetUserIds: [run.userId],
@@ -685,6 +736,7 @@ async function closeRealRun(
       exchangeConnectionId: p.exchangeConnectionId,
       venue,
       netQty: net,
+      closeContracts: wholeContracts,
       jobsEnqueued: res.jobsEnqueued,
       liveJobsEnqueued: res.liveJobsEnqueued ?? 0,
       virtualJobsEnqueued: res.virtualJobsEnqueued ?? 0,
@@ -696,8 +748,13 @@ async function closeRealRun(
     requestId,
     runId,
     closed,
+    ghostFlushed,
   });
-  return { ok: true as const, closed, detail: "real_exit_jobs_dispatched" };
+  return {
+    ok: true as const,
+    closed,
+    detail: ghostFlushed > 0 ? "real_exit_jobs_dispatched_with_ghost_flush" : "real_exit_jobs_dispatched",
+  };
 }
 
 export async function POST(req: Request) {

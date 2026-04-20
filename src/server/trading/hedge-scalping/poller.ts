@@ -6,6 +6,7 @@ import {
   type HedgeScalpingConfig,
 } from "@/lib/hedge-scalping-config";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
+import { fetchDeltaIndiaProductContractValue } from "@/server/exchange/delta-product-resolver";
 import { extractHedgeScalpingSymbolFromRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
 import { db } from "@/server/db";
 import {
@@ -853,9 +854,16 @@ export async function processHedgeScalpingNewEntriesPhase(
           const paper = await loadVirtualPaperRunForSizing(tx, paperRunId);
           if (!paper) return [] as PendingLiveSignal[];
           const balanceUsd = hedgeSizingBalanceUsd(paper);
+          let contractValueUsd = await fetchDeltaIndiaProductContractValue(symbol);
+          if (!(contractValueUsd != null && Number.isFinite(contractValueUsd) && contractValueUsd > 0)) {
+            contractValueUsd = 1;
+            console.warn(
+              `${LOG} NEW_RUN product contract_value unavailable; defaulting to 1 contract USD symbol=${symbol} user=${userId} strategy=${strat.id}`,
+            );
+          }
           const d1QtyNum = computeHedgeScalpingD1Qty({
             balanceUsd,
-            markPrice: markUsd,
+            contractValueUsd,
             baseQtyPct: cfg.delta1.baseQtyPct,
           });
           const d2StepQty = computeHedgeScalpingD2StepQty(d1QtyNum, cfg.delta2.stepQtyPct);

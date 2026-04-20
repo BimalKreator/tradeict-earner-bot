@@ -115,6 +115,16 @@ async function fetchDeltaIndiaProductResultRecord(
   }
 }
 
+function asPositiveFinite(value: unknown): number | null {
+  const n =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value.trim())
+        : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /**
  * Single-product lookup when the paginated catalog map misses or catalog fetch failed.
  * `GET /v2/products/{symbol}` returns `{ result: { id, symbol, ... } }`.
@@ -149,6 +159,27 @@ export async function fetchDeltaIndiaProductContractValue(
         ? Number(String(cvRaw).trim())
         : NaN;
   return Number.isFinite(cv) && cv > 0 ? cv : null;
+}
+
+/**
+ * Best-effort leverage caps from Delta product metadata.
+ */
+export async function fetchDeltaIndiaProductLeverageBounds(
+  symbol: string,
+): Promise<{ maxLeverage: number | null; minLeverage: number | null }> {
+  const result = await fetchDeltaIndiaProductResultRecord(symbol);
+  if (!result) return { maxLeverage: null, minLeverage: null };
+  const maxLeverage =
+    asPositiveFinite(result.max_leverage) ??
+    asPositiveFinite(result.maximum_leverage) ??
+    asPositiveFinite(result.maxLeverage) ??
+    null;
+  const minLeverage =
+    asPositiveFinite(result.min_leverage) ??
+    asPositiveFinite(result.minimum_leverage) ??
+    asPositiveFinite(result.minLeverage) ??
+    null;
+  return { maxLeverage, minLeverage };
 }
 
 /**
