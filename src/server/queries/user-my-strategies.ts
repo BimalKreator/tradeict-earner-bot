@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 
 import { mergeStrategyPricing } from "@/lib/user-strategy-pricing";
@@ -10,6 +10,18 @@ import {
 } from "@/server/db/schema";
 
 import { listEffectivePricingOverridesForUser } from "./user-strategy-catalog";
+
+/** Accepts Drizzle `Date` or serialized string timestamps without throwing. */
+function coerceValidDate(value: unknown): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
 
 export type MyStrategySubscriptionStatus =
   InferSelectModel<typeof userStrategySubscriptions>["status"];
@@ -56,6 +68,7 @@ export async function ensureMissingStrategyRunsForUser(
       and(
         eq(userStrategySubscriptions.userId, userId),
         isNull(userStrategySubscriptions.deletedAt),
+        ne(userStrategySubscriptions.status, "cancelled"),
       ),
     );
 
@@ -126,6 +139,7 @@ export async function listMyStrategiesForUser(
       and(
         eq(userStrategySubscriptions.userId, userId),
         isNull(userStrategySubscriptions.deletedAt),
+        ne(userStrategySubscriptions.status, "cancelled"),
       ),
     )
     .orderBy(strategies.name);
@@ -136,16 +150,42 @@ export async function listMyStrategiesForUser(
     strategyIds,
   );
 
-  return rows.map((r) => {
+  const mapped: MyStrategyRow[] = [];
+
+  for (const r of rows) {
+    if (
+      !r.subscriptionId ||
+      !r.strategyId ||
+      typeof r.slug !== "string" ||
+      !r.slug.trim() ||
+      typeof r.name !== "string" ||
+      !r.name.trim()
+    ) {
+      continue;
+    }
+
+    const accessValidUntil = coerceValidDate(r.accessValidUntil);
+    const purchasedAt = coerceValidDate(r.purchasedAt);
+    if (accessValidUntil == null || purchasedAt == null) {
+      continue;
+    }
+
+    const defaultFee = r.defaultMonthlyFeeInr;
+    const defaultRev = r.defaultRevenueSharePercent;
+    if (defaultFee == null || defaultRev == null) {
+      continue;
+    }
+
     const ov = overrides.get(r.strategyId);
     const merged = mergeStrategyPricing(
       {
-        defaultMonthlyFeeInr: String(r.defaultMonthlyFeeInr),
-        defaultRevenueSharePercent: String(r.defaultRevenueSharePercent),
+        defaultMonthlyFeeInr: String(defaultFee),
+        defaultRevenueSharePercent: String(defaultRev),
       },
       ov ?? null,
     );
-    return {
+
+    mapped.push({
       subscriptionId: r.subscriptionId,
       strategyId: r.strategyId,
       slug: r.slug,
@@ -153,14 +193,16 @@ export async function listMyStrategiesForUser(
       description: r.description,
       strategyStatus: r.strategyStatus,
       subscriptionStatus: r.subscriptionStatus,
-      accessValidUntil: r.accessValidUntil,
-      purchasedAt: r.purchasedAt,
+      accessValidUntil,
+      purchasedAt,
       runStatus: r.runStatus,
       capitalToUseInr: r.capitalToUseInr ? String(r.capitalToUseInr) : null,
       leverage: r.leverage ? String(r.leverage) : null,
       monthlyFeeInr: merged.monthlyFeeInr,
       revenueSharePercent: merged.revenueSharePercent,
       hasPricingOverride: merged.hasOverride,
-    };
-  });
+    });
+  }
+
+  return mapped;
 }

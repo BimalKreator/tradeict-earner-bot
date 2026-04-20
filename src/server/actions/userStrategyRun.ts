@@ -418,32 +418,56 @@ export async function unsubscribeStrategyRunAction(
   }
 
   if (row.subStatus === "cancelled") {
-    return { ok: true, message: "This strategy is already removed from your account." };
+    revalidatePath("/user/my-strategies");
+    return {
+      ok: true,
+      message: "This strategy is already removed from your account.",
+    };
   }
 
-  await database.transaction(async (tx) => {
-    await tx
-      .update(userStrategyRuns)
-      .set({
-        status: "inactive",
-        pausedAt: now,
-        lastStateReason: "user_unsubscribe",
-        updatedAt: now,
-      })
-      .where(eq(userStrategyRuns.id, row.runId));
+  try {
+    await database.transaction(async (tx) => {
+      await tx
+        .update(userStrategyRuns)
+        .set({
+          status: "inactive",
+          pausedAt: now,
+          lastStateReason: "user_unsubscribe",
+          updatedAt: now,
+        })
+        .where(eq(userStrategyRuns.id, row.runId));
 
-    await tx
-      .update(userStrategySubscriptions)
-      .set({
-        status: "cancelled",
-        deletedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(userStrategySubscriptions.id, subscriptionId));
-  });
+      await tx
+        .update(userStrategySubscriptions)
+        .set({
+          status: "cancelled",
+          deletedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(userStrategySubscriptions.id, subscriptionId),
+            eq(userStrategySubscriptions.userId, userId),
+            isNull(userStrategySubscriptions.deletedAt),
+          ),
+        );
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("unsubscribe_strategy_run_failed", { subscriptionId, msg });
+    return {
+      ok: false,
+      message:
+        "Could not complete unsubscribe. Please refresh and try again, or contact support if this persists.",
+    };
+  }
 
   revalidatePath("/user/my-strategies");
-  return { ok: true, message: "You are unsubscribed — this strategy will no longer appear here." };
+  return {
+    ok: true,
+    message:
+      "You are unsubscribed — this strategy will no longer appear here.",
+  };
 }
 
 export { initialState as strategyRunActionInitialState };

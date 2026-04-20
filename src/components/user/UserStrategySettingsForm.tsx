@@ -29,11 +29,18 @@ function issuesToMap(issues: ZodIssue[]): Record<string, string> {
   return m;
 }
 
+function toSafeString(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return String(v);
+}
+
 export function UserStrategySettingsForm({
   strategySlug = "",
   constraints,
-  initialCapitalToUseInr = "",
-  initialLeverage = "",
+  initialCapitalToUseInr,
+  initialLeverage,
   initialPrimaryExchangeId = null,
   initialSecondaryExchangeId = null,
   deltaConnections = [],
@@ -59,6 +66,9 @@ export function UserStrategySettingsForm({
   /** Merged with defaults on the server; safe for legacy `settings_json`. */
   hedgeScalpingResolvedConfig?: HedgeScalpingConfig | null;
 }) {
+  const initialCapitalSafe = toSafeString(initialCapitalToUseInr);
+  const initialLeverageSafe = toSafeString(initialLeverage);
+
   const safeConstraints = useMemo<UserStrategySettingsConstraints>(
     () => ({
       recommendedCapitalInr: constraints?.recommendedCapitalInr ?? null,
@@ -79,8 +89,8 @@ export function UserStrategySettingsForm({
     return Number.isFinite(n) ? n : null;
   }, [safeConstraints.maxLeverage]);
 
-  const [capital, setCapital] = useState(initialCapitalToUseInr);
-  const [leverage, setLeverage] = useState(initialLeverage);
+  const [capital, setCapital] = useState(initialCapitalSafe);
+  const [leverage, setLeverage] = useState(initialLeverageSafe);
   const [liveErrors, setLiveErrors] = useState<Record<string, string>>({});
 
   const [state, formAction, pending] = useActionState<
@@ -89,7 +99,10 @@ export function UserStrategySettingsForm({
   >(updateUserStrategySettingsAction, userStrategySettingsActionInitialState);
 
   useEffect(() => {
-    const r = schema.safeParse({ capitalToUseInr: capital, leverage });
+    const r = schema.safeParse({
+      capitalToUseInr: capital ?? "",
+      leverage: leverage ?? "",
+    });
     if (!r.success) {
       setLiveErrors(issuesToMap(r.error.issues));
     } else {
@@ -97,8 +110,10 @@ export function UserStrategySettingsForm({
     }
   }, [capital, leverage, schema]);
 
-  const capitalErr = liveErrors.capitalToUseInr ?? state.fieldErrors.capitalToUseInr;
-  const leverageErr = liveErrors.leverage ?? state.fieldErrors.leverage;
+  const fieldErrors = state.fieldErrors ?? {};
+  const capitalErr =
+    liveErrors.capitalToUseInr ?? fieldErrors.capitalToUseInr;
+  const leverageErr = liveErrors.leverage ?? fieldErrors.leverage;
 
   const sliderMin = 0.01;
   const sliderMax = maxLevNum ?? 1;
@@ -190,9 +205,9 @@ export function UserStrategySettingsForm({
                 </option>
               ))}
             </select>
-            {state.fieldErrors.hedge_scalping_symbol ? (
+            {fieldErrors.hedge_scalping_symbol ? (
               <p className="mt-1 text-sm text-amber-200" role="alert">
-                {state.fieldErrors.hedge_scalping_symbol}
+                {fieldErrors.hedge_scalping_symbol}
               </p>
             ) : null}
             <p className="mt-3 text-xs leading-relaxed text-[var(--text-muted)]">
@@ -254,9 +269,9 @@ export function UserStrategySettingsForm({
                 </option>
               ))}
             </select>
-            {state.fieldErrors.primary_exchange_connection_id ? (
+            {fieldErrors.primary_exchange_connection_id ? (
               <p className="mt-1 text-sm text-amber-200" role="alert">
-                {state.fieldErrors.primary_exchange_connection_id}
+                {fieldErrors.primary_exchange_connection_id}
               </p>
             ) : null}
           </div>
@@ -281,9 +296,9 @@ export function UserStrategySettingsForm({
                 </option>
               ))}
             </select>
-            {state.fieldErrors.secondary_exchange_connection_id ? (
+            {fieldErrors.secondary_exchange_connection_id ? (
               <p className="mt-1 text-sm text-amber-200" role="alert">
-                {state.fieldErrors.secondary_exchange_connection_id}
+                {fieldErrors.secondary_exchange_connection_id}
               </p>
             ) : null}
           </div>

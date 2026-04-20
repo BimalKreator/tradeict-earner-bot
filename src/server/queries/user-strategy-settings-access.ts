@@ -6,7 +6,10 @@ import {
   isHedgeScalpingStrategySlug,
   parseAllowedSymbolsList,
 } from "@/lib/hedge-scalping-config";
-import { extractHedgeScalpingSymbolFromRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
+import {
+  extractHedgeScalpingSymbolFromRunSettingsJson,
+  parseUserStrategyRunSettingsJson,
+} from "@/lib/user-strategy-run-settings-json";
 import { resolveHedgeScalpingConfigForUi } from "@/server/trading/hedge-scalping/load-hedge-scalping-config";
 import { db } from "@/server/db";
 import {
@@ -49,6 +52,67 @@ const EDITABLE_RUN_STATUSES = new Set<RunRow["status"]>([
   "paused_insufficient_funds",
   "paused_exchange_off",
 ]);
+
+/**
+ * Prefer DB columns; fall back to `run_settings_json.execution` so the UI matches
+ * API-only or partially migrated rows without crashing on missing columns.
+ */
+function deriveCapitalAndLeverageForSettingsUi(row: {
+  capitalToUseInr: string | null;
+  leverage: string | null;
+  runSettingsJson: unknown;
+  recommendedCapitalInr: unknown;
+}): { capitalToUseInr: string | null; leverage: string | null } {
+  const parsed = parseUserStrategyRunSettingsJson(row.runSettingsJson);
+  const ex = parsed.execution;
+
+  let capital: string | null =
+    row.capitalToUseInr != null && String(row.capitalToUseInr).trim() !== ""
+      ? String(row.capitalToUseInr).trim()
+      : null;
+
+  if (
+    capital == null &&
+    typeof ex?.allocatedCapitalUsd === "number" &&
+    Number.isFinite(ex.allocatedCapitalUsd) &&
+    ex.allocatedCapitalUsd > 0
+  ) {
+    capital = String(ex.allocatedCapitalUsd);
+  }
+
+  if (
+    capital == null &&
+    typeof ex?.capitalPercentage === "number" &&
+    Number.isFinite(ex.capitalPercentage) &&
+    ex.capitalPercentage > 0 &&
+    ex.capitalPercentage <= 100
+  ) {
+    const recRaw = row.recommendedCapitalInr;
+    const rec =
+      recRaw != null
+        ? Number(String(recRaw).replace(/,/g, "").trim())
+        : NaN;
+    if (Number.isFinite(rec) && rec > 0) {
+      capital = String((ex.capitalPercentage / 100) * rec);
+    }
+  }
+
+  let leverage: string | null =
+    row.leverage != null && String(row.leverage).trim() !== ""
+      ? String(row.leverage).trim()
+      : null;
+
+  if (
+    leverage == null &&
+    typeof ex?.leverage === "number" &&
+    Number.isFinite(ex.leverage) &&
+    ex.leverage > 0
+  ) {
+    leverage = String(ex.leverage);
+  }
+
+  return { capitalToUseInr: capital, leverage };
+}
 
 export async function getUserStrategySettingsPageData(
   userId: string,
@@ -116,6 +180,14 @@ export async function getUserStrategySettingsPageData(
       ? savedSym
       : (hedgeScalpingAllowedSymbols[0] ?? null);
 
+  const { capitalToUseInr: derivedCapital, leverage: derivedLeverage } =
+    deriveCapitalAndLeverageForSettingsUi({
+      capitalToUseInr: row.capitalToUseInr,
+      leverage: row.leverage,
+      runSettingsJson: row.runSettingsJson,
+      recommendedCapitalInr: row.recommendedCapitalInr,
+    });
+
   return {
     strategyId: row.strategyId,
     strategySlug: row.strategySlug,
@@ -127,10 +199,8 @@ export async function getUserStrategySettingsPageData(
     subscriptionId: row.subscriptionId,
     runId: row.runId,
     runStatus: row.runStatus,
-    capitalToUseInr: row.capitalToUseInr
-      ? String(row.capitalToUseInr)
-      : null,
-    leverage: row.leverage ? String(row.leverage) : null,
+    capitalToUseInr: derivedCapital,
+    leverage: derivedLeverage,
     primaryExchangeConnectionId: row.primaryExchangeConnectionId,
     secondaryExchangeConnectionId: row.secondaryExchangeConnectionId,
     deltaConnections: deltaConnections.map((c) => ({

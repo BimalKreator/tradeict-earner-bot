@@ -109,27 +109,34 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
       </div>
 
       <UserStrategySettingsForm
-        strategySlug={data?.strategySlug ?? slug}
+        strategySlug={data.strategySlug ?? slug}
         constraints={{
-          recommendedCapitalInr: data?.recommendedCapitalInr ?? null,
-          maxLeverage: data?.maxLeverage ?? null,
+          recommendedCapitalInr: data.recommendedCapitalInr ?? null,
+          maxLeverage: data.maxLeverage ?? null,
         }}
-        initialCapitalToUseInr={data?.capitalToUseInr ?? ""}
-        initialLeverage={
-          data?.leverage ??
-          (data?.maxLeverage != null && Number.isFinite(Number(data?.maxLeverage))
-            ? "1"
-            : "")
+        initialCapitalToUseInr={
+          data.capitalToUseInr != null && String(data.capitalToUseInr).trim() !== ""
+            ? String(data.capitalToUseInr)
+            : ""
         }
-        initialPrimaryExchangeId={data?.primaryExchangeConnectionId ?? null}
-        initialSecondaryExchangeId={data?.secondaryExchangeConnectionId ?? null}
-        deltaConnections={data?.deltaConnections ?? []}
-        runStatus={data?.runStatus ?? "ready_to_activate"}
-        canEditSettings={data?.canEditSettings ?? false}
-        isHedgeScalpingStrategy={data?.isHedgeScalpingStrategy ?? false}
-        hedgeScalpingAllowedSymbols={data?.hedgeScalpingAllowedSymbols ?? []}
-        initialHedgeScalpingSymbol={data?.initialHedgeScalpingSymbol ?? null}
-        hedgeScalpingResolvedConfig={data?.hedgeScalpingResolvedConfig ?? null}
+        initialLeverage={
+          data.leverage != null && String(data.leverage).trim() !== ""
+            ? String(data.leverage)
+            : data.maxLeverage != null &&
+                String(data.maxLeverage).trim() !== "" &&
+                Number.isFinite(Number(data.maxLeverage))
+              ? "1"
+              : ""
+        }
+        initialPrimaryExchangeId={data.primaryExchangeConnectionId ?? null}
+        initialSecondaryExchangeId={data.secondaryExchangeConnectionId ?? null}
+        deltaConnections={data.deltaConnections ?? []}
+        runStatus={data.runStatus ?? "ready_to_activate"}
+        canEditSettings={data.canEditSettings ?? false}
+        isHedgeScalpingStrategy={data.isHedgeScalpingStrategy ?? false}
+        hedgeScalpingAllowedSymbols={data.hedgeScalpingAllowedSymbols ?? []}
+        initialHedgeScalpingSymbol={data.initialHedgeScalpingSymbol ?? null}
+        hedgeScalpingResolvedConfig={data.hedgeScalpingResolvedConfig ?? null}
       />
     </div>
   );

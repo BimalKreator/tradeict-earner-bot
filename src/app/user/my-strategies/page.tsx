@@ -51,11 +51,46 @@ function isSubscriptionExpired(
   row: Awaited<ReturnType<typeof listMyStrategiesForUser>>[number],
   now: Date,
 ): boolean {
+  const end = row.accessValidUntil;
+  const endMs = end instanceof Date ? end.getTime() : NaN;
+  if (Number.isNaN(endMs)) return true;
   return (
-    now.getTime() >= row.accessValidUntil.getTime() ||
+    now.getTime() >= endMs ||
     row.subscriptionStatus === "expired" ||
     row.subscriptionStatus === "cancelled"
   );
+}
+
+/** Last-line defense if DB / mapping ever yields partial rows. */
+function isRenderableMyStrategyRow(
+  row: Awaited<ReturnType<typeof listMyStrategiesForUser>>[number],
+): boolean {
+  if (
+    typeof row.subscriptionId !== "string" ||
+    row.subscriptionId.trim() === "" ||
+    typeof row.strategyId !== "string" ||
+    row.strategyId.trim() === "" ||
+    typeof row.slug !== "string" ||
+    row.slug.trim() === "" ||
+    typeof row.name !== "string" ||
+    row.name.trim() === ""
+  ) {
+    return false;
+  }
+  const a = row.accessValidUntil;
+  const p = row.purchasedAt;
+  if (!(a instanceof Date) || Number.isNaN(a.getTime())) return false;
+  if (!(p instanceof Date) || Number.isNaN(p.getTime())) return false;
+  if (typeof row.monthlyFeeInr !== "string" || row.monthlyFeeInr.trim() === "") {
+    return false;
+  }
+  if (
+    typeof row.revenueSharePercent !== "string" ||
+    row.revenueSharePercent.trim() === ""
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function toViewModel(
@@ -133,9 +168,10 @@ export default async function UserMyStrategiesPage() {
 
   const rows = await listMyStrategiesForUser(userId);
   const now = new Date();
-  const vms = rows.map((r) => toViewModel(r, now));
+  const safeRows = rows.filter(isRenderableMyStrategyRow);
+  const vms = safeRows.map((r) => toViewModel(r, now));
 
-  const hasRevenueShareBlock = rows.some(
+  const hasRevenueShareBlock = safeRows.some(
     (r) => r.runStatus === "blocked_revenue_due",
   );
 
