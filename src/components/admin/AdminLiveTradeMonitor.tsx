@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useCallback } from "react";
 
 import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
 import { formatUsdAmount } from "@/lib/format-inr";
@@ -59,19 +60,20 @@ async function closeRunAndRefresh(params: {
   runId: string;
   mode: "virtual" | "real";
   refresh: () => Promise<void>;
-}): Promise<void> {
+}): Promise<{ requestId: string | null }> {
   const yes = window.confirm("Are you sure you want to market close all legs for this strategy?");
-  if (!yes) return;
+  if (!yes) return { requestId: null };
   const res = await fetch("/api/trading/close-strategy-run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ runId: params.runId, mode: params.mode }),
   });
+  const data = (await res.json().catch(() => ({}))) as { error?: string; requestId?: string };
   if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(data.error || "Could not close position.");
   }
   await params.refresh();
+  return { requestId: typeof data.requestId === "string" ? data.requestId : null };
 }
 
 export function AdminLiveTradeMonitor({
@@ -86,6 +88,11 @@ export function AdminLiveTradeMonitor({
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closingKey, setClosingKey] = useState<string | null>(null);
+  const [closeToast, setCloseToast] = useState<{
+    requestId: string;
+    status: "pending" | "success" | "failed";
+    message: string;
+  } | null>(null);
 
   async function pull(): Promise<void> {
     try {
@@ -107,6 +114,61 @@ export function AdminLiveTradeMonitor({
       setError("Network error.");
     }
   }
+
+  const pollManualCloseStatus = useCallback(async (requestId: string): Promise<void> => {
+    for (let i = 0; i < 25; i++) {
+      try {
+        const res = await fetch(
+          `/api/trading/manual-close-status?requestId=${encodeURIComponent(requestId)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          setCloseToast({
+            requestId,
+            status: "failed",
+            message: "Could not fetch close status.",
+          });
+          return;
+        }
+        const data = (await res.json()) as {
+          status?: "pending" | "success" | "failed" | "not_found";
+          message?: string;
+          failureReason?: string | null;
+        };
+        if (data.status === "success") {
+          setCloseToast({
+            requestId,
+            status: "success",
+            message: data.message ?? "Close completed successfully.",
+          });
+          return;
+        }
+        if (data.status === "failed") {
+          setCloseToast({
+            requestId,
+            status: "failed",
+            message: data.failureReason
+              ? `${data.message ?? "Close failed"}: ${data.failureReason}`
+              : (data.message ?? "Close failed."),
+          });
+          return;
+        }
+      } catch {
+        setCloseToast({
+          requestId,
+          status: "failed",
+          message: "Network error while tracking close status.",
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    setCloseToast({
+      requestId,
+      status: "pending",
+      message: "Close still in progress. Check again shortly.",
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,6 +275,20 @@ export function AdminLiveTradeMonitor({
                             mode: row.mode,
                             refresh: pull,
                           })
+                            .then((result) => {
+                              if (!result.requestId) return;
+                              setCloseToast({
+                                requestId: result.requestId,
+                                status: row.mode === "real" ? "pending" : "success",
+                                message:
+                                  row.mode === "real"
+                                    ? "Close requested. Waiting for worker confirmation..."
+                                    : "Virtual close completed.",
+                              });
+                              if (row.mode === "real") {
+                                void pollManualCloseStatus(result.requestId);
+                              }
+                            })
                             .catch((e) => {
                               const msg = e instanceof Error ? e.message : String(e);
                               setError(msg);
@@ -264,6 +340,34 @@ export function AdminLiveTradeMonitor({
           No open legs or active strategy subscriptions right now.
         </p>
       )}
+      {closeToast ? (
+        <div className="fixed right-4 bottom-4 z-50 w-[min(92vw,460px)] rounded-xl border border-white/15 bg-black/85 px-4 py-3 text-xs shadow-2xl backdrop-blur">
+          <p className="font-semibold text-slate-100">
+            Close request {closeToast.status === "pending" ? "in progress" : closeToast.status}
+          </p>
+          <p className="mt-1 font-mono text-[10px] text-sky-300/90">{closeToast.requestId}</p>
+          <p
+            className={`mt-2 ${
+              closeToast.status === "failed"
+                ? "text-red-300"
+                : closeToast.status === "success"
+                  ? "text-emerald-200"
+                  : "text-slate-300"
+            }`}
+          >
+            {closeToast.message}
+          </p>
+          <div className="mt-2 text-right">
+            <button
+              type="button"
+              className="rounded border border-white/20 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-300 hover:bg-white/10"
+              onClick={() => setCloseToast(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

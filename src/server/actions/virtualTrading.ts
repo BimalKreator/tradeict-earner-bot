@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
@@ -11,6 +11,10 @@ import {
 } from "@/lib/hedge-scalping-config";
 import { withHedgeScalpingRunSymbol } from "@/lib/user-strategy-run-settings-json";
 import { requireUserId } from "@/server/auth/require-user";
+import {
+  hedgeScalpingVirtualClips,
+  hedgeScalpingVirtualRuns,
+} from "@/server/db/schema/hedge-scalping";
 import {
   strategies,
   users,
@@ -114,6 +118,44 @@ export async function startVirtualStrategyRunAction(
           ...(runSettingsJson != null ? { runSettingsJson } : {}),
         },
       });
+
+    if (s && isHedgeScalpingStrategySlug(s.slug)) {
+      const doneAt = new Date();
+      await db.transaction(async (tx) => {
+        const activeHsRuns = await tx
+          .select({ runId: hedgeScalpingVirtualRuns.runId })
+          .from(hedgeScalpingVirtualRuns)
+          .where(
+            and(
+              eq(hedgeScalpingVirtualRuns.userId, userId),
+              eq(hedgeScalpingVirtualRuns.strategyId, strategyId),
+              eq(hedgeScalpingVirtualRuns.status, "active"),
+            ),
+          );
+        const hsRunIds = activeHsRuns.map((r) => r.runId);
+        if (hsRunIds.length > 0) {
+          await tx
+            .update(hedgeScalpingVirtualClips)
+            .set({ status: "completed", closedAt: doneAt })
+            .where(
+              and(
+                inArray(hedgeScalpingVirtualClips.runId, hsRunIds),
+                eq(hedgeScalpingVirtualClips.status, "active"),
+              ),
+            );
+          await tx
+            .update(hedgeScalpingVirtualRuns)
+            .set({ status: "completed", closedAt: doneAt })
+            .where(
+              and(
+                eq(hedgeScalpingVirtualRuns.userId, userId),
+                eq(hedgeScalpingVirtualRuns.strategyId, strategyId),
+                eq(hedgeScalpingVirtualRuns.status, "active"),
+              ),
+            );
+        }
+      });
+    }
 
     revalidatePath("/user/virtual-trading");
     revalidatePath("/user/strategies");
@@ -298,6 +340,21 @@ export async function resumeVirtualRunAction(formData: FormData) {
   if (!runId) throw new Error("Missing run.");
   const db = requireDb();
   const now = new Date();
+  const [run] = await db
+    .select({
+      strategyId: virtualStrategyRuns.strategyId,
+      strategySlug: strategies.slug,
+    })
+    .from(virtualStrategyRuns)
+    .innerJoin(strategies, eq(virtualStrategyRuns.strategyId, strategies.id))
+    .where(
+      and(
+        eq(virtualStrategyRuns.id, runId),
+        eq(virtualStrategyRuns.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (!run) throw new Error("Run not found.");
   await db
     .update(virtualStrategyRuns)
     .set({
@@ -313,5 +370,33 @@ export async function resumeVirtualRunAction(formData: FormData) {
         eq(virtualStrategyRuns.userId, userId),
       ),
     );
+  if (isHedgeScalpingStrategySlug(run.strategySlug)) {
+    const activeHsRuns = await db
+      .select({ runId: hedgeScalpingVirtualRuns.runId })
+      .from(hedgeScalpingVirtualRuns)
+      .where(
+        and(
+          eq(hedgeScalpingVirtualRuns.userId, userId),
+          eq(hedgeScalpingVirtualRuns.strategyId, run.strategyId),
+          eq(hedgeScalpingVirtualRuns.status, "active"),
+        ),
+      );
+    const hsRunIds = activeHsRuns.map((r) => r.runId);
+    if (hsRunIds.length > 0) {
+      await db
+        .update(hedgeScalpingVirtualClips)
+        .set({ status: "completed", closedAt: now })
+        .where(
+          and(
+            inArray(hedgeScalpingVirtualClips.runId, hsRunIds),
+            eq(hedgeScalpingVirtualClips.status, "active"),
+          ),
+        );
+      await db
+        .update(hedgeScalpingVirtualRuns)
+        .set({ status: "completed", closedAt: now })
+        .where(inArray(hedgeScalpingVirtualRuns.runId, hsRunIds));
+    }
+  }
   revalidatePath("/user/virtual-trading");
 }

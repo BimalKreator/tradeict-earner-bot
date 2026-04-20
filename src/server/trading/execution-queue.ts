@@ -130,7 +130,10 @@ export async function claimNextTradingJob(
       SELECT id FROM trading_execution_jobs
       WHERE status = 'pending'
         AND run_at <= NOW()
-      ORDER BY run_at ASC
+      ORDER BY
+        run_at ASC,
+        CASE WHEN payload->>'executionMode' = 'virtual' THEN 1 ELSE 0 END ASC,
+        created_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     )

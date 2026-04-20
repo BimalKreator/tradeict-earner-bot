@@ -54,6 +54,11 @@ async function runPostSubmitSync(
   p: TradingExecutionJobPayload,
   eligRow: EligibleStrategyRunRow,
 ): Promise<void> {
+  const manualEmergencyClose =
+    p.signalAction === "exit" &&
+    p.signalMetadata != null &&
+    typeof p.signalMetadata === "object" &&
+    (p.signalMetadata as Record<string, unknown>).manual_emergency_close === true;
   const sync = await adapter.syncOrderStatus(externalOrderId);
   if (sync.ok) {
     const st = mapSyncStatus(sync.status);
@@ -75,6 +80,28 @@ async function runPostSubmitSync(
         exchangeConnectionId: eligRow.exchangeConnectionId,
         symbol: p.symbol,
         deltaQty: signed,
+      });
+    } else if (
+      manualEmergencyClose &&
+      (sync.status === "open" || sync.status === "unknown")
+    ) {
+      // Emergency close UX fallback: market exits can be filled after immediate sync.
+      // Flatten local position optimistically so strategy is not blocked by stale open qty.
+      const signed = p.side === "buy" ? p.quantity : `-${p.quantity}`;
+      await bumpBotPositionNetQuantity({
+        userId: eligRow.userId,
+        subscriptionId: eligRow.subscriptionId,
+        strategyId: eligRow.strategyId,
+        exchangeConnectionId: eligRow.exchangeConnectionId,
+        symbol: p.symbol,
+        deltaQty: signed,
+      });
+      tradingLog("warn", "manual_close_optimistic_position_flatten_applied", {
+        botOrderId,
+        externalOrderId,
+        statusAtSync: sync.status,
+        runId: eligRow.runId,
+        exchangeConnectionId: eligRow.exchangeConnectionId,
       });
     }
   } else {
@@ -130,6 +157,32 @@ export async function processOneTradingJob(
     p.signalMetadata != null &&
     typeof p.signalMetadata === "object" &&
     (p.signalMetadata as Record<string, unknown>).manual_emergency_close === true;
+  const manualCloseRequestId =
+    p.signalMetadata != null &&
+    typeof p.signalMetadata === "object" &&
+    typeof (p.signalMetadata as Record<string, unknown>).manual_close_request_id ===
+      "string"
+      ? String(
+          (p.signalMetadata as Record<string, unknown>).manual_close_request_id,
+        )
+      : null;
+  const manualCloseErr = (tag: string, message: string): string =>
+    manualCloseRequestId
+      ? `${tag}: ${message}`
+      : message;
+
+  if (manualCloseRequestId) {
+    tradingLog("info", "manual_close_worker_job_claimed", {
+      manualCloseRequestId,
+      jobId: job.id,
+      executionMode: p.executionMode ?? "live",
+      signalAction,
+      correlationId: p.correlationId,
+      runId: p.runId ?? null,
+      virtualRunId: p.virtualRunId ?? null,
+      exchangeConnectionId: p.exchangeConnectionId ?? null,
+    });
+  }
 
   const isVirtual =
     p.executionMode === "virtual" &&
@@ -143,6 +196,14 @@ export async function processOneTradingJob(
       allowEmergencyExit: emergencyExitBypass,
     });
     if (!vElig.ok) {
+      if (manualCloseRequestId) {
+        tradingLog("warn", "manual_close_worker_virtual_ineligible", {
+          manualCloseRequestId,
+          jobId: job.id,
+          reason: vElig.reason,
+          virtualRunId,
+        });
+      }
       tradingLog("warn", "virtual_job_skipped_ineligible", {
         jobId: job.id,
         reason: vElig.reason,
@@ -152,7 +213,10 @@ export async function processOneTradingJob(
         job.id,
         job.attempts,
         job.maxAttempts,
-        `virtual_ineligible:${vElig.reason}`,
+        manualCloseErr(
+          "manual_close_worker_virtual_ineligible",
+          `virtual_ineligible:${vElig.reason}`,
+        ),
       );
       return { processed: true };
     }
@@ -169,11 +233,18 @@ export async function processOneTradingJob(
       row: vElig.row,
     });
     if (!sim.ok) {
+      if (manualCloseRequestId) {
+        tradingLog("error", "manual_close_worker_virtual_failed", {
+          manualCloseRequestId,
+          jobId: job.id,
+          error: sim.error,
+        });
+      }
       await failTradingJobRetryOrDead(
         job.id,
         job.attempts,
         job.maxAttempts,
-        sim.error,
+        manualCloseErr("manual_close_worker_virtual_failed", sim.error),
       );
       return { processed: true };
     }
@@ -184,6 +255,14 @@ export async function processOneTradingJob(
       virtualRunId,
       correlationId: p.correlationId,
     });
+    if (manualCloseRequestId) {
+      tradingLog("info", "manual_close_worker_virtual_completed", {
+        manualCloseRequestId,
+        jobId: job.id,
+        virtualRunId,
+        correlationId: p.correlationId,
+      });
+    }
     return { processed: true };
   }
 
@@ -192,7 +271,10 @@ export async function processOneTradingJob(
       job.id,
       job.attempts,
       job.maxAttempts,
-      "live_payload_missing_subscription_or_run",
+      manualCloseErr(
+        "manual_close_worker_live_payload_invalid",
+        "live_payload_missing_subscription_or_run",
+      ),
     );
     return { processed: true };
   }
@@ -203,6 +285,15 @@ export async function processOneTradingJob(
     allowEmergencyExit: emergencyExitBypass,
   });
   if (!elig.ok) {
+    if (manualCloseRequestId) {
+      tradingLog("warn", "manual_close_worker_live_ineligible", {
+        manualCloseRequestId,
+        jobId: job.id,
+        reason: elig.reason,
+        runId: p.runId,
+        exchangeConnectionId: p.exchangeConnectionId ?? null,
+      });
+    }
     tradingLog("warn", "job_skipped_ineligible", {
       jobId: job.id,
       reason: elig.reason,
@@ -212,7 +303,7 @@ export async function processOneTradingJob(
       job.id,
       job.attempts,
       job.maxAttempts,
-      `ineligible:${elig.reason}`,
+      manualCloseErr("manual_close_worker_live_ineligible", `ineligible:${elig.reason}`),
     );
     return { processed: true };
   }
@@ -240,7 +331,7 @@ export async function processOneTradingJob(
       job.id,
       job.attempts,
       job.maxAttempts,
-      "exchange_connection_missing",
+      manualCloseErr("manual_close_worker_exchange_missing", "exchange_connection_missing"),
     );
     return { processed: true };
   }
@@ -252,11 +343,18 @@ export async function processOneTradingJob(
   });
 
   if (!adapterRes.ok) {
+    if (manualCloseRequestId) {
+      tradingLog("error", "manual_close_worker_adapter_resolve_failed", {
+        manualCloseRequestId,
+        jobId: job.id,
+        error: adapterRes.error,
+      });
+    }
     await failTradingJobRetryOrDead(
       job.id,
       job.attempts,
       job.maxAttempts,
-      adapterRes.error,
+      manualCloseErr("manual_close_worker_adapter_resolve_failed", adapterRes.error),
     );
     return { processed: true };
   }
@@ -332,7 +430,7 @@ export async function processOneTradingJob(
         job.id,
         job.attempts,
         job.maxAttempts,
-        "bot_order_insert_failed",
+        manualCloseErr("manual_close_worker_bot_order_insert_failed", "bot_order_insert_failed"),
       );
       return { processed: true };
     }
@@ -391,6 +489,14 @@ export async function processOneTradingJob(
   }
 
   if (!place.ok) {
+    if (manualCloseRequestId) {
+      tradingLog("error", "manual_close_worker_place_failed", {
+        manualCloseRequestId,
+        jobId: job.id,
+        botOrderId,
+        error: place.error,
+      });
+    }
     if (
       isInsufficientBalanceOrMarginDeltaError(
         place.error,
@@ -408,7 +514,7 @@ export async function processOneTradingJob(
       job.id,
       job.attempts,
       job.maxAttempts,
-      place.error,
+      manualCloseErr("manual_close_worker_place_failed", place.error),
     );
     return { processed: true };
   }
@@ -427,6 +533,16 @@ export async function processOneTradingJob(
     botOrderId,
     correlationId: p.correlationId,
   });
+  if (manualCloseRequestId) {
+    tradingLog("info", "manual_close_worker_live_completed", {
+      manualCloseRequestId,
+      jobId: job.id,
+      botOrderId,
+      correlationId: p.correlationId,
+      externalOrderId: place.externalOrderId,
+      signalAction,
+    });
+  }
   return { processed: true };
 }
 

@@ -112,6 +112,11 @@ export function UserActivePositionsSection({
   const [closingRunId, setClosingRunId] = useState<string | null>(null);
   const [historyOpenByRun, setHistoryOpenByRun] = useState<Record<string, boolean>>({});
   const [historyPageByRun, setHistoryPageByRun] = useState<Record<string, number>>({});
+  const [closeToast, setCloseToast] = useState<{
+    requestId: string;
+    status: "pending" | "success" | "failed";
+    message: string;
+  } | null>(null);
   const pollEndpoint = endpoint ?? (mode === "real" ? "/api/user/live-active-positions" : "/api/user/active-positions");
 
   const HISTORY_PAGE_SIZE = 5;
@@ -134,6 +139,61 @@ export function UserActivePositionsSection({
       setError("Network error while refreshing.");
     }
   }, [pollEndpoint]);
+
+  const pollManualCloseStatus = useCallback(async (requestId: string): Promise<void> => {
+    for (let i = 0; i < 25; i++) {
+      try {
+        const res = await fetch(
+          `/api/trading/manual-close-status?requestId=${encodeURIComponent(requestId)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) {
+          setCloseToast({
+            requestId,
+            status: "failed",
+            message: "Could not fetch close status.",
+          });
+          return;
+        }
+        const data = (await res.json()) as {
+          status?: "pending" | "success" | "failed" | "not_found";
+          message?: string;
+          failureReason?: string | null;
+        };
+        if (data.status === "success") {
+          setCloseToast({
+            requestId,
+            status: "success",
+            message: data.message ?? "Close completed successfully.",
+          });
+          return;
+        }
+        if (data.status === "failed") {
+          setCloseToast({
+            requestId,
+            status: "failed",
+            message: data.failureReason
+              ? `${data.message ?? "Close failed"}: ${data.failureReason}`
+              : (data.message ?? "Close failed."),
+          });
+          return;
+        }
+      } catch {
+        setCloseToast({
+          requestId,
+          status: "failed",
+          message: "Network error while tracking close status.",
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    setCloseToast({
+      requestId,
+      status: "pending",
+      message: "Close still in progress. Check again shortly.",
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,7 +220,8 @@ export function UserActivePositionsSection({
   }
 
   return (
-    <section className="relative overflow-hidden rounded-3xl border-2 border-emerald-400/35 bg-gradient-to-br from-emerald-500/[0.14] via-[#0a1628] to-black/80 p-1 shadow-[0_0_40px_-8px_rgba(52,211,153,0.35)]">
+    <>
+      <section className="relative overflow-hidden rounded-3xl border-2 border-emerald-400/35 bg-gradient-to-br from-emerald-500/[0.14] via-[#0a1628] to-black/80 p-1 shadow-[0_0_40px_-8px_rgba(52,211,153,0.35)]">
       <div className="rounded-[22px] border border-white/[0.08] bg-black/50 px-5 py-6 sm:px-8 sm:py-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -249,9 +310,26 @@ export function UserActivePositionsSection({
                           body: JSON.stringify({ runId: g.runId, mode }),
                         })
                           .then(async (res) => {
+                            const data = (await res.json().catch(() => ({}))) as {
+                              error?: string;
+                              requestId?: string;
+                            };
                             if (!res.ok) {
-                              const data = (await res.json().catch(() => ({}))) as { error?: string };
                               throw new Error(data.error || "Could not close position.");
+                            }
+                            const rid = typeof data.requestId === "string" ? data.requestId : null;
+                            if (rid) {
+                              setCloseToast({
+                                requestId: rid,
+                                status: mode === "real" ? "pending" : "success",
+                                message:
+                                  mode === "real"
+                                    ? "Close requested. Waiting for worker confirmation..."
+                                    : "Virtual close completed.",
+                              });
+                              if (mode === "real") {
+                                void pollManualCloseStatus(rid);
+                              }
                             }
                             await pull();
                           })
@@ -438,6 +516,35 @@ export function UserActivePositionsSection({
           })}
         </div>
       </div>
-    </section>
+      </section>
+      {closeToast ? (
+        <div className="fixed right-4 bottom-4 z-50 w-[min(92vw,460px)] rounded-xl border border-white/15 bg-black/85 px-4 py-3 text-xs shadow-2xl backdrop-blur">
+          <p className="font-semibold text-slate-100">
+            Close request {closeToast.status === "pending" ? "in progress" : closeToast.status}
+          </p>
+          <p className="mt-1 font-mono text-[10px] text-sky-300/90">{closeToast.requestId}</p>
+          <p
+            className={`mt-2 ${
+              closeToast.status === "failed"
+                ? "text-red-300"
+                : closeToast.status === "success"
+                  ? "text-emerald-200"
+                  : "text-slate-300"
+            }`}
+          >
+            {closeToast.message}
+          </p>
+          <div className="mt-2 text-right">
+            <button
+              type="button"
+              className="rounded border border-white/20 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-300 hover:bg-white/10"
+              onClick={() => setCloseToast(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

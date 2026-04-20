@@ -12,6 +12,7 @@ import {
   requeueStaleProcessingJobs,
 } from "../server/trading/execution-queue";
 import { runTradingWorkerBatch } from "../server/trading/execution-worker";
+import { logLiveTradingModeWarningOnBoot } from "../server/trading/live-trading-boot-warning";
 import { tradingLog } from "../server/trading/trading-log";
 
 const LOOP_INTERVAL_MS = Math.max(500, Number(process.env.TRADING_WORKER_LOOP_MS ?? "1500") || 1500);
@@ -56,6 +57,7 @@ function installShutdownHooks(): void {
 }
 
 async function main() {
+  logLiveTradingModeWarningOnBoot("trading_processor_boot");
   const workerId = `worker_${process.pid}_${Date.now().toString(36)}`;
   installShutdownHooks();
   console.log("[JOB-PROCESSOR] Listening for jobs...");

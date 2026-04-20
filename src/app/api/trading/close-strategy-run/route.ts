@@ -35,6 +35,7 @@ import {
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
 import { assertVirtualRunStillEligibleForExecution } from "@/server/trading/virtual-eligibility";
 import { simulateVirtualOrder } from "@/server/trading/virtual-order-simulator";
+import { tradingLog } from "@/server/trading/trading-log";
 
 export const dynamic = "force-dynamic";
 
@@ -441,8 +442,19 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
   }
 }
 
-async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: boolean) {
+async function closeVirtualRun(
+  runId: string,
+  requesterUserId: string,
+  isAdmin: boolean,
+  requestId: string,
+) {
   if (!db) return { ok: false as const, error: "no_database" };
+  tradingLog("info", "manual_close_virtual_begin", {
+    requestId,
+    runId,
+    requesterUserId,
+    isAdmin,
+  });
   const [run] = await db
     .select({
       id: virtualStrategyRuns.id,
@@ -515,6 +527,10 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
   ].filter((leg) => Math.abs(leg.netQty) > 1e-8 && leg.symbol);
 
   if (legClosures.length === 0) {
+    tradingLog("info", "manual_close_virtual_already_flat", {
+      requestId,
+      runId,
+    });
     return { ok: true as const, closed: 0, detail: "already_flat" };
   }
 
@@ -543,19 +559,44 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
       signalMetadata: {
         source: "manual_close",
         close_all_legs: true,
+        manual_close_request_id: requestId,
         account: leg.account,
         ...(markPrice != null && markPrice > 0 ? { mark_price: markPrice } : {}),
       },
     };
     const sim = await simulateVirtualOrder({ payload, row: elig.row });
     if (!sim.ok) return { ok: false as const, error: sim.error };
+    tradingLog("info", "manual_close_virtual_leg_simulated", {
+      requestId,
+      runId,
+      account: leg.account,
+      symbol: leg.symbol,
+      qty: payload.quantity,
+      side: payload.side,
+    });
     closed += 1;
   }
+  tradingLog("info", "manual_close_virtual_done", {
+    requestId,
+    runId,
+    closed,
+  });
   return { ok: true as const, closed, detail: "virtual_closed" };
 }
 
-async function closeRealRun(runId: string, requesterUserId: string, isAdmin: boolean) {
+async function closeRealRun(
+  runId: string,
+  requesterUserId: string,
+  isAdmin: boolean,
+  requestId: string,
+) {
   if (!db) return { ok: false as const, error: "no_database" };
+  tradingLog("info", "manual_close_real_begin", {
+    requestId,
+    runId,
+    requesterUserId,
+    isAdmin,
+  });
   const [run] = await db
     .select({
       runId: userStrategyRuns.id,
@@ -592,6 +633,10 @@ async function closeRealRun(runId: string, requesterUserId: string, isAdmin: boo
     );
 
   if (positions.length === 0) {
+    tradingLog("info", "manual_close_real_already_flat", {
+      requestId,
+      runId,
+    });
     return { ok: true as const, closed: 0, detail: "already_flat" };
   }
 
@@ -620,11 +665,38 @@ async function closeRealRun(runId: string, requesterUserId: string, isAdmin: boo
         source: "manual_close",
         close_all_legs: true,
         manual_emergency_close: true,
+        manual_close_request_id: requestId,
       },
     });
-    if (!res.ok) return { ok: false as const, error: res.error };
+    if (!res.ok) {
+      tradingLog("error", "manual_close_real_dispatch_failed", {
+        requestId,
+        runId,
+        symbol: p.symbol,
+        exchangeConnectionId: p.exchangeConnectionId,
+        error: res.error,
+      });
+      return { ok: false as const, error: res.error };
+    }
+    tradingLog("info", "manual_close_real_dispatch_ok", {
+      requestId,
+      runId,
+      symbol: p.symbol,
+      exchangeConnectionId: p.exchangeConnectionId,
+      venue,
+      netQty: net,
+      jobsEnqueued: res.jobsEnqueued,
+      liveJobsEnqueued: res.liveJobsEnqueued ?? 0,
+      virtualJobsEnqueued: res.virtualJobsEnqueued ?? 0,
+      correlationId: `manual_close_real_${runId}_${p.exchangeConnectionId}_*`,
+    });
     closed += res.jobsEnqueued;
   }
+  tradingLog("info", "manual_close_real_done", {
+    requestId,
+    runId,
+    closed,
+  });
   return { ok: true as const, closed, detail: "real_exit_jobs_dispatched" };
 }
 
@@ -647,14 +719,41 @@ export async function POST(req: Request) {
   } | null;
   const runId = body?.runId?.trim() ?? "";
   const mode = body?.mode;
+  const requestId = `mc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  tradingLog("info", "manual_close_request_received", {
+    requestId,
+    requesterUserId: session.userId,
+    role: session.role,
+    runId,
+    mode: mode ?? null,
+  });
   if (!runId || (mode !== "virtual" && mode !== "real")) {
-    return Response.json({ error: "runId and mode are required." }, { status: 400 });
+    tradingLog("warn", "manual_close_request_invalid", {
+      requestId,
+      runId,
+      mode: mode ?? null,
+    });
+    return Response.json({ error: "runId and mode are required.", requestId }, { status: 400 });
   }
 
-  const out =
-    mode === "virtual"
-      ? await closeVirtualRun(runId, session.userId, isAdmin)
-      : await closeRealRun(runId, session.userId, isAdmin);
-  if (!out.ok) return Response.json({ error: out.error }, { status: 400 });
-  return Response.json(out);
+  const out = mode === "virtual"
+    ? await closeVirtualRun(runId, session.userId, isAdmin, requestId)
+    : await closeRealRun(runId, session.userId, isAdmin, requestId);
+  if (!out.ok) {
+    tradingLog("error", "manual_close_request_failed", {
+      requestId,
+      runId,
+      mode,
+      error: out.error,
+    });
+    return Response.json({ error: out.error, requestId }, { status: 400 });
+  }
+  tradingLog("info", "manual_close_request_succeeded", {
+    requestId,
+    runId,
+    mode,
+    closed: out.closed,
+    detail: out.detail,
+  });
+  return Response.json({ ...out, requestId });
 }

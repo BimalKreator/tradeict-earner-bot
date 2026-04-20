@@ -6,6 +6,14 @@ function parsePositiveNum(raw: string | null | undefined): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function inrToUsd(rawInr: number): number | null {
+  if (!(rawInr > 0) || !Number.isFinite(rawInr)) return null;
+  const fxRaw = Number(process.env.USD_INR_RATE ?? "83");
+  const fx = Number.isFinite(fxRaw) && fxRaw > 0 ? fxRaw : 83;
+  const usd = rawInr / fx;
+  return usd > 0 ? usd : null;
+}
+
 /**
  * User execution preferences override admin/strategy defaults:
  * `run_settings_json.execution` → `user_strategy_runs` columns → strategy catalog.
@@ -40,9 +48,10 @@ export function resolveFinalAllocatedCapitalUsd(params: {
   const pct = parsed.execution?.capitalPercentage;
   if (typeof pct === "number" && Number.isFinite(pct) && pct > 0 && pct <= 100) {
     const admin = parsePositiveNum(params.recommendedCapitalInr);
-    if (admin != null) return (pct / 100) * admin;
+    if (admin != null) return inrToUsd((pct / 100) * admin);
   }
   const col = parsePositiveNum(params.columnCapital);
-  if (col != null) return col;
-  return parsePositiveNum(params.recommendedCapitalInr);
+  if (col != null) return inrToUsd(col);
+  const admin = parsePositiveNum(params.recommendedCapitalInr);
+  return admin != null ? inrToUsd(admin) : null;
 }

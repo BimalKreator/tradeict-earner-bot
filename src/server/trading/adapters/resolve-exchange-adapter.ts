@@ -12,7 +12,8 @@ export type ResolvedAdapter =
   | { ok: false; error: string };
 
 /**
- * Chooses mock vs live Delta adapter from env + stored credentials.
+ * Resolves live Delta adapter for real execution.
+ * Mock adapter is permitted only when explicitly enabled for tests/dev.
  */
 export async function resolveExchangeTradingAdapter(params: {
   provider: "delta_india";
@@ -21,9 +22,18 @@ export async function resolveExchangeTradingAdapter(params: {
 }): Promise<ResolvedAdapter> {
   const tradingEnabled =
     process.env.DELTA_TRADING_ENABLED?.trim().toLowerCase() === "true";
+  const mockAdapterEnabled =
+    process.env.MOCK_EXCHANGE_ADAPTER_ENABLED?.trim().toLowerCase() === "true";
 
   if (!tradingEnabled) {
-    return { ok: true, adapter: new MockExchangeAdapter() };
+    if (mockAdapterEnabled) {
+      return { ok: true, adapter: new MockExchangeAdapter() };
+    }
+    return {
+      ok: false,
+      error:
+        "Live Delta trading is disabled (DELTA_TRADING_ENABLED is not true). Refusing implicit mock fallback.",
+    };
   }
 
   if (params.provider !== "delta_india") {
