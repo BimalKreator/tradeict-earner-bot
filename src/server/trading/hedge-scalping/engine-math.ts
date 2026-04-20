@@ -222,15 +222,19 @@ export function evaluateHedgeScalpingState(
   /** Hedge invariant: ladder clips always take the leg opposite D1 (never copy `state.d1Side`). */
   const d2Side = hedgeScalpingD2Side(state.d1Side);
 
+  const activeSteps = new Set(state.activeD2Clips.map((c) => c.stepLevel));
   for (let step = 1; step <= maxStep; step += 1) {
-    if (!hasActiveD2ClipAtStep(state.activeD2Clips, step)) {
-      out.push({
-        type: "OPEN_D2_CLIP",
-        stepLevel: step,
-        expectedPrice: mark,
-        side: d2Side,
-      });
-    }
+    if (activeSteps.has(step)) continue;
+    // Sequential gate: never open step N if step N-1 is not active.
+    if (step > 1 && !activeSteps.has(step - 1)) break;
+    // Burst guard: at most one OPEN_D2_CLIP intent per tick.
+    out.push({
+      type: "OPEN_D2_CLIP",
+      stepLevel: step,
+      expectedPrice: mark,
+      side: d2Side,
+    });
+    break;
   }
 
   return out;

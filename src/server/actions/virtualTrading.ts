@@ -300,7 +300,13 @@ export async function resumeVirtualRunAction(formData: FormData) {
   const now = new Date();
   await db
     .update(virtualStrategyRuns)
-    .set({ status: "active", pausedAt: null, updatedAt: now })
+    .set({
+      status: "active",
+      pausedAt: null,
+      // Ensure "resume" is durable even after internal completed transitions.
+      activatedAt: now,
+      updatedAt: now,
+    })
     .where(
       and(
         eq(virtualStrategyRuns.id, runId),

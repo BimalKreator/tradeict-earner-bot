@@ -343,6 +343,28 @@ function firstHsD1HedgeRunIdFromOrders(
   return null;
 }
 
+/**
+ * Prevent UI ghosting: when a new HS D1 run starts in the same virtual paper run,
+ * ignore older HS rows before the latest `hs_d1_<runId>` entry marker.
+ */
+function filterToLatestHsRunSegment<T extends { correlationId: string | null }>(rows: T[]): T[] {
+  let latestStartIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const id = parseHsD1HedgeRunId(rows[i]?.correlationId);
+    if (id) latestStartIdx = i;
+  }
+  if (latestStartIdx < 0) {
+    return rows.filter((r) => {
+      const cid = r.correlationId ?? "";
+      return /^hs_d1_/i.test(cid) || /^hs_d2_/i.test(cid);
+    });
+  }
+  return rows.slice(latestStartIdx).filter((r) => {
+    const cid = r.correlationId ?? "";
+    return /^hs_d1_/i.test(cid) || /^hs_d2_/i.test(cid);
+  });
+}
+
 async function loadHedgeScalpingVirtualRunsForOrderRowBundles(
   bundles: { orderRows: { correlationId: string | null }[] }[],
 ): Promise<Map<string, HedgeScalpingVirtualRunRow>> {
@@ -776,13 +798,16 @@ export async function getUserVirtualActivePositionGroups(
       )
       .orderBy(virtualBotOrders.createdAt);
 
-    const ledger = ordersToLedgerRows(orderRows);
+    const hsScopedRows = isHedgeScalpingStrategySlug(run.strategySlug)
+      ? filterToLatestHsRunSegment(orderRows)
+      : orderRows;
+    const ledger = ordersToLedgerRows(hsScopedRows);
     const isHs = isHedgeScalpingStrategySlug(run.strategySlug);
     const hedgeSettings = parseHedgeScalpingDisplaySettings(run.strategySettingsJson);
 
-    if (isHs && orderRows.length > 0) {
-      const d1Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
-      const d2Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
+    if (isHs && hsScopedRows.length > 0) {
+      const d1Rows = hsScopedRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
+      const d2Rows = hsScopedRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
       const symRow = d1Rows[d1Rows.length - 1] ?? d2Rows[d2Rows.length - 1];
       if (symRow) allSyms.push(symRow.symbol);
     } else if (ledger.length > 0) {
@@ -797,7 +822,7 @@ export async function getUserVirtualActivePositionGroups(
       openNetQty: String(run.openNetQty ?? "0"),
       openAvgEntryPrice: String(run.openAvgEntryPrice ?? "0"),
       openSymbol: run.openSymbol,
-      orderRows: orderRows.map((row) => ({
+      orderRows: hsScopedRows.map((row) => ({
         id: row.id,
         symbol: row.symbol,
         side: row.side,
@@ -964,13 +989,16 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       )
       .orderBy(virtualBotOrders.createdAt);
 
-    const ledger = ordersToLedgerRows(orderRows);
+    const hsScopedRows = isHedgeScalpingStrategySlug(run.strategySlug)
+      ? filterToLatestHsRunSegment(orderRows)
+      : orderRows;
+    const ledger = ordersToLedgerRows(hsScopedRows);
     const isHs = isHedgeScalpingStrategySlug(run.strategySlug);
     const label = userDisplayName(run.userEmail, run.userName);
 
-    if (isHs && orderRows.length > 0) {
-      const d1Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
-      const d2Rows = orderRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
+    if (isHs && hsScopedRows.length > 0) {
+      const d1Rows = hsScopedRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d1_"));
+      const d2Rows = hsScopedRows.filter((r) => (r.correlationId ?? "").startsWith("hs_d2_"));
       const symRow = d1Rows[d1Rows.length - 1] ?? d2Rows[d2Rows.length - 1];
       if (symRow) symbolBatch.push(symRow.symbol);
     } else if (ledger.length > 0) {
@@ -987,7 +1015,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       openNetQty: String(run.openNetQty ?? "0"),
       openAvgEntryPrice: String(run.openAvgEntryPrice ?? "0"),
       openSymbol: run.openSymbol,
-      orderRows: orderRows.map((row) => ({
+      orderRows: hsScopedRows.map((row) => ({
         symbol: row.symbol,
         side: row.side,
         quantity: String(row.quantity),
