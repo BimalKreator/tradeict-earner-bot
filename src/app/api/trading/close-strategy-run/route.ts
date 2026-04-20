@@ -480,7 +480,10 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
   const slug = run.strategySlug ?? "";
 
   if (isHedgeScalpingStrategySlug(slug)) {
-    const elig = await assertVirtualRunStillEligibleForExecution(run.id, { signalAction: "exit" });
+    const elig = await assertVirtualRunStillEligibleForExecution(run.id, {
+      signalAction: "exit",
+      allowEmergencyExit: true,
+    });
     if (!elig.ok) return { ok: false as const, error: `virtual_ineligible:${elig.reason}` };
     const hs = await executeManualCloseHedgeScalpingVirtual({
       run: {
@@ -515,7 +518,10 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
     return { ok: true as const, closed: 0, detail: "already_flat" };
   }
 
-  const elig = await assertVirtualRunStillEligibleForExecution(run.id, { signalAction: "exit" });
+  const elig = await assertVirtualRunStillEligibleForExecution(run.id, {
+    signalAction: "exit",
+    allowEmergencyExit: true,
+  });
   if (!elig.ok) return { ok: false as const, error: `virtual_ineligible:${elig.reason}` };
 
   let closed = 0;
@@ -613,6 +619,7 @@ async function closeRealRun(runId: string, requesterUserId: string, isAdmin: boo
       metadata: {
         source: "manual_close",
         close_all_legs: true,
+        manual_emergency_close: true,
       },
     });
     if (!res.ok) return { ok: false as const, error: res.error };

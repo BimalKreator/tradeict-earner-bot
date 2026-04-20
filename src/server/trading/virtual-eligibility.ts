@@ -107,7 +107,11 @@ export type VirtualExecutionEligibilityFailure =
 
 export async function assertVirtualRunStillEligibleForExecution(
   virtualRunId: string,
-  opts?: { signalAction?: "entry" | "exit" },
+  opts?: {
+    signalAction?: "entry" | "exit";
+    /** Emergency close path: allow exits despite pause/global-stop/strategy gates. */
+    allowEmergencyExit?: boolean;
+  },
 ): Promise<
   | { ok: true; row: EligibleVirtualRunRow }
   | { ok: false; reason: VirtualExecutionEligibilityFailure }
@@ -134,19 +138,20 @@ export async function assertVirtualRunStillEligibleForExecution(
     .limit(1);
 
   const signalAction = opts?.signalAction ?? "entry";
+  const emergencyExitBypass = signalAction === "exit" && opts?.allowEmergencyExit === true;
 
   if (!r) return { ok: false, reason: "run_not_found" };
 
-  if (await getGlobalEmergencyStopActive()) {
+  if (!emergencyExitBypass && (await getGlobalEmergencyStopActive())) {
     return { ok: false, reason: "global_emergency_stop" };
   }
 
   if (r.approval !== "approved") return { ok: false, reason: "user_not_approved" };
-  if (r.stratDeleted != null || r.stratStatus !== "active") {
+  if (!emergencyExitBypass && (r.stratDeleted != null || r.stratStatus !== "active")) {
     return { ok: false, reason: "strategy_inactive" };
   }
 
-  if (r.runStatus !== "active") {
+  if (!emergencyExitBypass && r.runStatus !== "active") {
     if (signalAction === "exit" && r.runStatus === "paused") {
       /* allow risk-reducing exits while paused */
     } else {
@@ -156,7 +161,7 @@ export async function assertVirtualRunStillEligibleForExecution(
 
   const cap = parsePositiveNum(String(r.virtualCapitalUsd ?? ""));
   const lev = parsePositiveNum(String(r.leverage ?? ""));
-  if (cap == null || lev == null) {
+  if (!emergencyExitBypass && (cap == null || lev == null)) {
     return { ok: false, reason: "settings_incomplete" };
   }
 

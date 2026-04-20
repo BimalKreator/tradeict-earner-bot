@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { formatUsdAmount } from "@/lib/format-inr";
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -99,8 +99,12 @@ function closedLegLabel(
 
 export function UserActivePositionsSection({
   initialGroups,
+  mode = "virtual",
+  endpoint,
 }: {
   initialGroups: UserActivePositionGroup[];
+  mode?: "virtual" | "real";
+  endpoint?: string;
 }) {
   const [groups, setGroups] = useState<UserActivePositionGroup[]>(initialGroups);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
@@ -108,12 +112,13 @@ export function UserActivePositionsSection({
   const [closingRunId, setClosingRunId] = useState<string | null>(null);
   const [historyOpenByRun, setHistoryOpenByRun] = useState<Record<string, boolean>>({});
   const [historyPageByRun, setHistoryPageByRun] = useState<Record<string, number>>({});
+  const pollEndpoint = endpoint ?? (mode === "real" ? "/api/user/live-active-positions" : "/api/user/active-positions");
 
   const HISTORY_PAGE_SIZE = 5;
 
-  async function pull(): Promise<void> {
+  const pull = useCallback(async (): Promise<void> => {
     try {
-      const res = await fetch("/api/user/active-positions", { cache: "no-store" });
+      const res = await fetch(pollEndpoint, { cache: "no-store" });
       if (!res.ok) {
         setError(res.status === 401 ? "Session expired — refresh the page." : "Could not refresh.");
         return;
@@ -128,7 +133,7 @@ export function UserActivePositionsSection({
     } catch {
       setError("Network error while refreshing.");
     }
-  }
+  }, [pollEndpoint]);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,13 +145,15 @@ export function UserActivePositionsSection({
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [pull]);
 
   if (groups.length === 0) {
     return (
       <GlassPanel className="border-white/[0.06]">
         <p className="text-sm text-[var(--text-muted)]">
-          No open simulated positions. Active paper runs with a flat book are hidden here.
+          {mode === "real"
+            ? "No open live positions. Active live runs with a flat book are hidden here."
+            : "No open simulated positions. Active paper runs with a flat book are hidden here."}
         </p>
       </GlassPanel>
     );
@@ -157,17 +164,32 @@ export function UserActivePositionsSection({
       <div className="rounded-[22px] border border-white/[0.08] bg-black/50 px-5 py-6 sm:px-8 sm:py-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-300/90">
-              Paper · Active positions
+            <p
+              className={`text-[11px] font-semibold uppercase tracking-[0.2em] ${
+                mode === "real" ? "text-sky-300/90" : "text-emerald-300/90"
+              }`}
+            >
+              {mode === "real" ? "Live · Active positions" : "Paper · Active positions"}
             </p>
             <h2 className="mt-2 font-[family-name:var(--font-display)] text-2xl font-bold tracking-tight text-white sm:text-3xl">
               Open D1 &amp; D2 legs
             </h2>
             <p className="mt-2 max-w-xl text-sm text-slate-400">
-              Simulated (virtual) runs with <code className="text-emerald-300/90">status = active</code> and an
-              open paper position — not your real Delta orders. Marks use the Delta India public ticker
-              (auto-refresh ~8s). <strong className="text-slate-200">Close Position</strong> settles the paper
-              book only.
+              {mode === "real" ? (
+                <>
+                  Live runs with <code className="text-sky-300/90">status = active</code> and open venue-synced
+                  positions from <code className="text-sky-300/90">bot_positions</code>. Marks use the Delta India
+                  public ticker (auto-refresh ~8s). <strong className="text-slate-200">Close Position</strong>{" "}
+                  dispatches live market exits.
+                </>
+              ) : (
+                <>
+                  Simulated (virtual) runs with <code className="text-emerald-300/90">status = active</code> and an
+                  open paper position — not your real Delta orders. Marks use the Delta India public ticker
+                  (auto-refresh ~8s). <strong className="text-slate-200">Close Position</strong> settles the paper
+                  book only.
+                </>
+              )}
             </p>
           </div>
           <div className="text-right">
@@ -224,7 +246,7 @@ export function UserActivePositionsSection({
                         void fetch("/api/trading/close-strategy-run", {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ runId: g.runId, mode: "virtual" }),
+                          body: JSON.stringify({ runId: g.runId, mode }),
                         })
                           .then(async (res) => {
                             if (!res.ok) {

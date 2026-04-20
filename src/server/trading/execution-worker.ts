@@ -125,6 +125,11 @@ export async function processOneTradingJob(
   }
 
   const signalAction = p.signalAction ?? "entry";
+  const emergencyExitBypass =
+    signalAction === "exit" &&
+    p.signalMetadata != null &&
+    typeof p.signalMetadata === "object" &&
+    (p.signalMetadata as Record<string, unknown>).manual_emergency_close === true;
 
   const isVirtual =
     p.executionMode === "virtual" &&
@@ -135,6 +140,7 @@ export async function processOneTradingJob(
     const virtualRunId = p.virtualRunId as string;
     const vElig = await assertVirtualRunStillEligibleForExecution(virtualRunId, {
       signalAction,
+      allowEmergencyExit: emergencyExitBypass,
     });
     if (!vElig.ok) {
       tradingLog("warn", "virtual_job_skipped_ineligible", {
@@ -194,6 +200,7 @@ export async function processOneTradingJob(
   const elig = await assertRunStillEligibleForExecution(p.runId, {
     signalAction,
     exchangeConnectionId: p.exchangeConnectionId,
+    allowEmergencyExit: emergencyExitBypass,
   });
   if (!elig.ok) {
     tradingLog("warn", "job_skipped_ineligible", {

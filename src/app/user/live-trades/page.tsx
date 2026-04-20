@@ -1,10 +1,10 @@
 import Link from "next/link";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
-import { UserLivePositionsSection } from "@/components/user/UserLivePositionsSection";
+import { UserActivePositionsSection } from "@/components/user/UserActivePositionsSection";
 import { requireUserIdForPage } from "@/server/auth/require-user";
 import { db } from "@/server/db";
-import { getUserLiveOpenPositions } from "@/server/queries/live-positions-dashboard";
+import { getUserRealActivePositionGroups } from "@/server/queries/active-positions-dashboard";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,7 @@ export default async function UserLiveTradesPage() {
     );
   }
 
-  const positions = await getUserLiveOpenPositions(userId);
+  const positions = await getUserRealActivePositionGroups(userId);
 
   return (
     <div className="space-y-8">
@@ -58,7 +58,11 @@ export default async function UserLiveTradesPage() {
         </p>
       </div>
 
-      <UserLivePositionsSection initialRows={positions} />
+      <UserActivePositionsSection
+        initialGroups={positions}
+        mode="real"
+        endpoint="/api/user/live-active-positions"
+      />
     </div>
   );
 }

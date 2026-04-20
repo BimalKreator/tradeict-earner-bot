@@ -107,7 +107,16 @@ export async function findEligibleRunsForStrategyExecution(
 
   const runStatusFilter =
     action === "exit"
-      ? inArray(userStrategyRuns.status, ["active", "blocked_revenue_due"])
+      ? inArray(userStrategyRuns.status, [
+          "active",
+          "blocked_revenue_due",
+          "paused",
+          "paused_revenue_due",
+          "paused_exchange_off",
+          "paused_insufficient_funds",
+          "paused_admin",
+          "paused_by_user",
+        ])
       : eq(userStrategyRuns.status, "active");
 
   const filters = [
@@ -223,6 +232,8 @@ export async function assertRunStillEligibleForExecution(
     signalAction?: "entry" | "exit";
     /** When set (e.g. secondary Delta), must match run primary/secondary or legacy fallback. */
     exchangeConnectionId?: string;
+    /** Emergency close path: allow exits despite pause/revenue/global-stop gates. */
+    allowEmergencyExit?: boolean;
   },
 ): Promise<{ ok: true; row: EligibleStrategyRunRow } | { ok: false; reason: ExecutionEligibilityFailure }> {
   if (!db) return { ok: false, reason: "run_not_found" };
@@ -264,23 +275,26 @@ export async function assertRunStillEligibleForExecution(
     .limit(1);
 
   const signalAction = opts?.signalAction ?? "entry";
+  const emergencyExitBypass = signalAction === "exit" && opts?.allowEmergencyExit === true;
 
   if (!r) return { ok: false, reason: "run_not_found" };
 
-  if (await getGlobalEmergencyStopActive()) {
+  if (!emergencyExitBypass && (await getGlobalEmergencyStopActive())) {
     return { ok: false, reason: "global_emergency_stop" };
   }
 
   if (r.approval !== "approved") return { ok: false, reason: "user_not_approved" };
-  if (r.subDeleted != null) return { ok: false, reason: "subscription_inactive" };
-  if (r.subStatus !== "active" || r.accessValidUntil <= now) {
+  if (!emergencyExitBypass && r.subDeleted != null) return { ok: false, reason: "subscription_inactive" };
+  if (!emergencyExitBypass && (r.subStatus !== "active" || r.accessValidUntil <= now)) {
     return { ok: false, reason: "subscription_inactive" };
   }
-  if (r.stratDeleted != null || r.stratStatus !== "active") {
+  if (!emergencyExitBypass && (r.stratDeleted != null || r.stratStatus !== "active")) {
     return { ok: false, reason: "strategy_inactive" };
   }
 
-  if (r.runStatus === "blocked_revenue_due") {
+  if (emergencyExitBypass) {
+    /* emergency exit path intentionally bypasses run status revenue/pause gates */
+  } else if (r.runStatus === "blocked_revenue_due") {
     if (signalAction === "exit") {
       /* fall through — exits are allowed to flatten risk */
     } else {
@@ -296,10 +310,11 @@ export async function assertRunStillEligibleForExecution(
     return { ok: false, reason: "run_not_active" };
   }
   if (
-    r.capitalToUseInr == null ||
-    r.leverage == null ||
-    String(r.capitalToUseInr).trim() === "" ||
-    String(r.leverage).trim() === ""
+    !emergencyExitBypass &&
+    (r.capitalToUseInr == null ||
+      r.leverage == null ||
+      String(r.capitalToUseInr).trim() === "" ||
+      String(r.leverage).trim() === "")
   ) {
     return { ok: false, reason: "settings_incomplete" };
   }

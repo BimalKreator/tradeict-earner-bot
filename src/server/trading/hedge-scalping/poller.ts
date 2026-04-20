@@ -109,6 +109,7 @@ async function dispatchPendingHsLiveSignals(
         targetUserIds: [s.userId],
         metadata: {
           source: "hedge_scalping_poller",
+          fanout_run_venues: true,
           mark_price: s.markPrice,
           ...(s.metadata ?? {}),
         },

@@ -30,6 +30,37 @@ function resolveLiveExchangeConnectionId(
   return r.exchangeConnectionId;
 }
 
+function resolveLiveExchangeConnectionIds(
+  r: EligibleStrategyRunRow,
+  signal: StrategyExecutionSignal,
+): string[] {
+  const venue = signal.exchangeVenue;
+  if (venue === "primary" || venue === "secondary") {
+    const one = resolveLiveExchangeConnectionId(r, venue);
+    return one ? [one] : [];
+  }
+
+  const md =
+    signal.metadata && typeof signal.metadata === "object"
+      ? (signal.metadata as Record<string, unknown>)
+      : null;
+  const fanoutAllRunVenues = md?.fanout_run_venues === true;
+  if (!fanoutAllRunVenues) {
+    const one = resolveLiveExchangeConnectionId(r, venue);
+    return one ? [one] : [];
+  }
+
+  const ids: string[] = [];
+  const add = (id: string | null | undefined) => {
+    if (!id) return;
+    if (!ids.includes(id)) ids.push(id);
+  };
+  add(r.primaryExchangeConnectionId);
+  add(r.secondaryExchangeConnectionId);
+  add(r.exchangeConnectionId);
+  return ids;
+}
+
 function mergeSignalMetadata(
   signal: StrategyExecutionSignal,
 ): Record<string, unknown> {
@@ -83,8 +114,6 @@ export async function dispatchStrategyExecutionSignal(
         }),
   ]);
 
-  const venue = signal.exchangeVenue;
-
   let contractValueUsd: number | null = null;
   if (signalAction === "entry" && liveRuns.length > 0) {
     try {
@@ -96,56 +125,58 @@ export async function dispatchStrategyExecutionSignal(
 
   const livePayloads: TradingExecutionJobPayload[] = [];
   for (const r of liveRuns) {
-    const exchangeConnectionId = resolveLiveExchangeConnectionId(r, venue);
-    if (exchangeConnectionId == null) continue;
+    const exchangeConnectionIds = resolveLiveExchangeConnectionIds(r, signal);
+    if (exchangeConnectionIds.length === 0) continue;
 
-    let quantity = signal.quantity.trim();
-    if (
-      signalAction === "entry" &&
-      contractValueUsd != null &&
-      contractValueUsd > 0
-    ) {
-      const capitalUsd = resolveFinalAllocatedCapitalUsd({
-        runSettingsJson: r.runSettingsJson,
-        columnCapital: r.capitalToUseInr,
-        recommendedCapitalInr: r.recommendedCapitalInr,
-      });
-      const lev = Number(r.leverage);
+    for (const exchangeConnectionId of exchangeConnectionIds) {
+      let quantity = signal.quantity.trim();
       if (
-        capitalUsd != null &&
-        capitalUsd > 0 &&
-        Number.isFinite(lev) &&
-        lev > 0
+        signalAction === "entry" &&
+        contractValueUsd != null &&
+        contractValueUsd > 0
       ) {
-        const contracts = contractsFromCollateralLeverageAndContractValue({
-          collateralUsd: capitalUsd,
-          leverage: lev,
-          contractValueUsd,
+        const capitalUsd = resolveFinalAllocatedCapitalUsd({
+          runSettingsJson: r.runSettingsJson,
+          columnCapital: r.capitalToUseInr,
+          recommendedCapitalInr: r.recommendedCapitalInr,
         });
-        if (contracts > 0) {
-          quantity = String(contracts);
+        const lev = Number(r.leverage);
+        if (
+          capitalUsd != null &&
+          capitalUsd > 0 &&
+          Number.isFinite(lev) &&
+          lev > 0
+        ) {
+          const contracts = contractsFromCollateralLeverageAndContractValue({
+            collateralUsd: capitalUsd,
+            leverage: lev,
+            contractValueUsd,
+          });
+          if (contracts > 0) {
+            quantity = String(contracts);
+          }
         }
       }
-    }
 
-    livePayloads.push({
-      kind: "execute_strategy_signal",
-      executionMode: "live",
-      strategyId: signal.strategyId,
-      correlationId: signal.correlationId,
-      symbol: signal.symbol,
-      side: signal.side,
-      orderType: signal.orderType,
-      quantity,
-      limitPrice: signal.limitPrice ?? null,
-      targetUserId: r.userId,
-      subscriptionId: r.subscriptionId,
-      runId: r.runId,
-      exchangeConnectionId,
-      leverage: r.leverage,
-      signalAction,
-      signalMetadata,
-    });
+      livePayloads.push({
+        kind: "execute_strategy_signal",
+        executionMode: "live",
+        strategyId: signal.strategyId,
+        correlationId: signal.correlationId,
+        symbol: signal.symbol,
+        side: signal.side,
+        orderType: signal.orderType,
+        quantity,
+        limitPrice: signal.limitPrice ?? null,
+        targetUserId: r.userId,
+        subscriptionId: r.subscriptionId,
+        runId: r.runId,
+        exchangeConnectionId,
+        leverage: r.leverage,
+        signalAction,
+        signalMetadata,
+      });
+    }
   }
 
   const virtualPayloads: TradingExecutionJobPayload[] = virtualRuns.map(

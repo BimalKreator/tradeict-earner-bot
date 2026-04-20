@@ -928,6 +928,168 @@ export async function getUserVirtualActivePositionGroups(
 }
 
 /**
+ * Live-trading open legs for one user (real Delta positions from `bot_positions`).
+ * Grouped by run so the UI can mirror virtual D1/D2 leg rendering.
+ */
+export async function getUserRealActivePositionGroups(
+  userId: string,
+): Promise<UserActivePositionGroup[]> {
+  if (!db) return [];
+  const now = new Date();
+
+  const realRows = await db
+    .select({
+      userId: botPositions.userId,
+      strategyId: botPositions.strategyId,
+      exchangeConnectionId: botPositions.exchangeConnectionId,
+      symbol: botPositions.symbol,
+      runId: userStrategyRuns.id,
+      primaryEx: userStrategyRuns.primaryExchangeConnectionId,
+      secondaryEx: userStrategyRuns.secondaryExchangeConnectionId,
+      strategyName: strategies.name,
+      strategySlug: strategies.slug,
+      strategySettingsJson: strategies.settingsJson,
+      userEmail: users.email,
+      userName: users.name,
+    })
+    .from(botPositions)
+    .innerJoin(
+      userStrategyRuns,
+      eq(botPositions.subscriptionId, userStrategyRuns.subscriptionId),
+    )
+    .innerJoin(strategies, eq(botPositions.strategyId, strategies.id))
+    .innerJoin(users, eq(botPositions.userId, users.id))
+    .innerJoin(
+      userStrategySubscriptions,
+      and(
+        eq(userStrategySubscriptions.id, userStrategyRuns.subscriptionId),
+        eq(userStrategySubscriptions.userId, botPositions.userId),
+      ),
+    )
+    .where(
+      and(
+        eq(botPositions.userId, userId),
+        eq(userStrategyRuns.status, "active"),
+        eq(userStrategySubscriptions.status, "active"),
+        gt(userStrategySubscriptions.accessValidUntil, now),
+        isNull(userStrategySubscriptions.deletedAt),
+        isNull(strategies.deletedAt),
+        isNull(users.deletedAt),
+        sql`abs(cast(${botPositions.netQuantity} as numeric)) > ${QTY_EPS}`,
+      ),
+    );
+
+  type RealCtx = {
+    userId: string;
+    runId: string;
+    strategyId: string;
+    strategyName: string;
+    strategySlug: string;
+    hedgeSettings: HedgeScalpingDisplaySettings | null;
+    symbol: string;
+    exchangeConnectionId: string;
+    primaryEx: string | null;
+    secondaryEx: string | null;
+    label: string;
+  };
+
+  const contexts: RealCtx[] = realRows.map((row) => ({
+    userId: row.userId,
+    runId: row.runId,
+    strategyId: row.strategyId,
+    strategyName: row.strategyName,
+    strategySlug: row.strategySlug,
+    hedgeSettings: parseHedgeScalpingDisplaySettings(row.strategySettingsJson),
+    symbol: row.symbol,
+    exchangeConnectionId: row.exchangeConnectionId,
+    primaryEx: row.primaryEx,
+    secondaryEx: row.secondaryEx,
+    label: userDisplayName(row.userEmail, row.userName),
+  }));
+
+  const markBySymbol = await fetchMarksForSymbols(contexts.map((c) => c.symbol));
+  const legs: ActivePositionLeg[] = [];
+  for (const r of contexts) {
+    const account: "D1" | "D2" =
+      r.secondaryEx && r.exchangeConnectionId === r.secondaryEx ? "D2" : "D1";
+    const isHs = isHedgeScalpingStrategySlug(r.strategySlug);
+    const boRows = await db
+      .select({
+        symbol: botOrders.symbol,
+        side: botOrders.side,
+        quantity: botOrders.quantity,
+        fillPrice: botOrders.fillPrice,
+        status: botOrders.status,
+        correlationId: botOrders.correlationId,
+        createdAt: botOrders.createdAt,
+      })
+      .from(botOrders)
+      .where(
+        and(
+          eq(botOrders.runId, r.runId),
+          eq(botOrders.userId, r.userId),
+          eq(botOrders.strategyId, r.strategyId),
+          eq(botOrders.exchangeConnectionId, r.exchangeConnectionId),
+          eq(botOrders.symbol, r.symbol),
+        ),
+      )
+      .orderBy(asc(botOrders.createdAt));
+
+    const ledger = ordersToLedgerRows(boRows);
+    const leg = buildLegReal({
+      userId: r.userId,
+      userLabel: r.label,
+      runId: r.runId,
+      strategyId: r.strategyId,
+      strategyName: r.strategyName,
+      strategySlug: r.strategySlug,
+      account,
+      orders: ledger,
+      markBySymbol,
+      symbolHint: r.symbol,
+      qtyPctOfCapital:
+        isHs && r.hedgeSettings
+          ? account === "D2"
+            ? r.hedgeSettings.d2QtyPctOfCapital
+            : r.hedgeSettings.d1QtyPctOfCapital
+          : null,
+      activeClipCount: null,
+    });
+    if (!leg) continue;
+    legs.push(
+      isHs && r.hedgeSettings
+        ? augmentHedgeScalpingLegExitPrices(leg, r.hedgeSettings)
+        : leg,
+    );
+  }
+
+  const grouped = new Map<string, UserActivePositionGroup>();
+  for (const leg of legs) {
+    const runId = leg.runId;
+    if (!runId) continue;
+    const existing = grouped.get(runId);
+    if (existing) {
+      existing.legs.push(leg);
+      existing.activePnlUsd += leg.unrealizedPnlUsd;
+      existing.realizedPnlUsd += leg.realizedPnlUsd;
+      continue;
+    }
+    grouped.set(runId, {
+      runId,
+      strategyName: leg.strategyName,
+      strategySlug: leg.strategySlug,
+      isHedgeScalping: isHedgeScalpingStrategySlug(leg.strategySlug),
+      legs: [leg],
+      closedLegs: [],
+      activePnlUsd: leg.unrealizedPnlUsd,
+      realizedPnlUsd: leg.realizedPnlUsd,
+    });
+  }
+
+  return [...grouped.values()].sort((a, b) => a.strategyName.localeCompare(b.strategyName));
+}
+
+/**
  * Global monitor: virtual + real open legs for active runs.
  */
 export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionRow[]> {
