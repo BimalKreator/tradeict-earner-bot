@@ -5,6 +5,14 @@ import {
 
 import type { HedgeScalpingSignal, HedgeScalpingState } from "./types";
 
+export type HedgeScalpingSignalAnalysis = {
+  signal: HedgeScalpingSignal;
+  /** Last closed candle close (signal bar), used as conceptual entry vs HalfTrend baseline. */
+  closedPrice: number;
+  /** HalfTrend line value on the same closed bar set as `signal`. */
+  htValue: number;
+};
+
 const HS_LOG_PREFIX = "[HS-SIGNAL]";
 const DEFAULT_CHANNEL_DEVIATION = 2;
 
@@ -44,10 +52,10 @@ function logHedgeScalpingSignal(params: {
  * - **SHORT:** flip **0 → 1** (uptrend to downtrend).
  * - **WAIT:** no flip between those two closes.
  */
-export function detectHedgeScalpingSignal(
+export function analyzeHedgeScalpingSignal(
   candles: Candle[],
   amplitude: number,
-): HedgeScalpingSignal {
+): HedgeScalpingSignalAnalysis {
   const closed = closedBarsForSignal(candles);
 
   if (closed.length < 2) {
@@ -61,7 +69,7 @@ export function detectHedgeScalpingSignal(
       closedBars: closed.length,
       signal: "WAIT",
     });
-    return "WAIT";
+    return { signal: "WAIT", closedPrice: closed.at(-1)?.close ?? NaN, htValue: NaN };
   }
 
   const priorClosed = closed.slice(0, -1);
@@ -99,5 +107,12 @@ export function detectHedgeScalpingSignal(
     closedBars: closed.length,
     signal,
   });
-  return signal;
+  return { signal, closedPrice, htValue };
+}
+
+export function detectHedgeScalpingSignal(
+  candles: Candle[],
+  amplitude: number,
+): HedgeScalpingSignal {
+  return analyzeHedgeScalpingSignal(candles, amplitude).signal;
 }

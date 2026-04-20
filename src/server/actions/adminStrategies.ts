@@ -137,6 +137,10 @@ function parseHedgeScalpingConfigFromForm(
     formData.get("hs_general_half_trend_amplitude"),
     "HalfTrend amplitude",
   );
+  const maxEntryDist = parseFiniteNumberField(
+    formData.get("hs_general_max_entry_distance_from_signal_pct"),
+    "Max entry distance from signal %",
+  );
   const d1Base = parsePercentField(formData.get("hs_d1_base_qty_pct"), "D1 base qty %");
   const d1Tp = parsePercentField(formData.get("hs_d1_target_profit_pct"), "D1 target profit %");
   const d1Sl = parsePercentField(formData.get("hs_d1_stop_loss_pct"), "D1 stop loss %");
@@ -157,6 +161,9 @@ function parseHedgeScalpingConfigFromForm(
   }
   if (!timeframe.success) parseErrors.hs_general_timeframe = ["Timeframe is invalid."];
   if (!amp.ok) parseErrors.hs_general_half_trend_amplitude = [amp.error];
+  if (!maxEntryDist.ok) {
+    parseErrors.hs_general_max_entry_distance_from_signal_pct = [maxEntryDist.error];
+  }
   if (!d1Base.ok) parseErrors.hs_d1_base_qty_pct = [d1Base.error];
   if (!d1Tp.ok) parseErrors.hs_d1_target_profit_pct = [d1Tp.error];
   if (!d1Sl.ok) parseErrors.hs_d1_stop_loss_pct = [d1Sl.error];
@@ -174,6 +181,7 @@ function parseHedgeScalpingConfigFromForm(
       allowedSymbols,
       timeframe: timeframe.success ? timeframe.data : "5m",
       halfTrendAmplitude: amp.ok ? amp.value : 2,
+      maxEntryDistanceFromSignalPct: maxEntryDist.ok ? maxEntryDist.value : 2.0,
     },
     delta1: {
       baseQtyPct: d1Base.ok ? d1Base.value : 100,

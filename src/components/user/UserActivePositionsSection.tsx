@@ -33,6 +33,38 @@ function formatExitPx(v: number | null | undefined): string {
   return v.toFixed(2);
 }
 
+/** HH:mm:ss, D Mon (local) */
+function formatEntryOpenedAt(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "—";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const mon = d.toLocaleString("en-GB", { month: "short" });
+  return `${hh}:${mm}:${ss}, ${d.getDate()} ${mon}`;
+}
+
+function unrealizedPnlPctForLeg(leg: UserActivePositionGroup["legs"][number]): number | null {
+  const qty = Math.abs(leg.displayNetQty);
+  const entry = leg.displayAvgEntryPrice ?? leg.avgEntryPrice;
+  if (entry == null || !Number.isFinite(entry) || entry <= 0 || qty <= 1e-12) return null;
+  const notional = qty * entry;
+  if (notional <= 1e-12) return null;
+  const pct = (leg.unrealizedPnlUsd / notional) * 100;
+  return Number.isFinite(pct) ? pct : null;
+}
+
+function formatLivePnlWithPct(leg: UserActivePositionGroup["legs"][number]): string {
+  const usd = leg.unrealizedPnlUsd;
+  const absTxt = formatUsdAmount(String(Math.abs(usd)));
+  const dollar = `${usd < 0 ? "-" : "+"}${absTxt}`;
+  const p = unrealizedPnlPctForLeg(leg);
+  if (p == null) return dollar;
+  const pctInner = `${p >= 0 ? "+" : ""}${p.toFixed(2)}%`;
+  return `${dollar} (${pctInner})`;
+}
+
 function legLabel(
   leg: UserActivePositionGroup["legs"][number],
   g: Pick<UserActivePositionGroup, "isHedgeScalping">,
@@ -180,11 +212,6 @@ export function UserActivePositionsSection({
                     >
                       Active PnL: {signedUsdText(displayPNL)}
                     </p>
-                    <p
-                      className={`text-sm font-semibold tabular-nums ${g.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
-                    >
-                      Realized PnL: {signedUsdText(g.realizedPnlUsd)}
-                    </p>
                     <button
                       type="button"
                       disabled={closingRunId === g.runId}
@@ -231,8 +258,8 @@ export function UserActivePositionsSection({
                         <th className="min-w-[4.25rem] px-3 py-3 sm:min-w-0 sm:px-4">Target</th>
                         <th className="min-w-[4.25rem] px-3 py-3 sm:min-w-0 sm:px-4">Stop loss</th>
                         <th className="px-3 py-3 sm:px-4">Current</th>
+                        <th className="px-3 py-3 sm:px-4">Time</th>
                         <th className="px-3 py-3 sm:px-4">Live PnL</th>
-                        <th className="px-3 py-3 sm:px-4">Realized PnL</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -259,15 +286,13 @@ export function UserActivePositionsSection({
                             <td className="px-3 py-3 tabular-nums text-white sm:px-4">
                               {leg.markPrice != null ? leg.markPrice.toFixed(2) : "—"}
                             </td>
+                            <td className="px-3 py-3 whitespace-nowrap tabular-nums text-slate-300 sm:px-4">
+                              {formatEntryOpenedAt(leg.openedAt)}
+                            </td>
                             <td
                               className={`px-3 py-3 tabular-nums text-base font-semibold sm:px-4 sm:text-lg ${leg.unrealizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
                             >
-                              {signedUsdText(leg.unrealizedPnlUsd)}
-                            </td>
-                            <td
-                              className={`px-3 py-3 tabular-nums font-semibold sm:px-4 ${leg.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
-                            >
-                              {signedUsdText(leg.realizedPnlUsd)}
+                              {formatLivePnlWithPct(leg)}
                             </td>
                           </tr>
                         ))

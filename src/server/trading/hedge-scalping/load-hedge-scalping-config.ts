@@ -18,6 +18,12 @@ export function normalizeHedgeScalpingSettingsJson(input: unknown): unknown {
   if (!input || typeof input !== "object") return input;
   const root: Record<string, unknown> = { ...(input as Record<string, unknown>) };
 
+  if (root.general && typeof root.general === "object") {
+    const g: Record<string, unknown> = { ...(root.general as Record<string, unknown>) };
+    coerceNumericFields(g, ["halfTrendAmplitude", "maxEntryDistanceFromSignalPct"]);
+    root.general = g;
+  }
+
   if (root.delta1 && typeof root.delta1 === "object") {
     const d1: Record<string, unknown> = { ...(root.delta1 as Record<string, unknown>) };
     coerceNumericFields(d1, [

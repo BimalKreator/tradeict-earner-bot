@@ -56,7 +56,8 @@ export const strategies = pgTable(
      * User-facing catalog/subscription UI must never render these internals.
      *
      * Hedge Scalping (`HedgeScalpingConfig`) uses `general` (allowedSymbols list, timeframe,
-     * HalfTrend amplitude), `delta1`, and `delta2` — see `hedgeScalpingConfigSchema`.
+     * HalfTrend amplitude, max entry distance from signal %), `delta1`, and `delta2` — see
+     * `hedgeScalpingConfigSchema`.
      */
     settingsJson: jsonb("settings_json").$type<
       Record<string, unknown> | HedgeScalpingConfig | null

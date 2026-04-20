@@ -21,6 +21,15 @@ const hedgeScalpingGeneralSchemaBase = z.object({
   allowedSymbols: z.string().trim().min(1, "At least one allowed symbol is required.").default("BTCUSD"),
   timeframe: hedgeScalpingTimeframeSchema.default("5m"),
   halfTrendAmplitude: z.number().finite().min(0.01).default(2),
+  /**
+   * NEW_RUN guard: reject when |close − HalfTrend ht| / ht × 100 exceeds this (breakout candles).
+   */
+  maxEntryDistanceFromSignalPct: z
+    .number()
+    .finite()
+    .min(0, "Max entry distance % must be >= 0.")
+    .max(100, "Max entry distance % must be <= 100.")
+    .default(2.0),
 });
 
 /** Accepts legacy rows that used `general.symbol` instead of `allowedSymbols`. */

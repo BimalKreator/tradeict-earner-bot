@@ -57,6 +57,8 @@ export type ActivePositionLeg = {
   /** Approximate exit prices from saved strategy % (per leg / clip). */
   targetPrice?: number | null;
   stopLossPrice?: number | null;
+  /** Earliest filled order timestamp in the current open ledger window (ISO). */
+  openedAt?: string | null;
 };
 
 export type UserClosedLegHistoryRow = {
@@ -182,6 +184,16 @@ function extractCurrentOpenLedgerWindow(orders: LedgerOrderRow[]): LedgerOrderRo
   return orders.slice(lastFlatIdx + 1);
 }
 
+function openedAtFromOpenWindow(openWindow: LedgerOrderRow[]): string | null {
+  let earliestMs: number | null = null;
+  for (const o of openWindow) {
+    if (!isFilledOrder(o.status)) continue;
+    const ms = o.createdAt.getTime();
+    if (earliestMs == null || ms < earliestMs) earliestMs = ms;
+  }
+  return earliestMs != null ? new Date(earliestMs).toISOString() : null;
+}
+
 function buildLegVirtual(params: {
   userId: string;
   virtualRunId: string;
@@ -226,6 +238,8 @@ function buildLegVirtual(params: {
       ? netQty * (mark - avgEntryPrice)
       : dOpen.unrealizedPnlUsd;
 
+  const openedAt = openedAtFromOpenWindow(openWindowOrders);
+
   const key =
     params.legKeySuffix && params.legKeySuffix.length > 0
       ? `v:${params.virtualRunId}:${params.account}:${params.legKeySuffix}`
@@ -252,6 +266,7 @@ function buildLegVirtual(params: {
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
     activeClipCount: params.activeClipCount ?? null,
     d2LadderStep: params.d2LadderStep ?? undefined,
+    openedAt,
   };
 }
 
@@ -274,6 +289,7 @@ function buildLegReal(params: {
   const dOpen = deriveLedgerMetrics(openWindowOrders, mark);
   const dAll = deriveLedgerMetrics(params.orders, mark);
   if (Math.abs(dOpen.openNetQty) <= QTY_EPS) return null;
+  const openedAt = openedAtFromOpenWindow(openWindowOrders);
   return {
     key: `r:${params.runId}:${params.account}:${params.symbolHint}`,
     mode: "real",
@@ -295,6 +311,7 @@ function buildLegReal(params: {
     markPrice: mark,
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
     activeClipCount: params.activeClipCount ?? null,
+    openedAt,
   };
 }
 

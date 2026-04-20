@@ -29,7 +29,7 @@ import {
   maxD2LadderStepInclusive,
 } from "./engine-math";
 import { parseHedgeScalpingStrategySettings } from "./load-hedge-scalping-config";
-import { detectHedgeScalpingSignal } from "./signal-detector";
+import { analyzeHedgeScalpingSignal } from "./signal-detector";
 import type {
   D2ClipState,
   HedgeScalpingIntent,
@@ -610,7 +610,7 @@ export async function processHedgeScalpingActiveRunsPhase(): Promise<void> {
 
 /**
  * HalfTrend new-run fan-out. When `feedFilter` is set, only strategies whose `general.timeframe`
- * and `allowedSymbols` match that feed run `detectHedgeScalpingSignal` on `currentCandles`.
+ * and `allowedSymbols` match that feed run `analyzeHedgeScalpingSignal` on `currentCandles`.
  */
 export async function processHedgeScalpingNewEntriesPhase(
   currentCandles: Candle[],
@@ -669,11 +669,28 @@ export async function processHedgeScalpingNewEntriesPhase(
         .limit(1);
       if (existingActive) continue;
 
-      const sig = detectHedgeScalpingSignal(
+      const signalAnalysis = analyzeHedgeScalpingSignal(
         currentCandles,
         cfg.general.halfTrendAmplitude,
       );
+      const sig = signalAnalysis.signal;
       if (sig !== "LONG" && sig !== "SHORT") continue;
+
+      const maxEntryDistanceFromSignalPct = cfg.general.maxEntryDistanceFromSignalPct;
+      const { closedPrice, htValue } = signalAnalysis;
+      if (!Number.isFinite(closedPrice) || !Number.isFinite(htValue) || Math.abs(htValue) < 1e-12) {
+        console.warn(
+          `${LOG} NEW_RUN skip — invalid close/ht for distance guard user=${userId} strategy=${strat.id} close=${String(closedPrice)} ht=${String(htValue)}`,
+        );
+        continue;
+      }
+      const distancePct = (Math.abs(closedPrice - htValue) / htValue) * 100;
+      if (distancePct > maxEntryDistanceFromSignalPct) {
+        console.log(
+          `${LOG} Skipped NEW_RUN: Entry distance (${distancePct}%) exceeds max allowed (${maxEntryDistanceFromSignalPct}%) from HalfTrend baseline.`,
+        );
+        continue;
+      }
 
       const d1Side = sig;
       const [lastRun] = await db

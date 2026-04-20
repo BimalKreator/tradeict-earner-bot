@@ -23,6 +23,7 @@ export type AdminStrategyFormDefaults = {
     allowedSymbols: string;
     timeframe: HedgeScalpingTimeframe;
     halfTrendAmplitude: string;
+    maxEntryDistanceFromSignalPct: string;
     delta1BaseQtyPct: string;
     delta1TargetProfitPct: string;
     delta1StopLossPct: string;
@@ -113,6 +114,12 @@ export function strategyDefaultsFromRow(row: {
               ? hedgeParsed.data.general.halfTrendAmplitude
               : ((rawHsGeneral.halfTrendAmplitude as number | undefined) ??
                   hsFallback.general.halfTrendAmplitude),
+          ),
+          maxEntryDistanceFromSignalPct: String(
+            hedgeParsed?.success
+              ? hedgeParsed.data.general.maxEntryDistanceFromSignalPct
+              : ((rawHsGeneral.maxEntryDistanceFromSignalPct as number | undefined) ??
+                  hsFallback.general.maxEntryDistanceFromSignalPct),
           ),
           delta1BaseQtyPct: String(
             hedgeParsed?.success

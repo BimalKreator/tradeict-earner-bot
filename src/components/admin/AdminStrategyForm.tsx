@@ -360,6 +360,30 @@ export function AdminStrategyForm(props: Props) {
                   />
                   {fieldError(state.fieldErrors, "hs_general_half_trend_amplitude")}
                 </div>
+                <div>
+                  <label
+                    htmlFor={`${baseId}-hs-max-entry-dist`}
+                    className="block text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
+                  >
+                    Max entry distance from HalfTrend (%)
+                  </label>
+                  <input
+                    id={`${baseId}-hs-max-entry-dist`}
+                    name="hs_general_max_entry_distance_from_signal_pct"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    required
+                    defaultValue={hedgeScalpingDefaults.maxEntryDistanceFromSignalPct}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-glass)] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"
+                  />
+                  <p className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">
+                    NEW_RUN is skipped when the signal candle close is farther than this % away from
+                    the HalfTrend line (reduces entries on extreme breakout candles).
+                  </p>
+                  {fieldError(state.fieldErrors, "hs_general_max_entry_distance_from_signal_pct")}
+                </div>
               </div>
             </div>
 
