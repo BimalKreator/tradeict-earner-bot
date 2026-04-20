@@ -178,6 +178,8 @@ export type TradingExecutionJobPayload = {
   /** Mirrors intake signal; omitted in legacy jobs → worker defaults to `entry`. */
   signalAction?: "entry" | "exit";
   signalMetadata?: Record<string, unknown>;
+  /** Effective run leverage (capped to strategy max at dispatch); used for Delta isolated leverage API. */
+  leverage?: string;
 };
 
 export const tradingExecutionJobs = pgTable(

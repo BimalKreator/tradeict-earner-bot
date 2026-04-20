@@ -2,11 +2,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 
 import {
-  hedgeScalpingConfigSchema,
+  type HedgeScalpingConfig,
   isHedgeScalpingStrategySlug,
   parseAllowedSymbolsList,
 } from "@/lib/hedge-scalping-config";
 import { extractHedgeScalpingSymbolFromRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
+import { resolveHedgeScalpingConfigForUi } from "@/server/trading/hedge-scalping/load-hedge-scalping-config";
 import { db } from "@/server/db";
 import {
   strategies,
@@ -37,6 +38,8 @@ export type UserStrategySettingsPageData = {
   isHedgeScalpingStrategy: boolean;
   hedgeScalpingAllowedSymbols: string[];
   initialHedgeScalpingSymbol: string | null;
+  /** Merged with defaults so legacy rows missing `general.maxEntryDistanceFromSignalPct` etc. are safe for UI. */
+  hedgeScalpingResolvedConfig: HedgeScalpingConfig | null;
 };
 
 const EDITABLE_RUN_STATUSES = new Set<RunRow["status"]>([
@@ -101,11 +104,11 @@ export async function getUserStrategySettingsPageData(
   const deltaConnections = await listUserDeltaIndiaExchangeConnections(userId);
 
   const isHedgeScalpingStrategy = isHedgeScalpingStrategySlug(row.strategySlug);
-  const hedgeScalpingAllowedSymbols = isHedgeScalpingStrategy
-    ? (() => {
-        const p = hedgeScalpingConfigSchema.safeParse(row.strategySettingsJson);
-        return p.success ? parseAllowedSymbolsList(p.data.general.allowedSymbols) : [];
-      })()
+  const hedgeScalpingResolvedConfig = isHedgeScalpingStrategy
+    ? resolveHedgeScalpingConfigForUi(row.strategySettingsJson)
+    : null;
+  const hedgeScalpingAllowedSymbols = hedgeScalpingResolvedConfig
+    ? parseAllowedSymbolsList(hedgeScalpingResolvedConfig.general.allowedSymbols)
     : [];
   const savedSym = extractHedgeScalpingSymbolFromRunSettingsJson(row.runSettingsJson)?.trim().toUpperCase();
   const initialHedgeScalpingSymbol =
@@ -138,5 +141,6 @@ export async function getUserStrategySettingsPageData(
     isHedgeScalpingStrategy,
     hedgeScalpingAllowedSymbols,
     initialHedgeScalpingSymbol,
+    hedgeScalpingResolvedConfig,
   };
 }

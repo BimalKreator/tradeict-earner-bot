@@ -129,6 +129,7 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
         isHedgeScalpingStrategy={data?.isHedgeScalpingStrategy ?? false}
         hedgeScalpingAllowedSymbols={data?.hedgeScalpingAllowedSymbols ?? []}
         initialHedgeScalpingSymbol={data?.initialHedgeScalpingSymbol ?? null}
+        hedgeScalpingResolvedConfig={data?.hedgeScalpingResolvedConfig ?? null}
       />
     </div>
   );

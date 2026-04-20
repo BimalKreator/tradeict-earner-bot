@@ -3,6 +3,14 @@ import {
   signDeltaIndiaRequest,
 } from "./delta-india-sign";
 
+/**
+ * Authenticated **read** helpers for Delta India (wallet probe) live in this module.
+ *
+ * **Order placement** (integer contract `size`, isolated leverage via
+ * `POST /v2/products/{product_id}/orders/leverage`, then `POST /v2/orders`) lives in
+ * `DeltaIndiaTradingAdapter` (`src/server/trading/adapters/delta-india-trading-adapter.ts`).
+ */
+
 export type DeltaWalletTestResult =
   | { ok: true; message: string }
   | {

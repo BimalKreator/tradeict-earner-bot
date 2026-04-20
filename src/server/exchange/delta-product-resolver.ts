@@ -85,11 +85,10 @@ async function fetchAllProductsPages(): Promise<Map<string, number>> {
   return map;
 }
 
-/**
- * Single-product lookup when the paginated catalog map misses or catalog fetch failed.
- * `GET /v2/products/{symbol}` returns `{ result: { id, symbol, ... } }`.
- */
-export async function fetchDeltaIndiaProductIdDirect(symbol: string): Promise<number | null> {
+/** `GET /v2/products/{symbol}` → `result` object, or null. */
+async function fetchDeltaIndiaProductResultRecord(
+  symbol: string,
+): Promise<Record<string, unknown> | null> {
   const s = symbol.trim();
   if (!s) return null;
   const base = deltaIndiaDefaultBaseUrl().replace(/\/$/, "");
@@ -110,17 +109,46 @@ export async function fetchDeltaIndiaProductIdDirect(symbol: string): Promise<nu
     if (!res.ok || json.success !== true) return null;
     const result = json.result;
     if (!result || typeof result !== "object") return null;
-    const idRaw = (result as Record<string, unknown>).id;
-    const id =
-      typeof idRaw === "number"
-        ? idRaw
-        : typeof idRaw === "string"
-          ? Number(idRaw)
-          : NaN;
-    return Number.isFinite(id) && id > 0 ? id : null;
+    return result as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+/**
+ * Single-product lookup when the paginated catalog map misses or catalog fetch failed.
+ * `GET /v2/products/{symbol}` returns `{ result: { id, symbol, ... } }`.
+ */
+export async function fetchDeltaIndiaProductIdDirect(symbol: string): Promise<number | null> {
+  const result = await fetchDeltaIndiaProductResultRecord(symbol);
+  if (!result) return null;
+  const idRaw = result.id;
+  const id =
+    typeof idRaw === "number"
+      ? idRaw
+      : typeof idRaw === "string"
+        ? Number(idRaw)
+        : NaN;
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/**
+ * USD notional per one contract from the product record (`contract_value` in API docs).
+ * Used with {@link contractsFromCollateralLeverageAndContractValue} when sizing from collateral.
+ */
+export async function fetchDeltaIndiaProductContractValue(
+  symbol: string,
+): Promise<number | null> {
+  const result = await fetchDeltaIndiaProductResultRecord(symbol);
+  if (!result) return null;
+  const cvRaw = result.contract_value;
+  const cv =
+    typeof cvRaw === "number"
+      ? cvRaw
+      : typeof cvRaw === "string"
+        ? Number(String(cvRaw).trim())
+        : NaN;
+  return Number.isFinite(cv) && cv > 0 ? cv : null;
 }
 
 /**

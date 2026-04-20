@@ -9,6 +9,7 @@ import type {
   DeltaWalletTransactionsError,
   DeltaWalletTransactionsSnapshot,
 } from "@/server/exchange/delta-india-wallet-types";
+import { normalizeDeltaOrderContractSize } from "@/server/exchange/delta-order-contract-size";
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
@@ -147,13 +148,21 @@ function mapVenueToSyncStatus(
   return "unknown";
 }
 
+function parseEligibleLeverage(raw: string | null | undefined): number | null {
+  if (raw == null || String(raw).trim() === "") return null;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const floored = Math.floor(n);
+  return floored >= 1 ? floored : null;
+}
+
 function buildPlaceOrderJsonBody(
   productId: number,
   input: PlaceOrderInput,
 ): { body: string } | { error: string } {
-  const size = Number(input.quantity);
-  if (!Number.isFinite(size) || size === 0) {
-    return { error: "Order size must be a non-zero number." };
+  const sizeNorm = normalizeDeltaOrderContractSize(String(input.quantity));
+  if (!sizeNorm.ok) {
+    return { error: sizeNorm.error };
   }
 
   const order_type =
@@ -166,7 +175,7 @@ function buildPlaceOrderJsonBody(
 
   const payload: Record<string, string | number> = {
     product_id: productId,
-    size,
+    size: sizeNorm.size,
     side: input.side,
     order_type,
     client_order_id: input.internalClientOrderId,
@@ -197,6 +206,33 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     private readonly apiKey: string,
     private readonly apiSecret: string,
   ) {}
+
+  /**
+   * Delta isolated margin: set per-product order leverage before submitting the order.
+   * @see https://docs.delta.exchange/ — `POST /products/{product_id}/orders/leverage`
+   */
+  private async setProductOrderLeverage(
+    productId: number,
+    leverage: number,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const path = `/v2/products/${productId}/orders/leverage`;
+    const body = JSON.stringify({ leverage });
+    const r = await this.signedFetch("POST", path, "", body);
+    if (!r.ok) {
+      const errMsg =
+        typeof r.json.error === "object" && r.json.error !== null
+          ? JSON.stringify(r.json.error).slice(0, 800)
+          : r.text.slice(0, 800);
+      return { ok: false, error: `Delta set leverage HTTP ${r.status}: ${errMsg}` };
+    }
+    if (!deltaJsonSuccess(r.json)) {
+      return {
+        ok: false,
+        error: `Delta set leverage rejected: ${r.text.slice(0, 800)}`,
+      };
+    }
+    return { ok: true };
+  }
 
   protected async signedFetch(
     method: string,
@@ -270,6 +306,14 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       );
       if (recovered?.ok) {
         return recovered;
+      }
+
+      const lev = parseEligibleLeverage(input.leverage ?? null);
+      if (lev != null) {
+        const levRes = await this.setProductOrderLeverage(product.productId, lev);
+        if (!levRes.ok) {
+          return { ok: false, error: levRes.error };
+        }
       }
 
       const built = buildPlaceOrderJsonBody(product.productId, input);

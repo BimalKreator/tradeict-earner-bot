@@ -105,7 +105,8 @@ async function runPostSubmitSync(
  * 5. **Strategy catalog** — `strategies.status` must be `active` (admin strategy pause stops new fan-out from dispatcher).
  * 6. **Exchange readiness** — Delta connection active, keys present, last test success.
  * 7. **Capital / leverage settings** — Required numerics present; **leverage** is capped to `strategies.max_leverage`
- *    on the eligibility row when the strategy defines a max.
+ *    on the eligibility row when the strategy defines a max. Live Delta orders apply that leverage via
+ *    `POST /v2/products/{id}/orders/leverage` before submit; **contract `size`** is an integer lot count at the venue.
  * 8. **Margin / API errors** — After a failed `placeOrder`, Delta “insufficient balance/margin” style errors
  *    auto-pause the run as `paused_insufficient_funds` to avoid API spam (order row remains failed as recorded).
  */
@@ -364,6 +365,7 @@ export async function processOneTradingJob(
         quantity: p.quantity,
         limitPrice: p.limitPrice ?? null,
         reduceOnly: signalAction === "exit",
+        leverage: p.leverage ?? row.leverage,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

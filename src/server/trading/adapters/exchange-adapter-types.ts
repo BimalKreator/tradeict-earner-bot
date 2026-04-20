@@ -7,6 +7,11 @@ export type PlaceOrderInput = {
   limitPrice?: string | null;
   /** Delta `reduce_only` — required for reliable position closes. */
   reduceOnly?: boolean;
+  /**
+   * Isolated margin: applied via `POST /v2/products/{product_id}/orders/leverage` immediately
+   * before placing the order (Delta does not rely on a default for every account/product).
+   */
+  leverage?: string | null;
 };
 
 export type PlaceOrderSuccess = {

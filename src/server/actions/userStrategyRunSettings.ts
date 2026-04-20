@@ -4,11 +4,8 @@ import { and, eq, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import type { ZodIssue } from "zod";
 
-import {
-  hedgeScalpingConfigSchema,
-  isHedgeScalpingStrategySlug,
-  parseAllowedSymbolsList,
-} from "@/lib/hedge-scalping-config";
+import { isHedgeScalpingStrategySlug, parseAllowedSymbolsList } from "@/lib/hedge-scalping-config";
+import { resolveHedgeScalpingConfigForUi } from "@/server/trading/hedge-scalping/load-hedge-scalping-config";
 import {
   createUserStrategyRunSettingsSchema,
   type UserStrategySettingsConstraints,
@@ -221,10 +218,8 @@ export async function updateUserStrategySettingsAction(
   const hedgeSymRaw = String(formData.get("hedge_scalping_symbol") ?? "").trim().toUpperCase();
   let runSettingsPatch: Record<string, unknown> | null | undefined;
   if (isHedgeScalpingStrategySlug(row.strategySlug)) {
-    const parsed = hedgeScalpingConfigSchema.safeParse(row.strategySettingsJson);
-    const allowed = parsed.success
-      ? parseAllowedSymbolsList(parsed.data.general.allowedSymbols)
-      : [];
+    const resolved = resolveHedgeScalpingConfigForUi(row.strategySettingsJson);
+    const allowed = parseAllowedSymbolsList(resolved.general.allowedSymbols);
     if (allowed.length === 0) {
       return {
         ok: false,

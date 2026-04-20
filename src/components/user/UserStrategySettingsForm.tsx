@@ -13,8 +13,12 @@ import {
   userStrategySettingsActionInitialState,
   type UserStrategySettingsActionState,
 } from "@/server/actions/userStrategyRunSettings";
+import type { HedgeScalpingConfig } from "@/lib/hedge-scalping-config";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
+
+/** Matches `hedge-scalping-config` default when `general.maxEntryDistanceFromSignalPct` is absent. */
+const HS_MAX_ENTRY_DISTANCE_FALLBACK_PCT = 2.0;
 
 function issuesToMap(issues: ZodIssue[]): Record<string, string> {
   const m: Record<string, string> = {};
@@ -38,6 +42,7 @@ export function UserStrategySettingsForm({
   isHedgeScalpingStrategy = false,
   hedgeScalpingAllowedSymbols = [],
   initialHedgeScalpingSymbol = null,
+  hedgeScalpingResolvedConfig = null,
 }: {
   strategySlug?: string;
   constraints?: UserStrategySettingsConstraints;
@@ -51,6 +56,8 @@ export function UserStrategySettingsForm({
   isHedgeScalpingStrategy?: boolean;
   hedgeScalpingAllowedSymbols?: string[];
   initialHedgeScalpingSymbol?: string | null;
+  /** Merged with defaults on the server; safe for legacy `settings_json`. */
+  hedgeScalpingResolvedConfig?: HedgeScalpingConfig | null;
 }) {
   const safeConstraints = useMemo<UserStrategySettingsConstraints>(
     () => ({
@@ -188,6 +195,19 @@ export function UserStrategySettingsForm({
                 {state.fieldErrors.hedge_scalping_symbol}
               </p>
             ) : null}
+            <p className="mt-3 text-xs leading-relaxed text-[var(--text-muted)]">
+              HalfTrend entry-distance guard (strategy default):{" "}
+              <span className="font-mono text-slate-200">
+                {(
+                  hedgeScalpingResolvedConfig?.general?.maxEntryDistanceFromSignalPct ??
+                  HS_MAX_ENTRY_DISTANCE_FALLBACK_PCT
+                ).toFixed(2)}
+                %
+              </span>
+              . Paper{" "}
+              <code className="text-[10px] text-sky-300/90">NEW_RUN</code> entries are skipped when
+              the signal candle is farther than this from the HalfTrend baseline.
+            </p>
           </div>
         </GlassPanel>
       ) : null}

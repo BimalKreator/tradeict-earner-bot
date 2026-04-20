@@ -87,6 +87,7 @@ export async function dispatchStrategyExecutionSignal(
       subscriptionId: r.subscriptionId,
       runId: r.runId,
       exchangeConnectionId,
+      leverage: r.leverage,
       signalAction,
       signalMetadata,
     });

@@ -1,4 +1,5 @@
 import {
+  defaultHedgeScalpingConfig,
   hedgeScalpingConfigSchema,
   type HedgeScalpingConfig,
 } from "@/lib/hedge-scalping-config";
@@ -46,6 +47,37 @@ export function normalizeHedgeScalpingSettingsJson(input: unknown): unknown {
   }
 
   return root;
+}
+
+/**
+ * Merge partial / legacy `settings_json` with canonical defaults, then validate.
+ * Use for user-facing UI and validations where missing `general.*` keys must not crash.
+ */
+export function resolveHedgeScalpingConfigForUi(settingsJson: unknown): HedgeScalpingConfig {
+  const defaults = defaultHedgeScalpingConfig();
+  const normalized = normalizeHedgeScalpingSettingsJson(settingsJson);
+  const root =
+    normalized != null && typeof normalized === "object" && !Array.isArray(normalized)
+      ? (normalized as Record<string, unknown>)
+      : {};
+
+  const mergeSection = <K extends keyof HedgeScalpingConfig>(key: K): HedgeScalpingConfig[K] => {
+    const patch = root[key as string];
+    const base = defaults[key];
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      return { ...base };
+    }
+    return { ...base, ...(patch as Record<string, unknown>) } as HedgeScalpingConfig[K];
+  };
+
+  const candidate: HedgeScalpingConfig = {
+    general: mergeSection("general"),
+    delta1: mergeSection("delta1"),
+    delta2: mergeSection("delta2"),
+  };
+
+  const parsed = hedgeScalpingConfigSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : defaults;
 }
 
 /**
