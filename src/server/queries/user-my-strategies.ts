@@ -86,7 +86,9 @@ export async function ensureMissingStrategyRunsForUser(
   for (const sub of subs) {
     if (have.has(sub.id)) continue;
 
-    const accessOk = sub.accessValidUntil.getTime() > now.getTime();
+    const accessEnd = coerceValidDate(sub.accessValidUntil);
+    if (!accessEnd) continue;
+    const accessOk = accessEnd.getTime() > now.getTime();
     const terminal =
       sub.status === "expired" || sub.status === "cancelled" || !accessOk;
     const runStatus = terminal ? "expired" : "ready_to_activate";

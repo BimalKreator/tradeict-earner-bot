@@ -385,47 +385,47 @@ export async function unsubscribeStrategyRunAction(
   }
   const subscriptionId = parsed.data;
 
-  const database = requireDb();
-  const now = new Date();
-
-  const [row] = await database
-    .select({
-      subStatus: userStrategySubscriptions.status,
-      runId: userStrategyRuns.id,
-      userApproval: users.approvalStatus,
-    })
-    .from(userStrategySubscriptions)
-    .innerJoin(
-      userStrategyRuns,
-      eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
-    )
-    .innerJoin(users, eq(userStrategySubscriptions.userId, users.id))
-    .where(
-      and(
-        eq(userStrategySubscriptions.id, subscriptionId),
-        eq(userStrategySubscriptions.userId, userId),
-        isNull(userStrategySubscriptions.deletedAt),
-      ),
-    )
-    .limit(1);
-
-  if (!row) {
-    return { ok: false, message: "Subscription not found." };
-  }
-
-  if (row.userApproval !== "approved") {
-    return { ok: false, message: "Your account is not approved for this action." };
-  }
-
-  if (row.subStatus === "cancelled") {
-    safeRevalidatePath("/user/my-strategies");
-    return {
-      ok: true,
-      message: "This strategy is already removed from your account.",
-    };
-  }
-
   try {
+    const database = requireDb();
+    const now = new Date();
+
+    const [row] = await database
+      .select({
+        subStatus: userStrategySubscriptions.status,
+        runId: userStrategyRuns.id,
+        userApproval: users.approvalStatus,
+      })
+      .from(userStrategySubscriptions)
+      .innerJoin(
+        userStrategyRuns,
+        eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+      )
+      .innerJoin(users, eq(userStrategySubscriptions.userId, users.id))
+      .where(
+        and(
+          eq(userStrategySubscriptions.id, subscriptionId),
+          eq(userStrategySubscriptions.userId, userId),
+          isNull(userStrategySubscriptions.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!row) {
+      return { ok: false, message: "Subscription not found." };
+    }
+
+    if (row.userApproval !== "approved") {
+      return { ok: false, message: "Your account is not approved for this action." };
+    }
+
+    if (row.subStatus === "cancelled") {
+      safeRevalidatePath("/user/my-strategies");
+      return {
+        ok: true,
+        message: "This strategy is already removed from your account.",
+      };
+    }
+
     await database.transaction(async (tx) => {
       await tx
         .update(userStrategyRuns)
@@ -452,6 +452,13 @@ export async function unsubscribeStrategyRunAction(
           ),
         );
     });
+
+    safeRevalidatePath("/user/my-strategies");
+    return {
+      ok: true,
+      message:
+        "You are unsubscribed — this strategy will no longer appear here.",
+    };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("unsubscribe_strategy_run_failed", { subscriptionId, msg });
@@ -461,13 +468,6 @@ export async function unsubscribeStrategyRunAction(
         "Could not complete unsubscribe. Please refresh and try again, or contact support if this persists.",
     };
   }
-
-  safeRevalidatePath("/user/my-strategies");
-  return {
-    ok: true,
-    message:
-      "You are unsubscribed — this strategy will no longer appear here.",
-  };
 }
 
 export { initialState as strategyRunActionInitialState };

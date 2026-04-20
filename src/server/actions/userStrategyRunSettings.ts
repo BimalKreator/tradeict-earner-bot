@@ -96,49 +96,50 @@ export async function updateUserStrategySettingsAction(
     formData.get("secondary_exchange_connection_id") ?? "",
   ).trim();
 
-  const database = requireDb();
+  try {
+    const database = requireDb();
 
-  const [row] = await database
-    .select({
-      subscriptionId: userStrategySubscriptions.id,
-      strategySlug: strategies.slug,
-      recommendedCapitalInr: strategies.recommendedCapitalInr,
-      maxLeverage: strategies.maxLeverage,
-      strategySettingsJson: strategies.settingsJson,
-      runId: userStrategyRuns.id,
-      runStatus: userStrategyRuns.status,
-      capitalToUseInr: userStrategyRuns.capitalToUseInr,
-      leverage: userStrategyRuns.leverage,
-      primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
-      secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
-      runSettingsJson: userStrategyRuns.runSettingsJson,
-    })
-    .from(userStrategySubscriptions)
-    .innerJoin(
-      strategies,
-      eq(userStrategySubscriptions.strategyId, strategies.id),
-    )
-    .innerJoin(
-      userStrategyRuns,
-      eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
-    )
-    .where(
-      and(
-        eq(userStrategySubscriptions.userId, userId),
-        eq(strategies.slug, slug),
-        isNull(userStrategySubscriptions.deletedAt),
-        ne(userStrategySubscriptions.status, "cancelled"),
-      ),
-    )
-    .limit(1);
+    const [row] = await database
+      .select({
+        subscriptionId: userStrategySubscriptions.id,
+        strategySlug: strategies.slug,
+        recommendedCapitalInr: strategies.recommendedCapitalInr,
+        maxLeverage: strategies.maxLeverage,
+        strategySettingsJson: strategies.settingsJson,
+        runId: userStrategyRuns.id,
+        runStatus: userStrategyRuns.status,
+        capitalToUseInr: userStrategyRuns.capitalToUseInr,
+        leverage: userStrategyRuns.leverage,
+        primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
+        secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
+        runSettingsJson: userStrategyRuns.runSettingsJson,
+      })
+      .from(userStrategySubscriptions)
+      .innerJoin(
+        strategies,
+        eq(userStrategySubscriptions.strategyId, strategies.id),
+      )
+      .innerJoin(
+        userStrategyRuns,
+        eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+      )
+      .where(
+        and(
+          eq(userStrategySubscriptions.userId, userId),
+          eq(strategies.slug, slug),
+          isNull(userStrategySubscriptions.deletedAt),
+          ne(userStrategySubscriptions.status, "cancelled"),
+        ),
+      )
+      .limit(1);
 
-  if (!row) {
-    return {
-      ok: false,
-      message: "Subscription not found.",
-      fieldErrors: {},
-    };
-  }
+    if (!row) {
+      return {
+        ok: false,
+        message: "Subscription not found.",
+        fieldErrors: {},
+      };
+    }
 
   if (!EDITABLE.has(row.runStatus)) {
     return {
@@ -328,12 +329,21 @@ export async function updateUserStrategySettingsAction(
     };
   }
 
-  safeRevalidatePath("/user/my-strategies");
-  safeRevalidatePath(`/user/my-strategies/${encodeURIComponent(slug)}/settings`);
+    safeRevalidatePath("/user/my-strategies");
+    safeRevalidatePath(`/user/my-strategies/${encodeURIComponent(slug)}/settings`);
 
-  return {
-    ok: true,
-    message: "Settings saved.",
-    fieldErrors: {},
-  };
+    return {
+      ok: true,
+      message: "Settings saved.",
+      fieldErrors: {},
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("update_user_strategy_settings_action_failed", { slug, msg });
+    return {
+      ok: false,
+      message: "Could not save settings right now. Please try again.",
+      fieldErrors: {},
+    };
+  }
 }

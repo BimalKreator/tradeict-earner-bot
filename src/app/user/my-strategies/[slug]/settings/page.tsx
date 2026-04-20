@@ -10,6 +10,14 @@ export const dynamic = "force-dynamic";
 
 type PageProps = { params: Promise<{ slug: string }> };
 
+function safeDecodeURIComponent(input: string): string {
+  try {
+    return decodeURIComponent(input);
+  } catch {
+    return input;
+  }
+}
+
 function InitializeSettingsCTA() {
   return (
     <div className="space-y-6">
@@ -43,12 +51,12 @@ function InitializeSettingsCTA() {
 
 export async function generateMetadata({ params }: PageProps) {
   const { slug } = await params;
-  return { title: `Strategy settings · ${decodeURIComponent(slug)}` };
+  return { title: `Strategy settings · ${safeDecodeURIComponent(slug)}` };
 }
 
 export default async function UserStrategySettingsPage({ params }: PageProps) {
   const { slug: raw } = await params;
-  const slug = decodeURIComponent(raw);
+  const slug = safeDecodeURIComponent(raw);
 
   const userId = await requireUserIdForPage(
     `/user/my-strategies/${encodeURIComponent(slug)}/settings`,
