@@ -23,6 +23,7 @@ import {
   virtualStrategyRuns,
 } from "@/server/db/schema";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
+import { fetchDeltaIndiaProductContractValue } from "@/server/exchange/delta-product-resolver";
 import {
   d1ContinuousTrailedStopPrice,
   d1HardStopPrice,
@@ -49,6 +50,7 @@ export type ActivePositionLeg = {
   displayAvgEntryPrice: number | null;
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
+  usedMarginUsd: number | null;
   markPrice: number | null;
   qtyPctOfCapital: number | null;
   activeClipCount: number | null;
@@ -60,6 +62,29 @@ export type ActivePositionLeg = {
   /** Earliest filled order timestamp in the current open ledger window (ISO). */
   openedAt?: string | null;
 };
+
+const ABSURD_QTY_MAX = 100_000;
+const FRACTIONAL_GHOST_EPS = 1;
+
+function normalizeUsdContractValue(rawContractValueUsd: number | null, markUsd: number | null): number {
+  if (
+    rawContractValueUsd != null &&
+    Number.isFinite(rawContractValueUsd) &&
+    rawContractValueUsd > 0
+  ) {
+    if (rawContractValueUsd >= 0.5) return rawContractValueUsd;
+    if (markUsd != null && Number.isFinite(markUsd) && markUsd > 0) {
+      const converted = rawContractValueUsd * markUsd;
+      if (Number.isFinite(converted) && converted > 0) return converted;
+    }
+  }
+  return 1;
+}
+
+function hasAbsurdContractQty(qty: number): boolean {
+  const abs = Math.abs(qty);
+  return abs >= ABSURD_QTY_MAX || (abs > 0 && abs < FRACTIONAL_GHOST_EPS);
+}
 
 export type UserClosedLegHistoryRow = {
   key: string;
@@ -161,6 +186,22 @@ async function fetchMarksForSymbols(symbols: string[]): Promise<Map<string, numb
   return out;
 }
 
+async function fetchContractValueBySymbol(
+  symbols: string[],
+  markBySymbol: Map<string, number>,
+): Promise<Map<string, number>> {
+  const uniq = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
+  const out = new Map<string, number>();
+  await Promise.all(
+    uniq.map(async (sym) => {
+      const raw = await fetchDeltaIndiaProductContractValue(sym);
+      const mark = markBySymbol.get(sym) ?? null;
+      out.set(sym, normalizeUsdContractValue(raw, mark));
+    }),
+  );
+  return out;
+}
+
 /**
  * Keep only the current open-leg segment of a run/account ledger.
  * This prevents historical closed cycles from polluting current entry/qty display.
@@ -203,6 +244,7 @@ function buildLegVirtual(params: {
   account: "D1" | "D2";
   orders: LedgerOrderRow[];
   markBySymbol: Map<string, number>;
+  contractValueBySymbol: Map<string, number>;
   /** Optional overrides for admin/user dashboards so virtual run state matches engine math. */
   overrideOpenNetQty?: number;
   overrideAvgEntryPrice?: number | null;
@@ -210,6 +252,7 @@ function buildLegVirtual(params: {
   /** Admin monitor: display name for participation column. */
   userLabel?: string;
   qtyPctOfCapital?: number | null;
+  leverage?: number | null;
   activeClipCount?: number | null;
   displayNetQtyOverride?: number | null;
   displayAvgEntryPriceOverride?: number | null;
@@ -222,6 +265,7 @@ function buildLegVirtual(params: {
     openWindowOrders.length > 0 ? openWindowOrders[openWindowOrders.length - 1]!.symbol : null;
   const sym = params.overrideOpenSymbol ?? derivedSym;
   const mark = sym ? params.markBySymbol.get(sym) ?? null : null;
+  const contractValueUsd = sym ? (params.contractValueBySymbol.get(sym.toUpperCase()) ?? 1) : 1;
   const dOpen = deriveLedgerMetrics(openWindowOrders, mark);
   const dAll = deriveLedgerMetrics(params.orders, mark);
 
@@ -235,8 +279,12 @@ function buildLegVirtual(params: {
     Number.isFinite(netQty) &&
     Number.isFinite(avgEntryPrice) &&
     mark > 0
-      ? netQty * (mark - avgEntryPrice)
+      ? netQty * ((mark - avgEntryPrice) / avgEntryPrice) * contractValueUsd
       : dOpen.unrealizedPnlUsd;
+  const usedMarginUsd =
+    Math.abs(netQty) > QTY_EPS
+      ? (Math.abs(netQty) * contractValueUsd) / Math.max(1, params.leverage ?? 1)
+      : null;
 
   const openedAt = openedAtFromOpenWindow(openWindowOrders);
 
@@ -262,6 +310,7 @@ function buildLegVirtual(params: {
     displayAvgEntryPrice: params.displayAvgEntryPriceOverride ?? avgEntryPrice,
     realizedPnlUsd: dAll.realizedPnlUsd,
     unrealizedPnlUsd: unrealizedPnlUsd,
+    usedMarginUsd,
     markPrice: mark,
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
     activeClipCount: params.activeClipCount ?? null,
@@ -280,16 +329,30 @@ function buildLegReal(params: {
   account: "D1" | "D2";
   orders: LedgerOrderRow[];
   markBySymbol: Map<string, number>;
+  contractValueBySymbol: Map<string, number>;
   symbolHint: string;
   qtyPctOfCapital?: number | null;
   activeClipCount?: number | null;
+  leverage?: number | null;
 }): ActivePositionLeg | null {
   const openWindowOrders = extractCurrentOpenLedgerWindow(params.orders);
   const mark = params.markBySymbol.get(params.symbolHint) ?? null;
+  const contractValueUsd = params.contractValueBySymbol.get(params.symbolHint.toUpperCase()) ?? 1;
   const dOpen = deriveLedgerMetrics(openWindowOrders, mark);
   const dAll = deriveLedgerMetrics(params.orders, mark);
   if (Math.abs(dOpen.openNetQty) <= QTY_EPS) return null;
   const openedAt = openedAtFromOpenWindow(openWindowOrders);
+  const unrealizedPnlUsd =
+    dOpen.openNetQty !== 0 &&
+    dOpen.avgEntryPrice != null &&
+    mark != null &&
+    dOpen.avgEntryPrice > 0
+      ? dOpen.openNetQty * ((mark - dOpen.avgEntryPrice) / dOpen.avgEntryPrice) * contractValueUsd
+      : dOpen.unrealizedPnlUsd;
+  const usedMarginUsd =
+    Math.abs(dOpen.openNetQty) > QTY_EPS
+      ? (Math.abs(dOpen.openNetQty) * contractValueUsd) / Math.max(1, params.leverage ?? 1)
+      : null;
   return {
     key: `r:${params.runId}:${params.account}:${params.symbolHint}`,
     mode: "real",
@@ -307,7 +370,8 @@ function buildLegReal(params: {
     displayNetQty: dOpen.openNetQty,
     displayAvgEntryPrice: dOpen.avgEntryPrice,
     realizedPnlUsd: dAll.realizedPnlUsd,
-    unrealizedPnlUsd: dOpen.unrealizedPnlUsd,
+    unrealizedPnlUsd,
+    usedMarginUsd,
     markPrice: mark,
     qtyPctOfCapital: params.qtyPctOfCapital ?? null,
     activeClipCount: params.activeClipCount ?? null,
@@ -518,6 +582,8 @@ function buildHedgeScalpingVirtualLegs(params: {
   strategySlug: string;
   orderRows: HedgeScalpingOrderRow[];
   markBySymbol: Map<string, number>;
+  contractValueBySymbol: Map<string, number>;
+  leverage: number;
   hedgeSettings: HedgeScalpingDisplaySettings | null;
   hedgeRun: HedgeScalpingVirtualRunRow | null;
 }): ActivePositionLeg[] {
@@ -560,6 +626,8 @@ function buildHedgeScalpingVirtualLegs(params: {
     account: "D1",
     orders: pOrd,
     markBySymbol: params.markBySymbol,
+    contractValueBySymbol: params.contractValueBySymbol,
+    leverage: params.leverage,
     qtyPctOfCapital: params.hedgeSettings?.d1QtyPctOfCapital ?? null,
   });
   if (l1) {
@@ -588,6 +656,8 @@ function buildHedgeScalpingVirtualLegs(params: {
       account: "D2",
       orders: clipLedger,
       markBySymbol: params.markBySymbol,
+      contractValueBySymbol: params.contractValueBySymbol,
+      leverage: params.leverage,
       qtyPctOfCapital: params.hedgeSettings?.d2QtyPctOfCapital ?? null,
       d2LadderStep: stepForLeg,
       legKeySuffix: `clip:${clipId}`,
@@ -610,6 +680,8 @@ function buildHedgeScalpingVirtualLegs(params: {
       account: "D2",
       orders: sOrd,
       markBySymbol: params.markBySymbol,
+      contractValueBySymbol: params.contractValueBySymbol,
+      leverage: params.leverage,
       qtyPctOfCapital: params.hedgeSettings?.d2QtyPctOfCapital ?? null,
     });
     if (l2) {
@@ -729,6 +801,56 @@ function buildParticipationMapFromLegs(
   );
 }
 
+async function flushAbsurdVirtualRunsForUser(userId: string): Promise<void> {
+  if (!db) return;
+  await db
+    .update(virtualStrategyRuns)
+    .set({
+      status: "completed",
+      openNetQty: "0",
+      openAvgEntryPrice: null,
+      openSymbol: null,
+      virtualUsedMarginUsd: "0",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(virtualStrategyRuns.userId, userId),
+        eq(virtualStrategyRuns.status, "active"),
+        sql`(
+          abs(cast(${virtualStrategyRuns.openNetQty} as numeric)) >= ${ABSURD_QTY_MAX}
+          or (
+            abs(cast(${virtualStrategyRuns.openNetQty} as numeric)) > 0
+            and abs(cast(${virtualStrategyRuns.openNetQty} as numeric)) < ${FRACTIONAL_GHOST_EPS}
+          )
+        )`,
+      ),
+    );
+}
+
+async function flushAbsurdLivePositionsForUser(userId: string): Promise<void> {
+  if (!db) return;
+  await db
+    .update(botPositions)
+    .set({
+      netQuantity: "0",
+      averageEntryPrice: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(botPositions.userId, userId),
+        sql`(
+          abs(cast(${botPositions.netQuantity} as numeric)) >= ${ABSURD_QTY_MAX}
+          or (
+            abs(cast(${botPositions.netQuantity} as numeric)) > 0
+            and abs(cast(${botPositions.netQuantity} as numeric)) < ${FRACTIONAL_GHOST_EPS}
+          )
+        )`,
+      ),
+    );
+}
+
 /**
  * Paper-trading open legs for one user (virtual runs with status = active and non-flat position).
  */
@@ -736,6 +858,7 @@ export async function getUserVirtualActivePositionGroups(
   userId: string,
 ): Promise<UserActivePositionGroup[]> {
   if (!db) return [];
+  await flushAbsurdVirtualRunsForUser(userId);
 
   const runs = await db
     .select({
@@ -744,6 +867,7 @@ export async function getUserVirtualActivePositionGroups(
       strategyName: strategies.name,
       strategySlug: strategies.slug,
       strategySettingsJson: strategies.settingsJson,
+      leverage: virtualStrategyRuns.leverage,
       openNetQty: virtualStrategyRuns.openNetQty,
       openAvgEntryPrice: virtualStrategyRuns.openAvgEntryPrice,
       openSymbol: virtualStrategyRuns.openSymbol,
@@ -766,6 +890,7 @@ export async function getUserVirtualActivePositionGroups(
     strategyId: string;
     strategyName: string;
     strategySlug: string;
+    leverage: string;
     openNetQty: string;
     openAvgEntryPrice: string;
     openSymbol: string | null;
@@ -836,6 +961,7 @@ export async function getUserVirtualActivePositionGroups(
       strategyId: run.strategyId,
       strategyName: run.strategyName,
       strategySlug: run.strategySlug,
+      leverage: String(run.leverage ?? "1"),
       openNetQty: String(run.openNetQty ?? "0"),
       openAvgEntryPrice: String(run.openAvgEntryPrice ?? "0"),
       openSymbol: run.openSymbol,
@@ -864,6 +990,7 @@ export async function getUserVirtualActivePositionGroups(
   );
 
   const markBySymbol = await fetchMarksForSymbols(allSyms);
+  const contractValueBySymbol = await fetchContractValueBySymbol(allSyms, markBySymbol);
 
   for (const run of runCtx) {
     const isHs = run.isHs;
@@ -887,6 +1014,8 @@ export async function getUserVirtualActivePositionGroups(
           strategySlug: run.strategySlug,
           orderRows: run.orderRows,
           markBySymbol,
+          contractValueBySymbol,
+          leverage: Math.max(1, Number(run.leverage)),
           hedgeSettings: run.hedgeSettings,
           hedgeRun: hedgeRow,
         }),
@@ -901,6 +1030,8 @@ export async function getUserVirtualActivePositionGroups(
         account: "D1",
         orders: ledger,
         markBySymbol,
+        contractValueBySymbol,
+        leverage: Math.max(1, Number(run.leverage)),
         displayNetQtyOverride: Math.abs(Number(run.openNetQty)),
         displayAvgEntryPriceOverride: Number(run.openAvgEntryPrice) || null,
         qtyPctOfCapital: null,
@@ -935,6 +1066,7 @@ export async function getUserRealActivePositionGroups(
   userId: string,
 ): Promise<UserActivePositionGroup[]> {
   if (!db) return [];
+  await flushAbsurdLivePositionsForUser(userId);
   const now = new Date();
 
   const realRows = await db
@@ -949,6 +1081,7 @@ export async function getUserRealActivePositionGroups(
       strategyName: strategies.name,
       strategySlug: strategies.slug,
       strategySettingsJson: strategies.settingsJson,
+      leverage: userStrategyRuns.leverage,
       userEmail: users.email,
       userName: users.name,
     })
@@ -991,6 +1124,7 @@ export async function getUserRealActivePositionGroups(
     primaryEx: string | null;
     secondaryEx: string | null;
     label: string;
+    leverage: number;
   };
 
   const contexts: RealCtx[] = realRows.map((row) => ({
@@ -1005,9 +1139,14 @@ export async function getUserRealActivePositionGroups(
     primaryEx: row.primaryEx,
     secondaryEx: row.secondaryEx,
     label: userDisplayName(row.userEmail, row.userName),
+    leverage: Math.max(1, Number(row.leverage ?? "1")),
   }));
 
   const markBySymbol = await fetchMarksForSymbols(contexts.map((c) => c.symbol));
+  const contractValueBySymbol = await fetchContractValueBySymbol(
+    contexts.map((c) => c.symbol),
+    markBySymbol,
+  );
   const legs: ActivePositionLeg[] = [];
   for (const r of contexts) {
     const account: "D1" | "D2" =
@@ -1046,6 +1185,8 @@ export async function getUserRealActivePositionGroups(
       account,
       orders: ledger,
       markBySymbol,
+      contractValueBySymbol,
+      leverage: r.leverage,
       symbolHint: r.symbol,
       qtyPctOfCapital:
         isHs && r.hedgeSettings
@@ -1106,6 +1247,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       strategyName: strategies.name,
       strategySlug: strategies.slug,
       strategySettingsJson: strategies.settingsJson,
+      leverage: virtualStrategyRuns.leverage,
       userEmail: users.email,
       userName: users.name,
       openNetQty: virtualStrategyRuns.openNetQty,
@@ -1143,6 +1285,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     ledger: LedgerOrderRow[];
     isHs: boolean;
     label: string;
+    leverage: number;
   };
   const vctx: VRunCtx[] = [];
 
@@ -1191,6 +1334,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       strategyName: run.strategyName,
       strategySlug: run.strategySlug,
       hedgeSettings: parseHedgeScalpingDisplaySettings(run.strategySettingsJson),
+      leverage: Math.max(1, Number(run.leverage ?? "1")),
       openNetQty: String(run.openNetQty ?? "0"),
       openAvgEntryPrice: String(run.openAvgEntryPrice ?? "0"),
       openSymbol: run.openSymbol,
@@ -1225,6 +1369,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       strategyName: strategies.name,
       strategySlug: strategies.slug,
       strategySettingsJson: strategies.settingsJson,
+      leverage: userStrategyRuns.leverage,
       userEmail: users.email,
       userName: users.name,
     })
@@ -1256,6 +1401,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     primaryEx: string | null;
     secondaryEx: string | null;
     label: string;
+    leverage: number;
   };
   const rctx: RCtx[] = [];
 
@@ -1273,6 +1419,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       primaryEx: row.primaryEx,
       secondaryEx: row.secondaryEx,
       label: userDisplayName(row.userEmail, row.userName),
+      leverage: Math.max(1, Number(row.leverage ?? "1")),
     });
   }
 
@@ -1281,6 +1428,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
   );
 
   const markBySymbol = await fetchMarksForSymbols(symbolBatch);
+  const contractValueBySymbol = await fetchContractValueBySymbol(symbolBatch, markBySymbol);
 
   for (const c of vctx) {
     if (c.isHs) {
@@ -1296,6 +1444,8 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
           strategySlug: c.strategySlug,
           orderRows: c.orderRows,
           markBySymbol,
+          contractValueBySymbol,
+          leverage: c.leverage,
           hedgeSettings: c.hedgeSettings,
           hedgeRun: hedgeRow,
         }),
@@ -1310,6 +1460,8 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
         account: "D1",
         orders: c.ledger,
         markBySymbol,
+        contractValueBySymbol,
+        leverage: c.leverage,
         userLabel: c.label,
         displayNetQtyOverride: Math.abs(Number(c.openNetQty)),
         displayAvgEntryPriceOverride: Number(c.openAvgEntryPrice) || null,
@@ -1370,6 +1522,8 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       account,
       orders: ledger,
       markBySymbol,
+      contractValueBySymbol,
+      leverage: r.leverage,
       symbolHint: r.symbol,
       qtyPctOfCapital:
         isHs && r.hedgeSettings

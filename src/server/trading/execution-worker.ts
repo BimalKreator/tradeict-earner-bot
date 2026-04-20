@@ -535,6 +535,25 @@ export async function processOneTradingJob(
   }
 
   if (!place.ok) {
+    await recordBotExecutionLog({
+      botOrderId,
+      level: "error",
+      message: `place_failed: ${place.error}`,
+      rawPayload: {
+        jobId: job.id,
+        attempt: job.attempts,
+        maxAttempts: job.maxAttempts,
+        signalAction,
+        correlationId: p.correlationId,
+        symbol: payloadForExecution.symbol,
+        side: payloadForExecution.side,
+        quantity: payloadForExecution.quantity,
+        runId: row.runId,
+        exchangeConnectionId: row.exchangeConnectionId,
+        phase: "execution_worker_place_order",
+        exchangeErrorRaw: place.raw ?? null,
+      },
+    });
     if (manualCloseRequestId) {
       tradingLog("error", "manual_close_worker_place_failed", {
         manualCloseRequestId,
@@ -549,6 +568,19 @@ export async function processOneTradingJob(
         place.raw ?? null,
       )
     ) {
+      await recordBotExecutionLog({
+        botOrderId,
+        level: "warn",
+        message: `insufficient_margin_or_balance: ${place.error}`,
+        rawPayload: {
+          jobId: job.id,
+          attempt: job.attempts,
+          correlationId: p.correlationId,
+          symbol: payloadForExecution.symbol,
+          quantity: payloadForExecution.quantity,
+          hint: "possible_sequence_or_margin_contention_between_parallel_legs",
+        },
+      });
       await pauseRunForInsufficientFunds(row.runId, place.error);
       tradingLog("warn", "run_paused_insufficient_funds", {
         runId: row.runId,

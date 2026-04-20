@@ -25,7 +25,8 @@ function formatPct(value: number | null): string | null {
 
 function qtyDisplay(netQty: number, qtyPctOfCapital: number | null): string {
   const pct = formatPct(qtyPctOfCapital);
-  return pct ? `${netQty.toFixed(6)} (${pct})` : netQty.toFixed(6);
+  const contracts = String(Math.round(Math.abs(netQty)));
+  return pct ? `${contracts} (${pct})` : contracts;
 }
 
 function formatExitPx(v: number | null | undefined): string {
@@ -46,12 +47,9 @@ function formatEntryOpenedAt(iso: string | null | undefined): string {
 }
 
 function unrealizedPnlPctForLeg(leg: UserActivePositionGroup["legs"][number]): number | null {
-  const qty = Math.abs(leg.displayNetQty);
-  const entry = leg.displayAvgEntryPrice ?? leg.avgEntryPrice;
-  if (entry == null || !Number.isFinite(entry) || entry <= 0 || qty <= 1e-12) return null;
-  const notional = qty * entry;
-  if (notional <= 1e-12) return null;
-  const pct = (leg.unrealizedPnlUsd / notional) * 100;
+  const usedMargin = leg.usedMarginUsd;
+  if (usedMargin == null || !Number.isFinite(usedMargin) || usedMargin <= 1e-12) return null;
+  const pct = (leg.unrealizedPnlUsd / usedMargin) * 100;
   return Number.isFinite(pct) ? pct : null;
 }
 

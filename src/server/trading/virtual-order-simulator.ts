@@ -288,7 +288,8 @@ export async function simulateVirtualOrder(params: {
     return { ok: false, error: "virtual_payload_user_mismatch" };
   }
 
-  const qtyNum = num(p.quantity);
+  const qtyNumRaw = num(p.quantity);
+  const qtyNum = Math.floor(Math.abs(qtyNumRaw));
   if (!(qtyNum > 0)) {
     return { ok: false, error: "virtual_invalid_quantity" };
   }

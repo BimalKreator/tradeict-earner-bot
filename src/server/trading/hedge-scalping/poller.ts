@@ -6,7 +6,10 @@ import {
   type HedgeScalpingConfig,
 } from "@/lib/hedge-scalping-config";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
-import { fetchDeltaIndiaProductContractValue } from "@/server/exchange/delta-product-resolver";
+import {
+  fetchDeltaIndiaProductContractValue,
+  fetchDeltaIndiaProductMinOrderContracts,
+} from "@/server/exchange/delta-product-resolver";
 import { extractHedgeScalpingSymbolFromRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
 import { db } from "@/server/db";
 import {
@@ -128,23 +131,24 @@ async function dispatchPendingHsLiveSignals(
           ...(s.metadata ?? {}),
         },
       });
+      const liveEnqueued = res.ok ? (res.liveJobsEnqueued ?? 0) : 0;
       if (!res.ok) {
         console.warn(
           `${LOG} live dispatch failed correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} err=${res.error}`,
         );
-      } else if ((res.liveJobsEnqueued ?? 0) <= 0) {
+      } else if (liveEnqueued <= 0) {
         console.error(
-          `${LOG} live dispatch produced zero jobs correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${res.liveJobsEnqueued ?? 0}`,
+          `${LOG} live dispatch produced zero jobs correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${liveEnqueued}`,
         );
       } else {
-        liveJobsEnqueued += res.liveJobsEnqueued ?? 0;
+        liveJobsEnqueued += liveEnqueued;
         console.log(
-          `${LOG} live dispatch ok correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${res.liveJobsEnqueued ?? 0}`,
+          `${LOG} live dispatch ok correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${liveEnqueued}`,
         );
       }
       if (s.actionType === "entry" && s.entryAudit) {
         console.log(
-          `${LOG} event="hs_entry_audit" userId="${s.entryAudit.userId}" symbol="${s.entryAudit.symbol}" rawContractValue=${s.entryAudit.rawContractValue ?? "null"} normalizedUsdContractValue=${s.entryAudit.normalizedUsdContractValue} d1Qty=${s.entryAudit.d1Qty} d2Qty=${s.entryAudit.d2Qty} usedMarginUsd=${s.entryAudit.usedMarginUsd} liveJobsEnqueued=${res.liveJobsEnqueued ?? 0}`,
+          `${LOG} event="hs_entry_audit" userId="${s.entryAudit.userId}" symbol="${s.entryAudit.symbol}" rawContractValue=${s.entryAudit.rawContractValue ?? "null"} normalizedUsdContractValue=${s.entryAudit.normalizedUsdContractValue} d1Qty=${s.entryAudit.d1Qty} d2Qty=${s.entryAudit.d2Qty} usedMarginUsd=${s.entryAudit.usedMarginUsd} liveJobsEnqueued=${liveEnqueued}`,
         );
       }
     } catch (e) {
@@ -169,6 +173,19 @@ function normalizeUsdContractValue(rawContractValueUsd: number | null, markUsd: 
     }
   }
   return 1;
+}
+
+function enforceMinOrderContracts(params: {
+  qty: number;
+  minContracts: number | null;
+}): { qty: number; bumped: boolean } {
+  const minContracts =
+    params.minContracts != null && params.minContracts > 0
+      ? Math.floor(params.minContracts)
+      : 1;
+  if (!(params.qty > 0)) return { qty: 0, bumped: false };
+  if (params.qty >= minContracts) return { qty: params.qty, bumped: false };
+  return { qty: minContracts, bumped: true };
 }
 
 async function resolveHedgeScalpingTradingSymbol(
@@ -501,8 +518,18 @@ async function executeHedgeScalpingIntentsTx(
         console.warn(`${LOG} skip OPEN_D2_CLIP — missing d1_qty run=${runId}`);
         continue;
       }
-      const stepQty = computeHedgeScalpingD2StepQty(d1Qty, cfg.delta2.stepQtyPct);
-      if (!(stepQty > 0)) {
+      const stepQtyRaw = computeHedgeScalpingD2StepQty(d1Qty, cfg.delta2.stepQtyPct);
+      const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
+      const stepQty = enforceMinOrderContracts({
+        qty: stepQtyRaw,
+        minContracts,
+      });
+      if (stepQty.bumped) {
+        console.warn(
+          `${LOG} event="hs_sizing_too_small" run=${runId} user=${userId} symbol=${symbol} leg=d2_step step=${intent.stepLevel} computedQty=${stepQtyRaw} minContracts=${minContracts ?? 1} adjustedQty=${stepQty.qty}`,
+        );
+      }
+      if (!(stepQty.qty > 0)) {
         console.warn(`${LOG} skip OPEN_D2_CLIP — zero step qty run=${runId}`);
         continue;
       }
@@ -513,7 +540,7 @@ async function executeHedgeScalpingIntentsTx(
           stepLevel: intent.stepLevel,
           entryPrice: fmt(intent.expectedPrice),
           side: intent.side,
-          qty: fmt(stepQty),
+          qty: fmt(stepQty.qty),
           status: "active",
           createdAt: now,
         })
@@ -526,7 +553,7 @@ async function executeHedgeScalpingIntentsTx(
         strategyId,
         symbol,
         side: hedgeOpenSide(intent.side),
-        quantity: stepQty,
+        quantity: stepQty.qty,
         fillPrice: intent.expectedPrice,
         correlationId: hsCorrelationD2Entry(intent.stepLevel, clipId),
         signalAction: "entry",
@@ -538,7 +565,7 @@ async function executeHedgeScalpingIntentsTx(
         userId,
         symbol,
         side: hedgeOpenSide(intent.side),
-        quantity: fmt(stepQty),
+        quantity: fmt(stepQty.qty),
         markPrice: intent.expectedPrice,
         actionType: "entry",
         metadata: {
@@ -551,12 +578,12 @@ async function executeHedgeScalpingIntentsTx(
           rawContractValue,
           normalizedUsdContractValue,
           d1Qty,
-          d2Qty: stepQty,
-          usedMarginUsd: stepQty / runLeverage,
+          d2Qty: stepQty.qty,
+          usedMarginUsd: stepQty.qty / runLeverage,
         },
       });
       console.log(
-        `${LOG} OPEN_D2_CLIP run=${runId} step=${intent.stepLevel} side=${intent.side} qty=${fmt(stepQty)} entry=${fmt(intent.expectedPrice)}`,
+        `${LOG} OPEN_D2_CLIP run=${runId} step=${intent.stepLevel} side=${intent.side} qty=${fmt(stepQty.qty)} entry=${fmt(intent.expectedPrice)}`,
       );
     }
   }
@@ -952,12 +979,31 @@ export async function processHedgeScalpingNewEntriesPhase(
             contractValueUsd,
             baseQtyPct: cfg.delta1.baseQtyPct,
           });
-          const d2StepQty = computeHedgeScalpingD2StepQty(d1QtyNum, cfg.delta2.stepQtyPct);
+          const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
+          const d1Qty = enforceMinOrderContracts({
+            qty: d1QtyNum,
+            minContracts,
+          });
+          if (d1Qty.bumped) {
+            console.warn(
+              `${LOG} event="hs_sizing_too_small" user=${userId} strategy=${strat.id} symbol=${symbol} leg=d1 computedQty=${d1QtyNum} minContracts=${minContracts ?? 1} adjustedQty=${d1Qty.qty}`,
+            );
+          }
+          const d2StepQtyRaw = computeHedgeScalpingD2StepQty(d1Qty.qty, cfg.delta2.stepQtyPct);
+          const d2StepQty = enforceMinOrderContracts({
+            qty: d2StepQtyRaw,
+            minContracts,
+          });
+          if (d2StepQty.bumped) {
+            console.warn(
+              `${LOG} event="hs_sizing_too_small" user=${userId} strategy=${strat.id} symbol=${symbol} leg=d2_step_1 computedQty=${d2StepQtyRaw} minContracts=${minContracts ?? 1} adjustedQty=${d2StepQty.qty}`,
+            );
+          }
           const runLeverage =
             liveEligibleRuns.length > 0 ? Math.max(1, num(liveEligibleRuns[0]!.leverage)) : 1;
-          if (!(d1QtyNum > 0) || !(d2StepQty > 0)) {
+          if (!(d1Qty.qty > 0) || !(d2StepQty.qty > 0)) {
             console.warn(
-              `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} markUsd=${markUsd} workerMark=${currentMarkPrice}`,
+              `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} markUsd=${markUsd} workerMark=${currentMarkPrice} d1=${d1Qty.qty} d2=${d2StepQty.qty}`,
             );
             return [] as PendingLiveSignal[];
           }
@@ -971,7 +1017,7 @@ export async function processHedgeScalpingNewEntriesPhase(
               d1Side,
               d1EntryPrice: entryStr,
               maxFavorablePrice: maxFavStr,
-              d1Qty: fmt(d1QtyNum),
+              d1Qty: fmt(d1Qty.qty),
               createdAt: now,
             })
             .returning({ runId: hedgeScalpingVirtualRuns.runId });
@@ -985,7 +1031,7 @@ export async function processHedgeScalpingNewEntriesPhase(
               stepLevel: 1,
               entryPrice: entryStr,
               side: d2Side,
-              qty: fmt(d2StepQty),
+              qty: fmt(d2StepQty.qty),
               status: "active",
               createdAt: now,
             })
@@ -999,7 +1045,7 @@ export async function processHedgeScalpingNewEntriesPhase(
             strategyId: strat.id,
             symbol,
             side: hedgeOpenSide(d1Side),
-            quantity: d1QtyNum,
+            quantity: d1Qty.qty,
             fillPrice: markUsd,
             correlationId: hsCorrelationD1Entry(hedgeRunId),
             signalAction: "entry",
@@ -1012,7 +1058,7 @@ export async function processHedgeScalpingNewEntriesPhase(
             strategyId: strat.id,
             symbol,
             side: hedgeOpenSide(d2Side),
-            quantity: d2StepQty,
+            quantity: d2StepQty.qty,
             fillPrice: markUsd,
             correlationId: hsCorrelationD2Entry(1, clipId),
             signalAction: "entry",
@@ -1020,7 +1066,7 @@ export async function processHedgeScalpingNewEntriesPhase(
           });
 
           console.log(
-            `${LOG} NEW_RUN user=${userId} strategy=${strat.id} run=${hedgeRunId} d1=${d1Side} d1Qty=${fmt(d1QtyNum)} d2_qty=${fmt(d2StepQty)} entry=${entryStr}`,
+            `${LOG} NEW_RUN user=${userId} strategy=${strat.id} run=${hedgeRunId} d1=${d1Side} d1Qty=${fmt(d1Qty.qty)} d2_qty=${fmt(d2StepQty.qty)} entry=${entryStr}`,
           );
           return [
             {
@@ -1029,7 +1075,7 @@ export async function processHedgeScalpingNewEntriesPhase(
               userId,
               symbol,
               side: hedgeOpenSide(d1Side),
-              quantity: fmt(d1QtyNum),
+              quantity: fmt(d1Qty.qty),
               markPrice: markUsd,
               actionType: "entry" as const,
               metadata: { leg: "d1_new_run" },
@@ -1038,9 +1084,9 @@ export async function processHedgeScalpingNewEntriesPhase(
                 symbol,
                 rawContractValue: rawContractValueUsd,
                 normalizedUsdContractValue: contractValueUsd,
-                d1Qty: d1QtyNum,
+                d1Qty: d1Qty.qty,
                 d2Qty: 0,
-                usedMarginUsd: d1QtyNum / runLeverage,
+                usedMarginUsd: d1Qty.qty / runLeverage,
               },
             },
             {
@@ -1049,7 +1095,7 @@ export async function processHedgeScalpingNewEntriesPhase(
               userId,
               symbol,
               side: hedgeOpenSide(d2Side),
-              quantity: fmt(d2StepQty),
+              quantity: fmt(d2StepQty.qty),
               markPrice: markUsd,
               actionType: "entry" as const,
               metadata: { leg: "d2_step_1_new_run", step_level: 1 },
@@ -1058,9 +1104,9 @@ export async function processHedgeScalpingNewEntriesPhase(
                 symbol,
                 rawContractValue: rawContractValueUsd,
                 normalizedUsdContractValue: contractValueUsd,
-                d1Qty: d1QtyNum,
-                d2Qty: d2StepQty,
-                usedMarginUsd: d2StepQty / runLeverage,
+                d1Qty: d1Qty.qty,
+                d2Qty: d2StepQty.qty,
+                usedMarginUsd: d2StepQty.qty / runLeverage,
               },
             },
           ];

@@ -26,11 +26,7 @@ function formatEntryOpenedAt(iso: string | null | undefined): string {
 }
 
 function contractsText(qty: number): string {
-  const a = Math.abs(qty);
-  if (Number.isInteger(a) || Math.abs(a - Math.round(a)) < 1e-6) {
-    return String(Math.round(a));
-  }
-  return a.toFixed(4).replace(/\.?0+$/, "");
+  return String(Math.round(Math.abs(qty)));
 }
 
 function unrealizedPnlPct(row: LiveOpenPositionRow): number | null {

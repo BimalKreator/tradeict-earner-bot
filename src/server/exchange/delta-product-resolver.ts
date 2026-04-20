@@ -183,6 +183,26 @@ export async function fetchDeltaIndiaProductLeverageBounds(
 }
 
 /**
+ * Best-effort minimum order contract size from Delta product metadata.
+ */
+export async function fetchDeltaIndiaProductMinOrderContracts(
+  symbol: string,
+): Promise<number | null> {
+  const result = await fetchDeltaIndiaProductResultRecord(symbol);
+  if (!result) return null;
+  const raw =
+    asPositiveFinite(result.min_order_size) ??
+    asPositiveFinite(result.minimum_order_size) ??
+    asPositiveFinite(result.min_size) ??
+    asPositiveFinite(result.minimum_size) ??
+    asPositiveFinite(result.lot_size) ??
+    null;
+  if (raw == null) return null;
+  const lots = Math.floor(raw);
+  return lots >= 1 ? lots : 1;
+}
+
+/**
  * Fetches `GET /v2/products` (Delta India public REST) and caches symbol → id for {@link cacheTtlMs}.
  *
  * @see https://docs.delta.exchange/ — Products list + cursor pagination (`meta.after`).

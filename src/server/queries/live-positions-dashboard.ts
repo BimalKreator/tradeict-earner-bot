@@ -11,8 +11,11 @@ import {
   users,
 } from "@/server/db/schema";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
+import { fetchDeltaIndiaProductContractValue } from "@/server/exchange/delta-product-resolver";
 
 const QTY_EPS = 1e-8;
+const ABSURD_QTY_MAX = 100_000;
+const FRACTIONAL_GHOST_EPS = 1;
 
 export type LiveOpenPositionRow = {
   key: string;
@@ -83,6 +86,37 @@ async function fetchMarksForSymbols(symbols: string[]): Promise<Map<string, numb
   return out;
 }
 
+function normalizeUsdContractValue(rawContractValueUsd: number | null, markUsd: number | null): number {
+  if (
+    rawContractValueUsd != null &&
+    Number.isFinite(rawContractValueUsd) &&
+    rawContractValueUsd > 0
+  ) {
+    if (rawContractValueUsd >= 0.5) return rawContractValueUsd;
+    if (markUsd != null && Number.isFinite(markUsd) && markUsd > 0) {
+      const converted = rawContractValueUsd * markUsd;
+      if (Number.isFinite(converted) && converted > 0) return converted;
+    }
+  }
+  return 1;
+}
+
+async function fetchContractValueBySymbol(
+  symbols: string[],
+  markBySymbol: Map<string, number>,
+): Promise<Map<string, number>> {
+  const uniq = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
+  const out = new Map<string, number>();
+  await Promise.all(
+    uniq.map(async (sym) => {
+      const raw = await fetchDeltaIndiaProductContractValue(sym);
+      const mark = markBySymbol.get(sym) ?? null;
+      out.set(sym, normalizeUsdContractValue(raw, mark));
+    }),
+  );
+  return out;
+}
+
 function unrealizedFromMark(
   netQty: number,
   avgEntry: number | null,
@@ -98,12 +132,55 @@ function unrealizedFromMark(
   ) {
     return null;
   }
-  // For fixed USD contracts, each contract tracks a USD slice of underlying.
-  return netQty * ((mark - avgEntry) / avgEntry);
+  // PnL in USD lots: contracts * contract_value_usd * return.
+  return null;
+}
+
+function unrealizedFromMarkWithContractValue(
+  netQty: number,
+  avgEntry: number | null,
+  mark: number | null,
+  contractValueUsd: number,
+): number | null {
+  if (
+    mark == null ||
+    avgEntry == null ||
+    !Number.isFinite(netQty) ||
+    !Number.isFinite(avgEntry) ||
+    !Number.isFinite(mark) ||
+    mark <= 0 ||
+    avgEntry <= 0
+  ) {
+    return null;
+  }
+  return netQty * ((mark - avgEntry) / avgEntry) * contractValueUsd;
+}
+
+async function flushAbsurdLivePositionsForScope(userId?: string): Promise<void> {
+  if (!db) return;
+  const clauses = [
+    sql`(
+      abs(cast(${botPositions.netQuantity} as numeric)) >= ${ABSURD_QTY_MAX}
+      or (
+        abs(cast(${botPositions.netQuantity} as numeric)) > 0
+        and abs(cast(${botPositions.netQuantity} as numeric)) < ${FRACTIONAL_GHOST_EPS}
+      )
+    )`,
+  ];
+  if (userId) clauses.push(eq(botPositions.userId, userId));
+  await db
+    .update(botPositions)
+    .set({
+      netQuantity: "0",
+      averageEntryPrice: null,
+      updatedAt: new Date(),
+    })
+    .where(and(...clauses));
 }
 
 export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpenPositionRow[]> {
   if (!db) return [];
+  await flushAbsurdLivePositionsForScope(userId);
 
   const now = new Date();
 
@@ -172,13 +249,15 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
 
   const syms = rows.map((r) => r.symbol).filter(Boolean);
   const markBySymbol = await fetchMarksForSymbols(syms);
+  const contractValueBySymbol = await fetchContractValueBySymbol(syms, markBySymbol);
 
   return rows.map((r) => {
     const netQty = num(r.netQtyRaw);
     const avgEntry = r.avgEntryRaw != null ? num(String(r.avgEntryRaw)) : null;
     const mark = markBySymbol.get(r.symbol.trim()) ?? null;
+    const contractValueUsd = contractValueBySymbol.get(r.symbol.trim().toUpperCase()) ?? 1;
     const leverage = Math.max(1, num(String(r.leverageRaw ?? "1")));
-    const fromMark = unrealizedFromMark(netQty, avgEntry, mark);
+    const fromMark = unrealizedFromMarkWithContractValue(netQty, avgEntry, mark, contractValueUsd);
     const unrealizedPnlUsd =
       fromMark != null && Number.isFinite(fromMark)
         ? fromMark
@@ -206,7 +285,7 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
       avgEntryPrice: avgEntry != null && avgEntry > 0 ? avgEntry : null,
       markPrice: mark,
       unrealizedPnlUsd,
-      usedMarginUsd: Math.abs(netQty) > 0 ? Math.abs(netQty) / leverage : null,
+      usedMarginUsd: Math.abs(netQty) > 0 ? (Math.abs(netQty) * contractValueUsd) / leverage : null,
       openedAt: r.openedAt?.toISOString() ?? null,
       reconciliationStatus,
       reconciledAt: r.recAt?.toISOString() ?? null,
@@ -218,6 +297,7 @@ export async function getUserLiveOpenPositions(userId: string): Promise<LiveOpen
 
 export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPositionRow[]> {
   if (!db) return [];
+  await flushAbsurdLivePositionsForScope();
 
   const now = new Date();
 
@@ -287,13 +367,15 @@ export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPosition
 
   const syms = rows.map((r) => r.symbol).filter(Boolean);
   const markBySymbol = await fetchMarksForSymbols(syms);
+  const contractValueBySymbol = await fetchContractValueBySymbol(syms, markBySymbol);
 
   return rows.map((r) => {
     const netQty = num(r.netQtyRaw);
     const avgEntry = r.avgEntryRaw != null ? num(String(r.avgEntryRaw)) : null;
     const mark = markBySymbol.get(r.symbol.trim()) ?? null;
+    const contractValueUsd = contractValueBySymbol.get(r.symbol.trim().toUpperCase()) ?? 1;
     const leverage = Math.max(1, num(String(r.leverageRaw ?? "1")));
-    const fromMark = unrealizedFromMark(netQty, avgEntry, mark);
+    const fromMark = unrealizedFromMarkWithContractValue(netQty, avgEntry, mark, contractValueUsd);
     const unrealizedPnlUsd =
       fromMark != null && Number.isFinite(fromMark)
         ? fromMark
@@ -322,7 +404,7 @@ export async function getAdminLiveOpenPositions(): Promise<AdminLiveOpenPosition
       avgEntryPrice: avgEntry != null && avgEntry > 0 ? avgEntry : null,
       markPrice: mark,
       unrealizedPnlUsd,
-      usedMarginUsd: Math.abs(netQty) > 0 ? Math.abs(netQty) / leverage : null,
+      usedMarginUsd: Math.abs(netQty) > 0 ? (Math.abs(netQty) * contractValueUsd) / leverage : null,
       openedAt: r.openedAt?.toISOString() ?? null,
       reconciliationStatus,
       reconciledAt: r.recAt?.toISOString() ?? null,
