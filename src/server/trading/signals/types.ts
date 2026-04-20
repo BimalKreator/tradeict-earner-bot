@@ -18,9 +18,12 @@ export type StrategyExecutionSignal = {
    * in the execution layer (see `normalizeStrategySignalAction`).
    */
   actionType?: "entry" | "exit";
-  /** Optional filter — omit to broadcast to all eligible subscribers. */
+  /** Optional filter — omit to broadcast to all eligible subscribers (live + virtual). */
   targetUserIds?: string[];
-  /** Optional filter — only these `user_strategy_runs.id` values receive live jobs. */
+  /**
+   * Optional filter — only these `user_strategy_runs.id` values receive **live** jobs.
+   * Does **not** filter `virtual_strategy_runs`; paper legs still fan out in parallel when eligible.
+   */
   targetRunIds?: string[];
   /**
    * Which saved Delta connection receives the job for each run.
@@ -36,6 +39,10 @@ export type StrategySignalIntakeResult = {
   ok: true;
   jobsEnqueued: number;
   correlationId: string;
+  /** Jobs with `executionMode: "live"` (subset of `jobsEnqueued`). */
+  liveJobsEnqueued?: number;
+  /** Jobs with `executionMode: "virtual"` (subset of `jobsEnqueued`). */
+  virtualJobsEnqueued?: number;
 };
 
 export type StrategySignalIntakeError = {

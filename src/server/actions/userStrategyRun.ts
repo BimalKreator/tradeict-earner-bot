@@ -1,7 +1,7 @@
 "use server";
 
 import { and, eq, isNull } from "drizzle-orm";
-import { revalidatePath } from "next/cache";
+import { safeRevalidatePath } from "@/server/cache/safe-revalidate-path";
 import { z } from "zod";
 
 import { requireUserId } from "@/server/auth/require-user";
@@ -155,7 +155,7 @@ export async function activateStrategyRunAction(
       })
       .where(eq(userStrategyRuns.id, row.runId));
 
-    revalidatePath("/user/my-strategies");
+    safeRevalidatePath("/user/my-strategies");
     return {
       ok: false,
       message:
@@ -174,7 +174,7 @@ export async function activateStrategyRunAction(
     })
     .where(eq(userStrategyRuns.id, row.runId));
 
-  revalidatePath("/user/my-strategies");
+  safeRevalidatePath("/user/my-strategies");
   return { ok: true, message: "Strategy is now active." };
 }
 
@@ -262,7 +262,7 @@ export async function pauseStrategyRunAction(
     })
     .where(eq(userStrategyRuns.id, row.runId));
 
-  revalidatePath("/user/my-strategies");
+  safeRevalidatePath("/user/my-strategies");
   return { ok: true, message: "Strategy paused." };
 }
 
@@ -358,7 +358,7 @@ export async function inactivateStrategyRunAction(
     })
     .where(eq(userStrategyRuns.id, row.runId));
 
-  revalidatePath("/user/my-strategies");
+  safeRevalidatePath("/user/my-strategies");
   return { ok: true, message: "Strategy trading is turned off for this run." };
 }
 
@@ -418,7 +418,7 @@ export async function unsubscribeStrategyRunAction(
   }
 
   if (row.subStatus === "cancelled") {
-    revalidatePath("/user/my-strategies");
+    safeRevalidatePath("/user/my-strategies");
     return {
       ok: true,
       message: "This strategy is already removed from your account.",
@@ -462,7 +462,7 @@ export async function unsubscribeStrategyRunAction(
     };
   }
 
-  revalidatePath("/user/my-strategies");
+  safeRevalidatePath("/user/my-strategies");
   return {
     ok: true,
     message:

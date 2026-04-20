@@ -45,7 +45,13 @@ function mergeSignalMetadata(
 
 /**
  * Entry point for future strategy signal providers (cron, websocket, ML, etc.).
- * Fans out one durable job per eligible **live** user run and per eligible **virtual** run.
+ *
+ * **Live + virtual in parallel (no mutual exclusivity):**
+ * - Eligible **live** rows (`user_strategy_runs` + subscription + Delta) and eligible **paper** rows
+ *   (`virtual_strategy_runs`) are loaded in one `Promise.all` — neither branch short-circuits the other.
+ * - One `INSERT` into `trading_execution_jobs` batches every payload; each job has its own row `id`.
+ *   Workers claim with `FOR UPDATE SKIP LOCKED`, so live and virtual jobs never share a row lock.
+ * - `targetRunIds` (if set) restricts **live** targets only; virtual fan-out still runs for all eligible paper runs.
  */
 export async function dispatchStrategyExecutionSignal(
   signal: StrategyExecutionSignal,
@@ -162,7 +168,13 @@ export async function dispatchStrategyExecutionSignal(
       strategyId: signal.strategyId,
       correlationId: signal.correlationId,
     });
-    return { ok: true, jobsEnqueued: 0, correlationId: signal.correlationId };
+    return {
+      ok: true,
+      jobsEnqueued: 0,
+      correlationId: signal.correlationId,
+      liveJobsEnqueued: 0,
+      virtualJobsEnqueued: 0,
+    };
   }
 
   const n = await enqueueStrategySignalJobs(payloads);
@@ -172,7 +184,14 @@ export async function dispatchStrategyExecutionSignal(
     jobsEnqueued: n,
     liveJobs: livePayloads.length,
     virtualJobs: virtualPayloads.length,
+    parallelFanout: livePayloads.length > 0 && virtualPayloads.length > 0,
   });
 
-  return { ok: true, jobsEnqueued: n, correlationId: signal.correlationId };
+  return {
+    ok: true,
+    jobsEnqueued: n,
+    correlationId: signal.correlationId,
+    liveJobsEnqueued: livePayloads.length,
+    virtualJobsEnqueued: virtualPayloads.length,
+  };
 }

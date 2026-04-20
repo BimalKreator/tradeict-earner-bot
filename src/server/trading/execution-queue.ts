@@ -13,7 +13,11 @@ function backoffMs(attempt: number): number {
 
 /**
  * True if any row exists for this correlation id (any status).
- * Used by native TA workers to avoid enqueueing duplicate jobs on repeated ticks.
+ * Used by native TA workers to avoid enqueueing duplicate **waves** on repeated ticks.
+ *
+ * Note: One successful `dispatchStrategyExecutionSignal` intentionally inserts **multiple** job rows
+ * (live + virtual, and one per eligible run) sharing the same `correlationId`. After that wave,
+ * this function returns true so the provider does not enqueue a second wave for the same signal.
  */
 export async function hasTradingJobForCorrelationId(
   correlationId: string,
@@ -72,6 +76,10 @@ export async function getLatestTradingJobByCorrelationId(correlationId: string):
   return row;
 }
 
+/**
+ * Inserts all payloads in a single statement so the wave is atomic: either every
+ * live/virtual job row is created or none (Postgres multi-row insert).
+ */
 export async function enqueueStrategySignalJobs(
   payloads: TradingExecutionJobPayload[],
 ): Promise<number> {

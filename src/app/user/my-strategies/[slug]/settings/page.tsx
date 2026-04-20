@@ -88,7 +88,14 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
     );
   }
 
-  const data = await getUserStrategySettingsPageData(userId, slug);
+  let data: Awaited<ReturnType<typeof getUserStrategySettingsPageData>> = null;
+  try {
+    data = await getUserStrategySettingsPageData(userId, slug);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("user_strategy_settings_page_load_failed", { slug, msg });
+    data = null;
+  }
   if (!data) return <InitializeSettingsCTA />;
 
   return (

@@ -6,7 +6,10 @@ import { GlassPanel } from "@/components/ui/GlassPanel";
 import { remainingAccessCalendarDaysIST } from "@/lib/access-remaining-days-ist";
 import { requireUserIdForPage } from "@/server/auth/require-user";
 import { db } from "@/server/db";
-import { listMyStrategiesForUser } from "@/server/queries/user-my-strategies";
+import {
+  listMyStrategiesForUser,
+  type MyStrategyRow,
+} from "@/server/queries/user-my-strategies";
 
 export const dynamic = "force-dynamic";
 
@@ -34,9 +37,13 @@ function subscriptionOkForRunActions(
   expired: boolean,
 ): boolean {
   if (expired) return false;
+  const until = row.accessValidUntil;
+  const untilMs = until instanceof Date ? until.getTime() : NaN;
+  const nowMs = now instanceof Date ? now.getTime() : Date.now();
+  if (Number.isNaN(untilMs) || Number.isNaN(nowMs)) return false;
   return (
     row.subscriptionStatus === "active" &&
-    row.accessValidUntil.getTime() > now.getTime() &&
+    untilMs > nowMs &&
     row.strategyStatus === "active"
   );
 }
@@ -98,9 +105,20 @@ function toViewModel(
   now: Date,
 ): MyStrategyCardViewModel {
   const expired = isSubscriptionExpired(row, now);
-  const remainingCalendarDaysIST = expired
-    ? 0
-    : remainingAccessCalendarDaysIST(row.accessValidUntil, now);
+  let remainingCalendarDaysIST = 0;
+  if (!expired && row.accessValidUntil instanceof Date) {
+    try {
+      remainingCalendarDaysIST = remainingAccessCalendarDaysIST(
+        row.accessValidUntil,
+        now,
+      );
+      if (!Number.isFinite(remainingCalendarDaysIST)) {
+        remainingCalendarDaysIST = 0;
+      }
+    } catch {
+      remainingCalendarDaysIST = 0;
+    }
+  }
 
   const runOk = subscriptionOkForRunActions(row, now, expired);
 
@@ -166,7 +184,13 @@ export default async function UserMyStrategiesPage() {
     );
   }
 
-  const rows = await listMyStrategiesForUser(userId);
+  let rows: MyStrategyRow[] = [];
+  try {
+    rows = await listMyStrategiesForUser(userId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("user_my_strategies_page_load_failed", { msg });
+  }
   const now = new Date();
   const safeRows = rows.filter(isRenderableMyStrategyRow);
   const vms = safeRows.map((r) => toViewModel(r, now));

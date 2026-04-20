@@ -1,7 +1,7 @@
 "use server";
 
-import { and, eq, isNull } from "drizzle-orm";
-import { revalidatePath } from "next/cache";
+import { and, eq, isNull, ne } from "drizzle-orm";
+import { safeRevalidatePath } from "@/server/cache/safe-revalidate-path";
 import type { ZodIssue } from "zod";
 
 import { isHedgeScalpingStrategySlug, parseAllowedSymbolsList } from "@/lib/hedge-scalping-config";
@@ -127,6 +127,7 @@ export async function updateUserStrategySettingsAction(
         eq(userStrategySubscriptions.userId, userId),
         eq(strategies.slug, slug),
         isNull(userStrategySubscriptions.deletedAt),
+        ne(userStrategySubscriptions.status, "cancelled"),
       ),
     )
     .limit(1);
@@ -277,48 +278,58 @@ export async function updateUserStrategySettingsAction(
 
   const now = new Date();
 
-  await database.transaction(async (tx) => {
-    await tx
-      .update(userStrategyRuns)
-      .set({
-        capitalToUseInr: newCapitalStr,
-        leverage: newLeverageStr,
-        primaryExchangeConnectionId: primaryNext,
-        secondaryExchangeConnectionId: secondaryNext,
-        runSettingsJson: nextRunSettingsJson,
-        updatedAt: now,
-      })
-      .where(eq(userStrategyRuns.id, row.runId));
-
-    await logAuditEvent({
-      actorType: "user",
-      actorUserId: userId,
-      action: "strategy_run.settings_updated",
-      entityType: "user_strategy_run",
-      entityId: row.runId,
-      metadata: {
-        old_values: {
-          capital_to_use_inr: oldCapital,
-          leverage: oldLeverage,
-          primary_exchange_connection_id: oldPrimary,
-          secondary_exchange_connection_id: oldSecondary,
-        },
-        new_values: {
-          capital_to_use_inr: newCapitalStr,
+  try {
+    await database.transaction(async (tx) => {
+      await tx
+        .update(userStrategyRuns)
+        .set({
+          capitalToUseInr: newCapitalStr,
           leverage: newLeverageStr,
-          primary_exchange_connection_id: primaryNext,
-          secondary_exchange_connection_id: secondaryNext,
-          ...(hedgeSymRaw ? { hedge_scalping_symbol: hedgeSymRaw } : {}),
-        },
-        strategy_slug: row.strategySlug,
-        subscription_id: row.subscriptionId,
-      },
-      tx,
-    });
-  });
+          primaryExchangeConnectionId: primaryNext,
+          secondaryExchangeConnectionId: secondaryNext,
+          runSettingsJson: nextRunSettingsJson,
+          updatedAt: now,
+        })
+        .where(eq(userStrategyRuns.id, row.runId));
 
-  revalidatePath("/user/my-strategies");
-  revalidatePath(`/user/my-strategies/${encodeURIComponent(slug)}/settings`);
+      await logAuditEvent({
+        actorType: "user",
+        actorUserId: userId,
+        action: "strategy_run.settings_updated",
+        entityType: "user_strategy_run",
+        entityId: row.runId,
+        metadata: {
+          old_values: {
+            capital_to_use_inr: oldCapital,
+            leverage: oldLeverage,
+            primary_exchange_connection_id: oldPrimary,
+            secondary_exchange_connection_id: oldSecondary,
+          },
+          new_values: {
+            capital_to_use_inr: newCapitalStr,
+            leverage: newLeverageStr,
+            primary_exchange_connection_id: primaryNext,
+            secondary_exchange_connection_id: secondaryNext,
+            ...(hedgeSymRaw ? { hedge_scalping_symbol: hedgeSymRaw } : {}),
+          },
+          strategy_slug: row.strategySlug,
+          subscription_id: row.subscriptionId,
+        },
+        tx,
+      });
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("update_user_strategy_settings_failed", { slug, msg });
+    return {
+      ok: false,
+      message: "Could not save settings. Please try again.",
+      fieldErrors: {},
+    };
+  }
+
+  safeRevalidatePath("/user/my-strategies");
+  safeRevalidatePath(`/user/my-strategies/${encodeURIComponent(slug)}/settings`);
 
   return {
     ok: true,

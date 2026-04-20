@@ -28,6 +28,9 @@ function parsePositiveNum(raw: string | null | undefined): number | null {
 /**
  * Paper runs that mirror live signal fan-out: approved user, active strategy,
  * active virtual run with capital + leverage. No subscription or exchange checks.
+ *
+ * **Independent of live:** Eligibility does not join `user_strategy_runs` or subscriptions.
+ * The dispatcher loads these rows in parallel with live targets — having both does not block either leg.
  */
 export async function findEligibleVirtualRunsForStrategyExecution(
   strategyId: string,

@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 
 import {
@@ -157,24 +157,79 @@ export async function getUserStrategySettingsPageData(
         eq(userStrategySubscriptions.userId, userId),
         eq(strategies.slug, slug),
         isNull(userStrategySubscriptions.deletedAt),
+        ne(userStrategySubscriptions.status, "cancelled"),
       ),
     )
     .limit(1);
 
   if (!row) return null;
 
+  const resolvedSlug =
+    typeof row.strategySlug === "string" ? row.strategySlug.trim() : "";
+  if (!resolvedSlug) return null;
+
+  const strategyName =
+    typeof row.strategyName === "string" && row.strategyName.trim() !== ""
+      ? row.strategyName.trim()
+      : resolvedSlug;
+
+  if (
+    typeof row.subscriptionId !== "string" ||
+    row.subscriptionId.trim() === "" ||
+    typeof row.runId !== "string" ||
+    row.runId.trim() === "" ||
+    typeof row.strategyId !== "string" ||
+    row.strategyId.trim() === ""
+  ) {
+    return null;
+  }
+
   const canEditSettings = EDITABLE_RUN_STATUSES.has(row.runStatus);
 
-  const deltaConnections = await listUserDeltaIndiaExchangeConnections(userId);
+  let deltaConnections: { id: string; accountLabel: string }[] = [];
+  try {
+    const raw = await listUserDeltaIndiaExchangeConnections(userId);
+    deltaConnections = raw.map((c) => ({
+      id: c.id,
+      accountLabel:
+        typeof c.accountLabel === "string" && c.accountLabel.trim() !== ""
+          ? c.accountLabel.trim()
+          : "Delta profile",
+    }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("list_delta_connections_for_settings_failed", { userId, msg });
+  }
 
-  const isHedgeScalpingStrategy = isHedgeScalpingStrategySlug(row.strategySlug);
-  const hedgeScalpingResolvedConfig = isHedgeScalpingStrategy
-    ? resolveHedgeScalpingConfigForUi(row.strategySettingsJson)
-    : null;
-  const hedgeScalpingAllowedSymbols = hedgeScalpingResolvedConfig
-    ? parseAllowedSymbolsList(hedgeScalpingResolvedConfig.general.allowedSymbols)
-    : [];
-  const savedSym = extractHedgeScalpingSymbolFromRunSettingsJson(row.runSettingsJson)?.trim().toUpperCase();
+  let isHedgeScalpingStrategy = false;
+  let hedgeScalpingResolvedConfig: HedgeScalpingConfig | null = null;
+  let hedgeScalpingAllowedSymbols: string[] = [];
+  try {
+    isHedgeScalpingStrategy = isHedgeScalpingStrategySlug(row.strategySlug);
+    hedgeScalpingResolvedConfig = isHedgeScalpingStrategy
+      ? resolveHedgeScalpingConfigForUi(row.strategySettingsJson)
+      : null;
+    const allowedRaw =
+      hedgeScalpingResolvedConfig &&
+      typeof hedgeScalpingResolvedConfig.general?.allowedSymbols === "string"
+        ? hedgeScalpingResolvedConfig.general.allowedSymbols
+        : "";
+    hedgeScalpingAllowedSymbols = hedgeScalpingResolvedConfig
+      ? parseAllowedSymbolsList(allowedRaw)
+      : [];
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("hedge_scalping_settings_ui_failed", { slug: resolvedSlug, msg });
+    isHedgeScalpingStrategy = false;
+    hedgeScalpingResolvedConfig = null;
+    hedgeScalpingAllowedSymbols = [];
+  }
+
+  const savedSym = extractHedgeScalpingSymbolFromRunSettingsJson(
+    row.runSettingsJson,
+  )
+    ?.trim()
+    .toUpperCase();
   const initialHedgeScalpingSymbol =
     savedSym && hedgeScalpingAllowedSymbols.includes(savedSym)
       ? savedSym
@@ -190,8 +245,8 @@ export async function getUserStrategySettingsPageData(
 
   return {
     strategyId: row.strategyId,
-    strategySlug: row.strategySlug,
-    strategyName: row.strategyName,
+    strategySlug: resolvedSlug,
+    strategyName,
     recommendedCapitalInr: row.recommendedCapitalInr
       ? String(row.recommendedCapitalInr)
       : null,

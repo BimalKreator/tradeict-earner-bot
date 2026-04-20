@@ -1,5 +1,9 @@
 const IST = "Asia/Kolkata";
 
+function isValidDateInput(d: unknown): d is Date {
+  return d instanceof Date && !Number.isNaN(d.getTime());
+}
+
 function calendarYmdInTz(
   d: Date,
   timeZone: string,
@@ -35,27 +39,56 @@ export function remainingAccessCalendarDaysIST(
   accessValidUntil: Date,
   now: Date = new Date(),
 ): number {
-  const end = calendarYmdInTz(accessValidUntil, IST);
-  const start = calendarYmdInTz(now, IST);
-  const diff =
-    utcDayIndex(end.y, end.m, end.day) - utcDayIndex(start.y, start.m, start.day);
-  return Math.max(0, diff);
+  if (!isValidDateInput(accessValidUntil) || !isValidDateInput(now)) {
+    return 0;
+  }
+  try {
+    const end = calendarYmdInTz(accessValidUntil, IST);
+    const start = calendarYmdInTz(now, IST);
+    if (
+      !Number.isFinite(end.y) ||
+      !Number.isFinite(end.m) ||
+      !Number.isFinite(end.day) ||
+      !Number.isFinite(start.y) ||
+      !Number.isFinite(start.m) ||
+      !Number.isFinite(start.day)
+    ) {
+      return 0;
+    }
+    const diff =
+      utcDayIndex(end.y, end.m, end.day) -
+      utcDayIndex(start.y, start.m, start.day);
+    if (!Number.isFinite(diff)) return 0;
+    return Math.max(0, diff);
+  } catch {
+    return 0;
+  }
 }
 
 export function formatDateTimeIST(d: Date): string {
-  return d.toLocaleString("en-IN", {
-    timeZone: IST,
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  if (!isValidDateInput(d)) return "—";
+  try {
+    return d.toLocaleString("en-IN", {
+      timeZone: IST,
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  } catch {
+    return "—";
+  }
 }
 
 /** Date-only label in Asia/Kolkata (e.g. renewal “new expiry” copy). */
 export function formatDateMediumIST(d: Date): string {
-  return d.toLocaleDateString("en-IN", {
-    timeZone: IST,
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  if (!isValidDateInput(d)) return "—";
+  try {
+    return d.toLocaleDateString("en-IN", {
+      timeZone: IST,
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  } catch {
+    return "—";
+  }
 }
