@@ -18,6 +18,7 @@ import {
 } from "@/server/db/schema";
 
 import type { Candle } from "@/server/trading/ta-engine/indicators/halftrend";
+import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
 
 import {
   d1ContinuousTrailedStopPrice,
@@ -77,6 +78,57 @@ function num(raw: string | number | null | undefined): number {
 
 function fmt(n: number): string {
   return Number.isFinite(n) ? n.toFixed(8) : String(n);
+}
+
+type PendingLiveSignal = {
+  correlationId: string;
+  strategyId: string;
+  userId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: string;
+  markPrice: number;
+  actionType: "entry" | "exit";
+  metadata?: Record<string, unknown>;
+};
+
+async function dispatchPendingHsLiveSignals(
+  signals: PendingLiveSignal[],
+): Promise<void> {
+  for (const s of signals) {
+    try {
+      const res = await dispatchStrategyExecutionSignal({
+        strategyId: s.strategyId,
+        correlationId: s.correlationId,
+        symbol: s.symbol,
+        side: s.side,
+        orderType: "market",
+        quantity: s.quantity,
+        actionType: s.actionType,
+        executionMode: "live_only",
+        targetUserIds: [s.userId],
+        metadata: {
+          source: "hedge_scalping_poller",
+          mark_price: s.markPrice,
+          ...(s.metadata ?? {}),
+        },
+      });
+      if (!res.ok) {
+        console.warn(
+          `${LOG} live dispatch failed correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} err=${res.error}`,
+        );
+      } else {
+        console.log(
+          `${LOG} live dispatch ok correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${res.liveJobsEnqueued ?? 0}`,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(
+        `${LOG} live dispatch exception correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} err=${msg.slice(0, 400)}`,
+      );
+    }
+  }
 }
 
 async function resolveHedgeScalpingTradingSymbol(
@@ -198,14 +250,15 @@ async function executeHedgeScalpingIntentsTx(
     cfg: HedgeScalpingConfig;
     symbol: string;
   },
-): Promise<void> {
+): Promise<PendingLiveSignal[]> {
   const { hedgeRun, paperRunId, intents, mark, cfg, symbol } = ctx;
   const runId = hedgeRun.runId;
   const userId = hedgeRun.userId;
   const strategyId = hedgeRun.strategyId;
   const now = new Date();
+  const liveSignals: PendingLiveSignal[] = [];
 
-  if (intents.length === 0) return;
+  if (intents.length === 0) return liveSignals;
   const first = intents[0]!;
 
   if (first.type === "CLOSE_ALL") {
@@ -248,6 +301,17 @@ async function executeHedgeScalpingIntentsTx(
         signalAction: "exit",
         realizedPnlUsd: net,
       });
+      liveSignals.push({
+        correlationId: hsCorrelationD2Exit(clip.clipId),
+        strategyId,
+        userId,
+        symbol,
+        side: hedgeCloseSide(clip.side),
+        quantity: fmt(q),
+        markPrice: mark,
+        actionType: "exit",
+        metadata: { reason },
+      });
     }
 
     if (d1Qty > 0) {
@@ -271,6 +335,17 @@ async function executeHedgeScalpingIntentsTx(
         correlationId: hsCorrelationD1Exit(runId),
         signalAction: "exit",
         realizedPnlUsd: netD1,
+      });
+      liveSignals.push({
+        correlationId: hsCorrelationD1Exit(runId),
+        strategyId,
+        userId,
+        symbol,
+        side: hedgeCloseSide(hedgeRun.d1Side),
+        quantity: fmt(d1Qty),
+        markPrice: mark,
+        actionType: "exit",
+        metadata: { reason },
       });
     }
 
@@ -303,7 +378,7 @@ async function executeHedgeScalpingIntentsTx(
       .where(eq(virtualStrategyRuns.id, paperRunId));
 
     console.log(`${LOG} CLOSE_ALL run=${runId} reason=${reason} netUsd=${totalNet.toFixed(4)}`);
-    return;
+    return liveSignals;
   }
 
   for (const intent of intents) {
@@ -334,6 +409,17 @@ async function executeHedgeScalpingIntentsTx(
         correlationId: hsCorrelationD2Exit(clip.clipId),
         signalAction: "exit",
         realizedPnlUsd: net,
+      });
+      liveSignals.push({
+        correlationId: hsCorrelationD2Exit(clip.clipId),
+        strategyId,
+        userId,
+        symbol,
+        side: hedgeCloseSide(clip.side),
+        quantity: fmt(q),
+        markPrice: mark,
+        actionType: "exit",
+        metadata: { reason: intent.reason, step_level: intent.stepLevel },
       });
       await applyHsVirtualBalanceDelta(tx, paperRunId, net);
       await tx
@@ -393,11 +479,26 @@ async function executeHedgeScalpingIntentsTx(
         signalAction: "entry",
         realizedPnlUsd: null,
       });
+      liveSignals.push({
+        correlationId: hsCorrelationD2Entry(intent.stepLevel, clipId),
+        strategyId,
+        userId,
+        symbol,
+        side: hedgeOpenSide(intent.side),
+        quantity: fmt(stepQty),
+        markPrice: intent.expectedPrice,
+        actionType: "entry",
+        metadata: {
+          step_level: intent.stepLevel,
+          expected_price: intent.expectedPrice,
+        },
+      });
       console.log(
         `${LOG} OPEN_D2_CLIP run=${runId} step=${intent.stepLevel} side=${intent.side} qty=${fmt(stepQty)} entry=${fmt(intent.expectedPrice)}`,
       );
     }
   }
+  return liveSignals;
 }
 
 async function processOneActiveRun(params: {
@@ -496,7 +597,7 @@ async function processOneActiveRun(params: {
     `${LOG} evaluate run=${run.runId} mark=${fmt(mark)} d1=${run.d1Side} intents=${intents.length}`,
   );
 
-  await db!.transaction(async (tx) => {
+  const liveSignals = await db!.transaction(async (tx) => {
     if (merged !== prevMax && Number.isFinite(merged)) {
       await tx
         .update(hedgeScalpingVirtualRuns)
@@ -511,7 +612,7 @@ async function processOneActiveRun(params: {
       console.warn(
         `${LOG} no active virtual_strategy_run user=${run.userId} strategy=${run.strategyId} — skip intents`,
       );
-      return;
+      return [] as PendingLiveSignal[];
     }
     const hedgeRun = (await fetchHedgeRunRow(tx, run.runId)) ?? run;
     const symbol = await resolveHedgeScalpingTradingSymbol(tx, run.userId, run.strategyId, cfg);
@@ -519,9 +620,9 @@ async function processOneActiveRun(params: {
       console.warn(
         `${LOG} skip intents — could not resolve symbol user=${run.userId} strategy=${run.strategyId}`,
       );
-      return;
+      return [] as PendingLiveSignal[];
     }
-    await executeHedgeScalpingIntentsTx(tx, {
+    return await executeHedgeScalpingIntentsTx(tx, {
       hedgeRun,
       paperRunId,
       intents,
@@ -530,6 +631,9 @@ async function processOneActiveRun(params: {
       symbol,
     });
   });
+  if (liveSignals.length > 0) {
+    await dispatchPendingHsLiveSignals(liveSignals);
+  }
 }
 
 export type HedgeScalpingStrategyFeedFilter = {
@@ -724,7 +828,7 @@ export async function processHedgeScalpingNewEntriesPhase(
       const now = new Date();
 
       try {
-        await db.transaction(async (tx) => {
+        const liveSignals = await db.transaction(async (tx) => {
           const paperRunId = await resolveVirtualPaperRunId(tx, {
             userId,
             strategyId: strat.id,
@@ -733,20 +837,20 @@ export async function processHedgeScalpingNewEntriesPhase(
             console.warn(
               `${LOG} NEW_RUN skip — no active virtual_strategy_run user=${userId} strategy=${strat.id}`,
             );
-            return;
+            return [] as PendingLiveSignal[];
           }
           const symbol = await resolveHedgeScalpingTradingSymbol(tx, userId, strat.id, cfg);
           if (!symbol) {
             console.warn(
               `${LOG} NEW_RUN skip — no allowed symbols strategy=${strat.id} user=${userId}`,
             );
-            return;
+            return [] as PendingLiveSignal[];
           }
           const markUsd = await hedgeScalpingMarkUsdOrFallback(symbol, currentMarkPrice);
           const entryStr = fmt(markUsd);
           const maxFavStr = entryStr;
           const paper = await loadVirtualPaperRunForSizing(tx, paperRunId);
-          if (!paper) return;
+          if (!paper) return [] as PendingLiveSignal[];
           const balanceUsd = hedgeSizingBalanceUsd(paper);
           const d1QtyNum = computeHedgeScalpingD1Qty({
             balanceUsd,
@@ -758,7 +862,7 @@ export async function processHedgeScalpingNewEntriesPhase(
             console.warn(
               `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} markUsd=${markUsd} workerMark=${currentMarkPrice}`,
             );
-            return;
+            return [] as PendingLiveSignal[];
           }
 
           const [inserted] = await tx
@@ -821,7 +925,34 @@ export async function processHedgeScalpingNewEntriesPhase(
           console.log(
             `${LOG} NEW_RUN user=${userId} strategy=${strat.id} run=${hedgeRunId} d1=${d1Side} d1Qty=${fmt(d1QtyNum)} d2_qty=${fmt(d2StepQty)} entry=${entryStr}`,
           );
+          return [
+            {
+              correlationId: hsCorrelationD1Entry(hedgeRunId),
+              strategyId: strat.id,
+              userId,
+              symbol,
+              side: hedgeOpenSide(d1Side),
+              quantity: fmt(d1QtyNum),
+              markPrice: markUsd,
+              actionType: "entry" as const,
+              metadata: { leg: "d1_new_run" },
+            },
+            {
+              correlationId: hsCorrelationD2Entry(1, clipId),
+              strategyId: strat.id,
+              userId,
+              symbol,
+              side: hedgeOpenSide(d2Side),
+              quantity: fmt(d2StepQty),
+              markPrice: markUsd,
+              actionType: "entry" as const,
+              metadata: { leg: "d2_step_1_new_run", step_level: 1 },
+            },
+          ];
         });
+        if (liveSignals.length > 0) {
+          await dispatchPendingHsLiveSignals(liveSignals);
+        }
       } catch (e) {
         const err = e as { code?: string; message?: string };
         if (err?.code === "23505") {

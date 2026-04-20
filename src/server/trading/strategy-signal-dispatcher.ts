@@ -65,17 +65,22 @@ export async function dispatchStrategyExecutionSignal(
 
   const signalAction = normalizeStrategySignalAction(signal);
   const signalMetadata = mergeSignalMetadata(signal);
+  const mode = signal.executionMode ?? "both";
 
   const [liveRuns, virtualRuns] = await Promise.all([
-    findEligibleRunsForStrategyExecution(signal.strategyId, {
-      targetUserIds: signal.targetUserIds,
-      targetRunIds: signal.targetRunIds,
-      signalAction,
-    }),
-    findEligibleVirtualRunsForStrategyExecution(signal.strategyId, {
-      targetUserIds: signal.targetUserIds,
-      signalAction,
-    }),
+    mode === "virtual_only"
+      ? Promise.resolve([])
+      : findEligibleRunsForStrategyExecution(signal.strategyId, {
+          targetUserIds: signal.targetUserIds,
+          targetRunIds: signal.targetRunIds,
+          signalAction,
+        }),
+    mode === "live_only"
+      ? Promise.resolve([])
+      : findEligibleVirtualRunsForStrategyExecution(signal.strategyId, {
+          targetUserIds: signal.targetUserIds,
+          signalAction,
+        }),
   ]);
 
   const venue = signal.exchangeVenue;

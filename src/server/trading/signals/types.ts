@@ -32,6 +32,13 @@ export type StrategyExecutionSignal = {
    * - `secondary` — secondary only; runs without a secondary are skipped (0 jobs).
    */
   exchangeVenue?: "auto" | "primary" | "secondary";
+  /**
+   * Fan-out target mode:
+   * - `both` (default): enqueue live + virtual eligible runs.
+   * - `live_only`: enqueue only live (`user_strategy_runs`) jobs.
+   * - `virtual_only`: enqueue only paper (`virtual_strategy_runs`) jobs.
+   */
+  executionMode?: "both" | "live_only" | "virtual_only";
   metadata?: Record<string, unknown>;
 };
 
