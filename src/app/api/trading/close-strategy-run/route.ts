@@ -94,19 +94,30 @@ function lastPositiveFillPrice(ledger: LedgerOrderRow[], bucket: AccountKey): nu
   return null;
 }
 
-/** Prefer live ticker; then ledger avg / last fill / run row avg; last resort 1 so exits always persist. */
-function resolveManualCloseExitPx(params: {
-  ticker: number | null;
+/** Always resolves a valid exit price; never throws and never returns null. */
+async function resolveManualCloseExitPx(params: {
+  symbol: string | null;
   ledgerAvg: number | null;
-  lastFill: number | null;
-  openAvgFromRun: number | null;
+  lastKnownMark: number | null;
   logLabel: string;
-}): number {
+}): Promise<number> {
+  let ticker: number | null = null;
+  const sym = params.symbol?.trim();
+  if (sym) {
+    try {
+      const px = await fetchDeltaIndiaTickerMarkPrice({ symbol: sym });
+      if (px != null && Number.isFinite(px) && px > 0) {
+        ticker = px;
+      }
+    } catch {
+      ticker = null;
+    }
+  }
+
   const candidates = [
-    params.ticker,
+    ticker,
     params.ledgerAvg,
-    params.lastFill,
-    params.openAvgFromRun,
+    params.lastKnownMark,
   ];
   for (const c of candidates) {
     if (c != null && Number.isFinite(c) && c > 0) return c;
@@ -197,7 +208,6 @@ async function syncVirtualPaperRunFlatAfterManualCloseTx(
   await tx
     .update(virtualStrategyRuns)
     .set({
-      status: "active",
       openNetQty: "0",
       openAvgEntryPrice: null,
       openSymbol: null,
@@ -275,39 +285,29 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
         ? openAvgFromRun
         : null;
 
-    let tickerD1: number | null = null;
-    let tickerD2: number | null = null;
-    try {
-      tickerD1 = symD1.length > 0 ? await fetchDeltaIndiaTickerMarkPrice({ symbol: symD1 }) : null;
-    } catch {
-      tickerD1 = null;
-    }
-    try {
-      tickerD2 = symD2.length > 0 ? await fetchDeltaIndiaTickerMarkPrice({ symbol: symD2 }) : null;
-    } catch {
-      tickerD2 = null;
-    }
-    if (tickerD1 != null && !(tickerD1 > 0)) tickerD1 = null;
-    if (tickerD2 != null && !(tickerD2 > 0)) tickerD2 = null;
-
-    const pxD1 = resolveManualCloseExitPx({
-      ticker: tickerD1 ?? (tickerD2 != null && tickerD2 > 0 ? tickerD2 : null),
+    const pxD1 = await resolveManualCloseExitPx({
+      symbol: symD1,
       ledgerAvg:
         d1Prefetch.avgEntryPrice != null && d1Prefetch.avgEntryPrice > 0
           ? d1Prefetch.avgEntryPrice
           : null,
-      lastFill: lastPositiveFillPrice(ledgerPrefetch, "primary"),
-      openAvgFromRun: runAvgOk,
+      lastKnownMark:
+        lastPositiveFillPrice(ledgerPrefetch, "primary") ??
+        lastPositiveFillPrice(ledgerPrefetch, "secondary") ??
+        runAvgOk,
       logLabel: "d1",
     });
-    const pxD2 = resolveManualCloseExitPx({
-      ticker: tickerD2 ?? (tickerD1 != null && tickerD1 > 0 ? tickerD1 : null),
+    const pxD2 = await resolveManualCloseExitPx({
+      symbol: symD2 || symD1,
       ledgerAvg:
         d2Prefetch.avgEntryPrice != null && d2Prefetch.avgEntryPrice > 0
           ? d2Prefetch.avgEntryPrice
           : null,
-      lastFill: lastPositiveFillPrice(ledgerPrefetch, "secondary"),
-      openAvgFromRun: runAvgOk,
+      lastKnownMark:
+        lastPositiveFillPrice(ledgerPrefetch, "secondary") ??
+        lastPositiveFillPrice(ledgerPrefetch, "primary") ??
+        runAvgOk ??
+        pxD1,
       logLabel: "d2",
     });
 
