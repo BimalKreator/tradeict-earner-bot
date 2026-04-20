@@ -219,6 +219,7 @@ export function evaluateHedgeScalpingState(
 
   const favorablePct = d1FavorableDistancePct(state.d1Side, entry, mark);
   const maxStep = maxD2LadderStepInclusive(favorablePct, d2.stepMovePct);
+  /** Hedge invariant: ladder clips always take the leg opposite D1 (never copy `state.d1Side`). */
   const d2Side = hedgeScalpingD2Side(state.d1Side);
 
   for (let step = 1; step <= maxStep; step += 1) {

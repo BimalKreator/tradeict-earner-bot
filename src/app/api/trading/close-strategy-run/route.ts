@@ -7,6 +7,8 @@ import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
 import {
   classifyHedgeScalpingVirtualDualAccount,
   deriveLedgerMetrics,
+  isFilledOrder,
+  type AccountKey,
   type LedgerOrderRow,
 } from "@/lib/virtual-ledger-metrics";
 import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
@@ -56,6 +58,63 @@ function parseHedgeRunIdFromVirtualLedger(ledger: LedgerOrderRow[]): string | nu
     if (id) return id;
   }
   return null;
+}
+
+async function resolveHedgeRunIdForFinalize(
+  tx: HedgeScalpingDbTx,
+  ledger: LedgerOrderRow[],
+  userId: string,
+  strategyId: string,
+): Promise<string | null> {
+  const fromLedger = parseHedgeRunIdFromVirtualLedger(ledger);
+  if (fromLedger) return fromLedger;
+  const [row] = await tx
+    .select({ runId: hedgeScalpingVirtualRuns.runId })
+    .from(hedgeScalpingVirtualRuns)
+    .where(
+      and(
+        eq(hedgeScalpingVirtualRuns.userId, userId),
+        eq(hedgeScalpingVirtualRuns.strategyId, strategyId),
+        eq(hedgeScalpingVirtualRuns.status, "active"),
+      ),
+    )
+    .limit(1);
+  return row?.runId ?? null;
+}
+
+function lastPositiveFillPrice(ledger: LedgerOrderRow[], bucket: AccountKey): number | null {
+  const rows = [...ledger]
+    .filter((o) => classifyHedgeScalpingVirtualDualAccount(o) === bucket)
+    .filter((o) => isFilledOrder(o.status));
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const o = rows[i]!;
+    const p = o.fillPrice != null ? Number(String(o.fillPrice)) : NaN;
+    if (Number.isFinite(p) && p > 0) return p;
+  }
+  return null;
+}
+
+/** Prefer live ticker; then ledger avg / last fill / run row avg; last resort 1 so exits always persist. */
+function resolveManualCloseExitPx(params: {
+  ticker: number | null;
+  ledgerAvg: number | null;
+  lastFill: number | null;
+  openAvgFromRun: number | null;
+  logLabel: string;
+}): number {
+  const candidates = [
+    params.ticker,
+    params.ledgerAvg,
+    params.lastFill,
+    params.openAvgFromRun,
+  ];
+  for (const c of candidates) {
+    if (c != null && Number.isFinite(c) && c > 0) return c;
+  }
+  console.warn(
+    `${LOG_MANUAL} exit_px_fallback=1 label=${params.logLabel} (ticker and ledger marks unavailable)`,
+  );
+  return 1;
 }
 
 function mapRowsToLedger(
@@ -130,6 +189,24 @@ async function finalizeHedgeScalpingVirtualRunTx(
   return { runs: runRows.length, clips: clipRows.length };
 }
 
+async function syncVirtualPaperRunFlatAndCompletedTx(
+  tx: HedgeScalpingDbTx,
+  virtualPaperRunId: string,
+): Promise<void> {
+  const now = new Date();
+  await tx
+    .update(virtualStrategyRuns)
+    .set({
+      status: "completed",
+      openNetQty: "0",
+      openAvgEntryPrice: null,
+      openSymbol: null,
+      virtualUsedMarginUsd: "0",
+      updatedAt: now,
+    })
+    .where(eq(virtualStrategyRuns.id, virtualPaperRunId));
+}
+
 /**
  * Hedge scalping paper uses `insertHsVirtualFilledOrder` for HS fills (does not maintain
  * `open_net_qty` on `virtual_strategy_runs`). Manual close must insert D1/D2 exits and sync
@@ -141,6 +218,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
     userId: string;
     strategyId: string;
     openSymbol: string | null;
+    openAvgEntryPrice: string | null;
   };
   eligRow: { userId: string; strategyId: string };
 }): Promise<{ ok: true; closed: number } | { ok: false; error: string }> {
@@ -163,7 +241,12 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
 
     if (Math.abs(d1Prefetch.openNetQty) < 1e-8 && Math.abs(d2Prefetch.openNetQty) < 1e-8) {
       await db.transaction(async (tx) => {
-        const hedgeRunId = parseHedgeRunIdFromVirtualLedger(ledgerPrefetch);
+        const hedgeRunId = await resolveHedgeRunIdForFinalize(
+          tx,
+          ledgerPrefetch,
+          params.run.userId,
+          params.run.strategyId,
+        );
         if (hedgeRunId) {
           const fin = await finalizeHedgeScalpingVirtualRunTx(tx, {
             hedgeRunId,
@@ -173,24 +256,60 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
           console.log(
             `${LOG_MANUAL} already_flat_ledger hedgeRunId=${hedgeRunId} hedge_runs_completed=${fin.runs} clips_completed=${fin.clips}`,
           );
+        } else {
+          console.warn(`${LOG_MANUAL} already_flat_ledger — no hedge run id (ledger + DB lookup)`);
         }
+        await syncVirtualPaperRunFlatAndCompletedTx(tx, params.run.id);
       });
       return { ok: true, closed: 0 };
     }
 
     const symD1 = d1Prefetch.openSymbol?.trim() || params.run.openSymbol?.trim() || "";
     const symD2 = d2Prefetch.openSymbol?.trim() || symD1;
-    const markD1 =
-      symD1.length > 0 ? await fetchDeltaIndiaTickerMarkPrice({ symbol: symD1 }) : null;
-    const markD2 =
-      symD2.length > 0 ? await fetchDeltaIndiaTickerMarkPrice({ symbol: symD2 }) : null;
-    const pxD1 =
-      markD1 != null && markD1 > 0 ? markD1 : markD2 != null && markD2 > 0 ? markD2 : null;
-    const pxD2 =
-      markD2 != null && markD2 > 0 ? markD2 : markD1 != null && markD1 > 0 ? markD1 : null;
-    if (pxD1 == null || !(pxD1 > 0)) {
-      return { ok: false, error: "virtual_mark_price_unavailable" };
+    const openAvgFromRun =
+      params.run.openAvgEntryPrice != null && String(params.run.openAvgEntryPrice).trim() !== ""
+        ? Number(String(params.run.openAvgEntryPrice).trim())
+        : null;
+    const runAvgOk =
+      openAvgFromRun != null && Number.isFinite(openAvgFromRun) && openAvgFromRun > 0
+        ? openAvgFromRun
+        : null;
+
+    let tickerD1: number | null = null;
+    let tickerD2: number | null = null;
+    try {
+      tickerD1 = symD1.length > 0 ? await fetchDeltaIndiaTickerMarkPrice({ symbol: symD1 }) : null;
+    } catch {
+      tickerD1 = null;
     }
+    try {
+      tickerD2 = symD2.length > 0 ? await fetchDeltaIndiaTickerMarkPrice({ symbol: symD2 }) : null;
+    } catch {
+      tickerD2 = null;
+    }
+    if (tickerD1 != null && !(tickerD1 > 0)) tickerD1 = null;
+    if (tickerD2 != null && !(tickerD2 > 0)) tickerD2 = null;
+
+    const pxD1 = resolveManualCloseExitPx({
+      ticker: tickerD1 ?? (tickerD2 != null && tickerD2 > 0 ? tickerD2 : null),
+      ledgerAvg:
+        d1Prefetch.avgEntryPrice != null && d1Prefetch.avgEntryPrice > 0
+          ? d1Prefetch.avgEntryPrice
+          : null,
+      lastFill: lastPositiveFillPrice(ledgerPrefetch, "primary"),
+      openAvgFromRun: runAvgOk,
+      logLabel: "d1",
+    });
+    const pxD2 = resolveManualCloseExitPx({
+      ticker: tickerD2 ?? (tickerD1 != null && tickerD1 > 0 ? tickerD1 : null),
+      ledgerAvg:
+        d2Prefetch.avgEntryPrice != null && d2Prefetch.avgEntryPrice > 0
+          ? d2Prefetch.avgEntryPrice
+          : null,
+      lastFill: lastPositiveFillPrice(ledgerPrefetch, "secondary"),
+      openAvgFromRun: runAvgOk,
+      logLabel: "d2",
+    });
 
     const closedCount = await db.transaction(async (tx) => {
       let ledger = await loadVirtualLedger(tx, params.run.id);
@@ -249,7 +368,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
       );
 
       if (Math.abs(d2Met.openNetQty) > 1e-8 && symD2.length > 0) {
-        const px = pxD2 != null && pxD2 > 0 ? pxD2 : pxD1;
+        const px = pxD2 > 0 ? pxD2 : pxD1;
         const qty = Math.abs(d2Met.openNetQty);
         const side = oppositeSideForNet(d2Met.openNetQty);
         const entryPx = d2Met.avgEntryPrice != null && d2Met.avgEntryPrice > 0 ? d2Met.avgEntryPrice : px;
@@ -283,27 +402,13 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
       }
 
       const ledFinal = await loadVirtualLedger(tx, params.run.id);
-      const full = deriveLedgerMetrics(ledFinal, null);
-      const now = new Date();
-      await tx
-        .update(virtualStrategyRuns)
-        .set({
-          openNetQty:
-            Math.abs(full.openNetQty) < 1e-8 ? "0" : String(Number(full.openNetQty.toFixed(8))),
-          openAvgEntryPrice:
-            Math.abs(full.openNetQty) < 1e-8 || full.avgEntryPrice == null
-              ? null
-              : String(Number(full.avgEntryPrice.toFixed(8))),
-          openSymbol: Math.abs(full.openNetQty) < 1e-8 ? null : full.openSymbol,
-          updatedAt: now,
-        })
-        .where(eq(virtualStrategyRuns.id, params.run.id));
 
-      console.log(
-        `${LOG_MANUAL} synced virtual_strategy_runs openNetQty=${full.openNetQty} openSymbol=${full.openSymbol ?? "null"}`,
+      const hedgeRunId = await resolveHedgeRunIdForFinalize(
+        tx,
+        ledFinal,
+        params.run.userId,
+        params.run.strategyId,
       );
-
-      const hedgeRunId = parseHedgeRunIdFromVirtualLedger(ledFinal);
       if (hedgeRunId) {
         const fin = await finalizeHedgeScalpingVirtualRunTx(tx, {
           hedgeRunId,
@@ -314,8 +419,13 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
           `${LOG_MANUAL} hedge_scalping finalized hedgeRunId=${hedgeRunId} runs_rows=${fin.runs} clips_rows=${fin.clips}`,
         );
       } else {
-        console.warn(`${LOG_MANUAL} no hs_d1 hedge run id parsed — hedge tables not updated`);
+        console.warn(`${LOG_MANUAL} no hedge run id resolved — hedge_scalping_virtual_runs not finalized`);
       }
+
+      await syncVirtualPaperRunFlatAndCompletedTx(tx, params.run.id);
+      console.log(
+        `${LOG_MANUAL} virtual_strategy_runs set completed + flat open fields virtualRunId=${params.run.id}`,
+      );
 
       return closed;
     });
@@ -337,6 +447,7 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
       strategySlug: strategies.slug,
       openNetQty: virtualStrategyRuns.openNetQty,
       openSymbol: virtualStrategyRuns.openSymbol,
+      openAvgEntryPrice: virtualStrategyRuns.openAvgEntryPrice,
     })
     .from(virtualStrategyRuns)
     .innerJoin(strategies, eq(virtualStrategyRuns.strategyId, strategies.id))
@@ -373,6 +484,7 @@ async function closeVirtualRun(runId: string, requesterUserId: string, isAdmin: 
         userId: run.userId,
         strategyId: run.strategyId,
         openSymbol: run.openSymbol,
+        openAvgEntryPrice: run.openAvgEntryPrice,
       },
       eligRow: elig.row,
     });

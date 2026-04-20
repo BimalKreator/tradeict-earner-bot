@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
 import { db } from "@/server/db";
 import {
+  hedgeScalpingVirtualRuns,
   strategies,
   virtualBotOrders,
   virtualStrategyRuns,
@@ -10,6 +11,8 @@ import {
 import type { TradingExecutionJobPayload } from "@/server/db/schema";
 
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
+import { hedgeScalpingD2Side } from "@/server/trading/hedge-scalping/engine-math";
+import { hedgeOpenSide } from "@/server/trading/hedge-scalping/virtual-integration";
 
 import { fetchDeltaExchangeCandles, filterClosedCandles } from "./ta-engine/rsi-scalper";
 import type { EligibleVirtualRunRow } from "./virtual-eligibility";
@@ -86,8 +89,9 @@ async function resolveFillPriceUsd(
 }
 
 /**
- * When hedge-scalping simulates initial D2 (step 0) after D1, pin fill to the latest D1 entry
+ * When hedge-scalping simulates a D2 ladder entry after D1, pin fill to the latest D1 entry
  * fill for the same virtual run so the hedge leg does not drift vs ticker/candle fallback.
+ * Correlation ids follow `hs_d2_step{N}_<clipUuid>` (poller uses steps 1+).
  */
 async function alignHedgeScalpingInitialD2FillToD1(params: {
   payload: TradingExecutionJobPayload;
@@ -99,7 +103,7 @@ async function alignHedgeScalpingInitialD2FillToD1(params: {
   if (!db) return resolvedPrice;
 
   const cid = (p.correlationId ?? "").toLowerCase();
-  if (!cid.startsWith("hs_d2_step0_")) return resolvedPrice;
+  if (!/^hs_d2_step\d+_/i.test(cid) || cid.startsWith("hs_d2_exit")) return resolvedPrice;
 
   const [primaryRow] = await db
     .select({ fillPrice: virtualBotOrders.fillPrice })
@@ -122,7 +126,7 @@ async function alignHedgeScalpingInitialD2FillToD1(params: {
   const driftPct =
     resolvedPrice > 0 ? Math.abs(d1Px - resolvedPrice) / resolvedPrice : 0;
   if (driftPct > 1e-4) {
-    tradingLog("info", "virtual_hs_d2_step0_fill_aligned_to_d1", {
+    tradingLog("info", "virtual_hs_d2_entry_fill_aligned_to_d1", {
       virtualRunId,
       correlationId: p.correlationId,
       resolvedPrice,
@@ -289,6 +293,44 @@ export async function simulateVirtualOrder(params: {
     return { ok: false, error: "virtual_invalid_quantity" };
   }
 
+  const cidLower = (p.correlationId ?? "").toLowerCase();
+  const isHsD2EntryCorrelation =
+    /^hs_d2_step\d+_/i.test(cidLower) && !cidLower.startsWith("hs_d2_exit");
+
+  let hedgeScalpingStrategy = false;
+  if (db) {
+    const [sr] = await db
+      .select({ slug: strategies.slug })
+      .from(strategies)
+      .where(eq(strategies.id, row.strategyId))
+      .limit(1);
+    hedgeScalpingStrategy = isHedgeScalpingStrategySlug(sr?.slug ?? "");
+  }
+
+  if (
+    hedgeScalpingStrategy &&
+    (p.signalAction ?? "entry") === "entry" &&
+    isHsD2EntryCorrelation
+  ) {
+    const [hr] = await db
+      .select({ d1Side: hedgeScalpingVirtualRuns.d1Side })
+      .from(hedgeScalpingVirtualRuns)
+      .where(
+        and(
+          eq(hedgeScalpingVirtualRuns.userId, row.userId),
+          eq(hedgeScalpingVirtualRuns.strategyId, row.strategyId),
+          eq(hedgeScalpingVirtualRuns.status, "active"),
+        ),
+      )
+      .limit(1);
+    if (hr) {
+      const expectedOrderSide = hedgeOpenSide(hedgeScalpingD2Side(hr.d1Side));
+      if (p.side !== expectedOrderSide) {
+        return { ok: false, error: "virtual_hs_d2_side_mismatch_with_d1" };
+      }
+    }
+  }
+
   const signedDelta = p.side === "buy" ? qtyNum : -qtyNum;
   let price = await resolveFillPriceUsd(p);
   if (price == null || !(price > 0)) {
@@ -301,16 +343,6 @@ export async function simulateVirtualOrder(params: {
     strategyId: row.strategyId,
     resolvedPrice: price,
   });
-
-  let hedgeScalpingStrategy = false;
-  if (db) {
-    const [sr] = await db
-      .select({ slug: strategies.slug })
-      .from(strategies)
-      .where(eq(strategies.id, row.strategyId))
-      .limit(1);
-    hedgeScalpingStrategy = isHedgeScalpingStrategySlug(sr?.slug ?? "");
-  }
 
   const now = new Date();
   const internalClientOrderId = generateInternalClientOrderId();

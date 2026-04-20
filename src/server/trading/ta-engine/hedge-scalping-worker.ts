@@ -193,7 +193,6 @@ async function runHedgeScalpingWorkerForTargets(params: {
     return { ok: true, detail: "No hedge-scalping feed targets configured." };
   }
 
-  let anchorMark = 0;
   const minBars = Math.max(TA_CHART_TARGET_CLOSED_BARS, 50);
   const feedSummaries: string[] = [];
   type PreparedFeed = {
@@ -250,10 +249,6 @@ async function runHedgeScalpingWorkerForTargets(params: {
         ? snapshot.lastPrice
         : bar.close;
 
-    if (anchorMark <= 0 && barCloseLive > 0) {
-      anchorMark = barCloseLive;
-    }
-
     prepared.push({
       target: t,
       candles: snapshot.candles,
@@ -264,14 +259,11 @@ async function runHedgeScalpingWorkerForTargets(params: {
     );
   }
 
-  const markForActive = anchorMark > 0 ? anchorMark : prepared[0]?.mark ?? 0;
-  if (markForActive > 0) {
-    try {
-      await processHedgeScalpingActiveRunsPhase(markForActive);
-    } catch (error) {
-      console.error("[HS-POLLER-ERROR]", error);
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
+  try {
+    await processHedgeScalpingActiveRunsPhase();
+  } catch (error) {
+    console.error("[HS-POLLER-ERROR]", error);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 
   for (const p of prepared) {
@@ -289,7 +281,7 @@ async function runHedgeScalpingWorkerForTargets(params: {
   return {
     ok: true,
     detail: `Polled hedge scalping feeds: ${feedSummaries.join(" | ") || "no data yet"}`,
-    livePrice: anchorMark > 0 ? anchorMark : null,
+    livePrice: prepared[0]?.mark ?? null,
   };
 }
 
@@ -346,7 +338,7 @@ export async function runHedgeScalpingWorkerOnce(
       livePrice != null && Number.isFinite(livePrice) && livePrice > 0 ? livePrice : bar.close;
 
     try {
-      await processHedgeScalpingActiveRunsPhase(barCloseLive);
+      await processHedgeScalpingActiveRunsPhase();
       await processHedgeScalpingNewEntriesPhase(candles, barCloseLive, {
         symbol: c.symbol.trim().toUpperCase(),
         resolution: c.resolution.trim().toLowerCase(),

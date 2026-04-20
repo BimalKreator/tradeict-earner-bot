@@ -107,6 +107,10 @@ export async function startVirtualStrategyRunAction(
           status: "active",
           pausedAt: null,
           updatedAt: now,
+          openNetQty: "0",
+          openAvgEntryPrice: null,
+          openSymbol: null,
+          virtualUsedMarginUsd: "0",
           ...(runSettingsJson != null ? { runSettingsJson } : {}),
         },
       });

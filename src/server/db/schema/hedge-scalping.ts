@@ -83,5 +83,8 @@ export const hedgeScalpingVirtualClips = pgTable(
   (t) => [
     index("hedge_scalping_virtual_clips_run_idx").on(t.runId),
     index("hedge_scalping_virtual_clips_run_status_idx").on(t.runId, t.status),
+    uniqueIndex("hedge_scalping_virtual_clips_run_step_active_uidx")
+      .on(t.runId, t.stepLevel)
+      .where(sql`${t.status} = 'active'`),
   ],
 );

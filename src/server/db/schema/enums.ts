@@ -186,4 +186,5 @@ export const botTradeSourceEnum = pgEnum("bot_trade_source", ["bot", "manual"]);
 export const virtualStrategyRunStatusEnum = pgEnum("virtual_strategy_run_status", [
   "active",
   "paused",
+  "completed",
 ]);

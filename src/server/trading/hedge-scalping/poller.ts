@@ -290,6 +290,18 @@ async function executeHedgeScalpingIntentsTx(
       .set({ status: "completed", closedAt: now })
       .where(eq(hedgeScalpingVirtualRuns.runId, runId));
 
+    await tx
+      .update(virtualStrategyRuns)
+      .set({
+        status: "completed",
+        openNetQty: "0",
+        openAvgEntryPrice: null,
+        openSymbol: null,
+        virtualUsedMarginUsd: "0",
+        updatedAt: now,
+      })
+      .where(eq(virtualStrategyRuns.id, paperRunId));
+
     console.log(`${LOG} CLOSE_ALL run=${runId} reason=${reason} netUsd=${totalNet.toFixed(4)}`);
     return;
   }
@@ -338,6 +350,13 @@ async function executeHedgeScalpingIntentsTx(
         `${LOG} CLOSE_D2_CLIP run=${runId} step=${intent.stepLevel} reason=${intent.reason} netUsd=${net.toFixed(4)}`,
       );
     } else if (intent.type === "OPEN_D2_CLIP") {
+      const expectedD2Side = hedgeScalpingD2Side(hedgeRun.d1Side);
+      if (intent.side !== expectedD2Side) {
+        console.error(
+          `${LOG} reject OPEN_D2_CLIP — D2 side ${intent.side} must be opposite D1 ${hedgeRun.d1Side} (expected ${expectedD2Side}) run=${runId} step=${intent.stepLevel}`,
+        );
+        continue;
+      }
       const d1Qty = num(hedgeRun.d1Qty);
       if (!(d1Qty > 0)) {
         console.warn(`${LOG} skip OPEN_D2_CLIP — missing d1_qty run=${runId}`);
@@ -385,9 +404,8 @@ async function processOneActiveRun(params: {
   run: typeof hedgeScalpingVirtualRuns.$inferSelect;
   clips: (typeof hedgeScalpingVirtualClips.$inferSelect)[];
   settingsJson: unknown;
-  currentMarkPrice: number;
 }): Promise<void> {
-  const { run, clips, settingsJson, currentMarkPrice } = params;
+  const { run, clips, settingsJson } = params;
   const cfg = parseHedgeScalpingStrategySettings(settingsJson);
   if (!cfg) {
     console.warn(`${LOG} invalid config — marking run failed run=${run.runId} strategy=${run.strategyId}`);
@@ -401,7 +419,17 @@ async function processOneActiveRun(params: {
   const resolvedSymbol = await db!.transaction(async (tx) =>
     resolveHedgeScalpingTradingSymbol(tx, run.userId, run.strategyId, cfg),
   );
-  const mark = await hedgeScalpingMarkUsdOrFallback(resolvedSymbol, currentMarkPrice);
+  const sym = resolvedSymbol?.trim();
+  if (!sym) {
+    console.warn(`${LOG} skip active run — could not resolve symbol run=${run.runId}`);
+    return;
+  }
+  const markPx = await fetchDeltaIndiaTickerMarkPrice({ symbol: sym });
+  if (markPx == null || !Number.isFinite(markPx) || !(markPx > 0)) {
+    console.warn(`${LOG} skip active run — mark unavailable symbol=${sym} run=${run.runId}`);
+    return;
+  }
+  const mark = markPx;
   const entry = num(run.d1EntryPrice);
   const prevMax = num(run.maxFavorablePrice);
   const merged = mergeMaxFavorable(run.d1Side, prevMax, mark);
@@ -522,14 +550,11 @@ function strategyMatchesFeedFilter(
 
 /**
  * Updates all active hedge-scalping virtual runs (D1/D2 math, marks, intents). Safe to call once per worker tick.
+ * Each run uses only `fetchDeltaIndiaTickerMarkPrice` for its resolved venue symbol (no cross-symbol mark).
  */
-export async function processHedgeScalpingActiveRunsPhase(currentMarkPrice: number): Promise<void> {
+export async function processHedgeScalpingActiveRunsPhase(): Promise<void> {
   if (!db) {
     console.warn(`${LOG} skip active runs — database not configured`);
-    return;
-  }
-  if (!Number.isFinite(currentMarkPrice) || currentMarkPrice <= 0) {
-    console.warn(`${LOG} skip active runs — invalid mark=${String(currentMarkPrice)}`);
     return;
   }
 
@@ -575,7 +600,6 @@ export async function processHedgeScalpingActiveRunsPhase(currentMarkPrice: numb
         run,
         clips,
         settingsJson,
-        currentMarkPrice,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -653,6 +677,12 @@ export async function processHedgeScalpingNewEntriesPhase(
 
       const d1Side = sig;
       const d2Side = hedgeScalpingD2Side(d1Side);
+      if (hedgeOpenSide(d1Side) === hedgeOpenSide(d2Side)) {
+        console.error(
+          `${LOG} NEW_RUN reject — D1/D2 would use the same order side (hedge broken) user=${userId} strategy=${strat.id}`,
+        );
+        continue;
+      }
       const now = new Date();
 
       try {
@@ -782,6 +812,6 @@ export async function pollHedgeScalpingVirtualTrades(
   currentMarkPrice: number,
   feedFilter: HedgeScalpingStrategyFeedFilter | null = null,
 ): Promise<void> {
-  await processHedgeScalpingActiveRunsPhase(currentMarkPrice);
+  await processHedgeScalpingActiveRunsPhase();
   await processHedgeScalpingNewEntriesPhase(currentCandles, currentMarkPrice, feedFilter);
 }
