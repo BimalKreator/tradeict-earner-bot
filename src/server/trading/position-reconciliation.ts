@@ -1,12 +1,21 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
-import { botPositions, exchangeConnections, livePositionReconciliations } from "@/server/db/schema";
+import {
+  botPositions,
+  exchangeConnections,
+  livePositionReconciliations,
+  userStrategyRuns,
+} from "@/server/db/schema";
 
 import { resolveExchangeTradingAdapter } from "./adapters/resolve-exchange-adapter";
 import { tradingLog } from "./trading-log";
 
 const QTY_EPS = 1e-8;
+const AUTO_FLATTEN_CONFIRMATIONS_REQUIRED = Math.max(
+  1,
+  Number(process.env.POSITION_RECONCILIATION_AUTO_FLATTEN_CONFIRMATIONS ?? "2") || 2,
+);
 
 function num(raw: string | null | undefined): number {
   const n = Number(String(raw ?? "").trim());
@@ -74,6 +83,112 @@ async function upsertSnapshot(params: {
       reconciled_at = EXCLUDED.reconciled_at,
       updated_at = NOW()
   `);
+}
+
+async function getPreviousReconciliationSnapshot(params: {
+  exchangeConnectionId: string;
+  symbol: string;
+}): Promise<{
+  status: string | null;
+  localNetQty: number;
+  exchangeNetQty: number;
+  rawPayload: Record<string, unknown> | null;
+} | null> {
+  if (!db) return null;
+  const [row] = await db
+    .select({
+      status: livePositionReconciliations.status,
+      localNetQty: livePositionReconciliations.localNetQty,
+      exchangeNetQty: livePositionReconciliations.exchangeNetQty,
+      rawPayload: livePositionReconciliations.rawPayload,
+    })
+    .from(livePositionReconciliations)
+    .where(
+      and(
+        eq(livePositionReconciliations.exchangeConnectionId, params.exchangeConnectionId),
+        eq(livePositionReconciliations.symbol, params.symbol),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  return {
+    status: row.status ?? null,
+    localNetQty: num(String(row.localNetQty ?? "0")),
+    exchangeNetQty: num(String(row.exchangeNetQty ?? "0")),
+    rawPayload:
+      row.rawPayload && typeof row.rawPayload === "object"
+        ? (row.rawPayload as Record<string, unknown>)
+        : null,
+  };
+}
+
+async function resolveRunIdForSubscription(subscriptionId: string): Promise<string | null> {
+  if (!db) return null;
+  const [run] = await db
+    .select({ runId: userStrategyRuns.id })
+    .from(userStrategyRuns)
+    .where(eq(userStrategyRuns.subscriptionId, subscriptionId))
+    .orderBy(desc(userStrategyRuns.updatedAt))
+    .limit(1);
+  return run?.runId ?? null;
+}
+
+async function autoFlattenLocalPosition(params: {
+  userId: string;
+  exchangeConnectionId: string;
+  symbol: string;
+  oldQty: number;
+}): Promise<void> {
+  if (!db) return;
+  const [row] = await db
+    .select({
+      id: botPositions.id,
+      subscriptionId: botPositions.subscriptionId,
+      netQtyRaw: botPositions.netQuantity,
+      metadata: botPositions.metadata,
+    })
+    .from(botPositions)
+    .where(
+      and(
+        eq(botPositions.userId, params.userId),
+        eq(botPositions.exchangeConnectionId, params.exchangeConnectionId),
+        eq(botPositions.symbol, params.symbol),
+      ),
+    )
+    .limit(1);
+  if (!row) return;
+
+  const currentQty = num(String(row.netQtyRaw ?? "0"));
+  if (Math.abs(currentQty) <= QTY_EPS) return;
+
+  const runId = await resolveRunIdForSubscription(row.subscriptionId);
+  const prevMetadata =
+    row.metadata && typeof row.metadata === "object"
+      ? (row.metadata as Record<string, unknown>)
+      : {};
+  const flattenedAtIso = new Date().toISOString();
+  await db
+    .update(botPositions)
+    .set({
+      netQuantity: "0",
+      averageEntryPrice: null,
+      metadata: {
+        ...prevMetadata,
+        reconciliation_auto_flattened_at: flattenedAtIso,
+        reconciliation_auto_flattened_old_qty: String(currentQty),
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(botPositions.id, row.id));
+
+  tradingLog("warn", "position_auto_flattened_from_reconciliation", {
+    userId: params.userId,
+    runId,
+    symbol: params.symbol,
+    oldQty: currentQty,
+    newQty: 0,
+    exchangeConnectionId: params.exchangeConnectionId,
+  });
 }
 
 async function reconcileOneConnection(
@@ -179,19 +294,50 @@ async function reconcileOneConnection(
     const localQty = localBySymbol.get(symbol) ?? 0;
     const exchangeQty = exchangeBySymbol.get(symbol) ?? 0;
     const mismatch = Math.abs(localQty - exchangeQty) > QTY_EPS;
+    const prev = await getPreviousReconciliationSnapshot({
+      exchangeConnectionId: connection.id,
+      symbol,
+    });
+    const prevStreakRaw =
+      prev?.rawPayload &&
+      typeof prev.rawPayload.zero_exchange_confirmations === "number"
+        ? prev.rawPayload.zero_exchange_confirmations
+        : 0;
+    const prevStreak = Number.isFinite(prevStreakRaw) ? Math.max(0, Math.floor(prevStreakRaw)) : 0;
+    const confirmsExchangeZeroNow = Math.abs(exchangeQty) <= QTY_EPS && Math.abs(localQty) > QTY_EPS;
+    const zeroExchangeConfirmations = confirmsExchangeZeroNow ? prevStreak + 1 : 0;
+
+    if (
+      confirmsExchangeZeroNow &&
+      zeroExchangeConfirmations >= AUTO_FLATTEN_CONFIRMATIONS_REQUIRED
+    ) {
+      await autoFlattenLocalPosition({
+        userId: connection.userId,
+        exchangeConnectionId: connection.id,
+        symbol,
+        oldQty: localQty,
+      });
+      localBySymbol.set(symbol, 0);
+    }
+
+    const localQtyAfterFlatten = localBySymbol.get(symbol) ?? localQty;
+    const mismatchAfterFlatten = Math.abs(localQtyAfterFlatten - exchangeQty) > QTY_EPS;
     await upsertSnapshot({
       userId: connection.userId,
       exchangeConnectionId: connection.id,
       symbol,
-      localNetQty: localQty,
+      localNetQty: localQtyAfterFlatten,
       exchangeNetQty: exchangeQty,
-      mismatch,
+      mismatch: mismatchAfterFlatten,
       status: "ok",
       errorMessage: null,
-      rawPayload: mismatch
+      rawPayload: mismatchAfterFlatten
         ? {
-            local_net_qty: localQty,
+            local_net_qty: localQtyAfterFlatten,
             exchange_net_qty: exchangeQty,
+            zero_exchange_confirmations: zeroExchangeConfirmations,
+            auto_flatten_confirmations_required:
+              AUTO_FLATTEN_CONFIRMATIONS_REQUIRED,
           }
         : null,
       reconciledAt,

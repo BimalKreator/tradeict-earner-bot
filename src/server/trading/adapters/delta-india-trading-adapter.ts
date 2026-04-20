@@ -163,6 +163,16 @@ function isDeltaUnsupportedLeverageError(errorText: string): boolean {
   return s.includes("\"code\":\"unsupported\"") || s.includes("unsupported");
 }
 
+function asPositiveFinite(raw: unknown): number | null {
+  const n =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Number(raw.trim())
+        : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function buildPlaceOrderJsonBody(
   productId: number,
   input: PlaceOrderInput,
@@ -297,6 +307,52 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     return { ok: true };
   }
 
+  private async fetchProductLeverageBoundsById(
+    productId: number,
+  ): Promise<{ maxLeverage: number | null; minLeverage: number | null }> {
+    const r = await this.signedFetch("GET", `/v2/products/${productId}`, "", "");
+    if (!r.ok || !deltaJsonSuccess(r.json)) return { maxLeverage: null, minLeverage: null };
+    const result = r.json.result;
+    if (!result || typeof result !== "object") return { maxLeverage: null, minLeverage: null };
+    const row = result as Record<string, unknown>;
+    const maxLeverage =
+      asPositiveFinite(row.max_leverage) ??
+      asPositiveFinite(row.maximum_leverage) ??
+      asPositiveFinite(row.maxLeverage) ??
+      null;
+    const minLeverage =
+      asPositiveFinite(row.min_leverage) ??
+      asPositiveFinite(row.minimum_leverage) ??
+      asPositiveFinite(row.minLeverage) ??
+      null;
+    return { maxLeverage, minLeverage };
+  }
+
+  private async resolveSupportedLeverageFallback(
+    productId: number,
+    symbol: string,
+    requestedLev: number,
+  ): Promise<number | null> {
+    const byIdBounds = await this.fetchProductLeverageBoundsById(productId);
+    const symbolBounds = await fetchDeltaIndiaProductLeverageBounds(symbol);
+    const maxLev =
+      byIdBounds.maxLeverage ?? symbolBounds.maxLeverage ?? null;
+    if (maxLev != null) {
+      const bounded = Math.max(1, Math.min(Math.floor(maxLev), requestedLev));
+      if (bounded >= 1 && bounded !== requestedLev) return bounded;
+    }
+
+    // Last-resort dynamic fallback tiers when metadata is missing/incomplete.
+    const tiers = [100, 75, 50, 40, 30, 25, 20, 15, 10, 8, 5, 4, 3, 2, 1]
+      .filter((t) => t < requestedLev);
+    for (const t of tiers) {
+      const test = await this.setProductOrderLeverage(productId, t);
+      if (test.ok) return t;
+      if (!isDeltaUnsupportedLeverageError(test.error)) break;
+    }
+    return null;
+  }
+
   protected async signedFetch(
     method: string,
     path: string,
@@ -375,11 +431,12 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       if (lev != null) {
         let levRes = await this.setProductOrderLeverage(product.productId, lev);
         if (!levRes.ok && isDeltaUnsupportedLeverageError(levRes.error)) {
-          const bounds = await fetchDeltaIndiaProductLeverageBounds(input.symbol);
-          const maxLev = bounds.maxLeverage;
-          const fallbackLev =
-            maxLev != null ? Math.max(1, Math.min(Math.floor(maxLev), lev)) : null;
-          if (fallbackLev != null && fallbackLev !== lev) {
+          const fallbackLev = await this.resolveSupportedLeverageFallback(
+            product.productId,
+            input.symbol,
+            lev,
+          );
+          if (fallbackLev != null && fallbackLev >= 1) {
             const fallbackRes = await this.setProductOrderLeverage(product.productId, fallbackLev);
             if (fallbackRes.ok) {
               console.warn(
@@ -397,7 +454,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
             return {
               ok: false,
               error:
-                `Delta leverage unsupported for requested=${lev}; no fallback leverage metadata found for ${input.symbol}`,
+                `Delta leverage unsupported for requested=${lev}; no supported fallback leverage found for ${input.symbol}`,
             };
           }
         }

@@ -34,6 +34,16 @@ function resolveLiveExchangeConnectionIds(
   r: EligibleStrategyRunRow,
   signal: StrategyExecutionSignal,
 ): string[] {
+  const hsLeg = resolveHedgeScalpingLegRouting(signal);
+  if (hsLeg === "d1") {
+    const primary = r.primaryExchangeConnectionId ?? r.exchangeConnectionId;
+    return primary ? [primary] : [];
+  }
+  if (hsLeg === "d2") {
+    // Strict HS architecture: D2 must route to secondary only.
+    return r.secondaryExchangeConnectionId ? [r.secondaryExchangeConnectionId] : [];
+  }
+
   const venue = signal.exchangeVenue;
   if (venue === "primary" || venue === "secondary") {
     const one = resolveLiveExchangeConnectionId(r, venue);
@@ -59,6 +69,26 @@ function resolveLiveExchangeConnectionIds(
   add(r.secondaryExchangeConnectionId);
   add(r.exchangeConnectionId);
   return ids;
+}
+
+function resolveHedgeScalpingLegRouting(
+  signal: StrategyExecutionSignal,
+): "d1" | "d2" | null {
+  const md =
+    signal.metadata && typeof signal.metadata === "object"
+      ? (signal.metadata as Record<string, unknown>)
+      : null;
+  const source = typeof md?.source === "string" ? md.source.trim().toLowerCase() : "";
+  if (source !== "hedge_scalping_poller") return null;
+
+  const leg = typeof md?.leg === "string" ? md.leg.trim().toLowerCase() : "";
+  if (leg.startsWith("d1")) return "d1";
+  if (leg.startsWith("d2")) return "d2";
+
+  const cid = signal.correlationId.trim().toLowerCase();
+  if (cid.startsWith("hs_d1_")) return "d1";
+  if (cid.startsWith("hs_d2_")) return "d2";
+  return null;
 }
 
 function mergeSignalMetadata(
