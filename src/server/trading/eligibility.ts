@@ -10,6 +10,8 @@ import {
 } from "@/server/db/schema";
 import { getGlobalEmergencyStopActive } from "@/server/platform/global-emergency-stop";
 
+import { resolveRawLeverageStringForExecution } from "./execution-preferences";
+
 export type EligibleStrategyRunRow = {
   userId: string;
   subscriptionId: string;
@@ -24,6 +26,8 @@ export type EligibleStrategyRunRow = {
   leverage: string;
   /** True when run leverage in DB exceeded strategy max and was clamped for execution. */
   leverageCapped?: boolean;
+  runSettingsJson: unknown;
+  recommendedCapitalInr: string | null;
 };
 
 function parsePositiveNum(raw: string | null | undefined): number | null {
@@ -144,6 +148,8 @@ export async function findEligibleRunsForStrategyExecution(
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       strategyMaxLeverage: strategies.maxLeverage,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
+      recommendedCapitalInr: strategies.recommendedCapitalInr,
     })
     .from(userStrategyRuns)
     .innerJoin(
@@ -166,8 +172,15 @@ export async function findEligibleRunsForStrategyExecution(
     .where(and(...filters));
 
   return rows.map((r) => {
+    const rawLev = resolveRawLeverageStringForExecution({
+      runSettingsJson: r.runSettingsJson,
+      columnLeverage: r.leverage != null ? String(r.leverage) : null,
+      strategyMaxLeverage:
+        r.strategyMaxLeverage != null ? String(r.strategyMaxLeverage) : null,
+    });
+    const levIn = rawLev.trim() !== "" ? rawLev : String(r.leverage);
     const { leverage, capped } = effectiveLeverageForExecution(
-      String(r.leverage),
+      levIn,
       r.strategyMaxLeverage != null ? String(r.strategyMaxLeverage) : null,
     );
     return {
@@ -180,6 +193,9 @@ export async function findEligibleRunsForStrategyExecution(
       secondaryExchangeConnectionId: r.secondaryExchangeConnectionId,
       capitalToUseInr: String(r.capitalToUseInr),
       leverage,
+      runSettingsJson: r.runSettingsJson,
+      recommendedCapitalInr:
+        r.recommendedCapitalInr != null ? String(r.recommendedCapitalInr) : null,
       ...(capped ? { leverageCapped: true } : {}),
     };
   });
@@ -229,8 +245,10 @@ export async function assertRunStillEligibleForExecution(
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       strategyMaxLeverage: strategies.maxLeverage,
+      recommendedCapitalInr: strategies.recommendedCapitalInr,
       primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
       secondaryExchangeConnectionId: userStrategyRuns.secondaryExchangeConnectionId,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
     })
     .from(userStrategyRuns)
     .innerJoin(
@@ -359,10 +377,20 @@ export async function assertRunStillEligibleForExecution(
     return { ok: false, reason: "exchange_not_ready" };
   }
 
+  const rawLev = resolveRawLeverageStringForExecution({
+    runSettingsJson: r.runSettingsJson,
+    columnLeverage: r.leverage != null ? String(r.leverage) : null,
+    strategyMaxLeverage:
+      r.strategyMaxLeverage != null ? String(r.strategyMaxLeverage) : null,
+  });
+  const levIn = rawLev.trim() !== "" ? rawLev : String(r.leverage);
   const levEff = effectiveLeverageForExecution(
-    String(r.leverage),
+    levIn,
     r.strategyMaxLeverage != null ? String(r.strategyMaxLeverage) : null,
   );
+
+  const recommendedCapitalInr =
+    r.recommendedCapitalInr != null ? String(r.recommendedCapitalInr) : null;
 
   return {
     ok: true,
@@ -376,6 +404,8 @@ export async function assertRunStillEligibleForExecution(
       secondaryExchangeConnectionId: r.secondaryExchangeConnectionId,
       capitalToUseInr: String(r.capitalToUseInr),
       leverage: levEff.leverage,
+      runSettingsJson: r.runSettingsJson,
+      recommendedCapitalInr,
       ...(levEff.capped ? { leverageCapped: true } : {}),
     },
   };

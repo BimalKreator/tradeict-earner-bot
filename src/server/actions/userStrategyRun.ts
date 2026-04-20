@@ -362,4 +362,88 @@ export async function inactivateStrategyRunAction(
   return { ok: true, message: "Strategy trading is turned off for this run." };
 }
 
+/**
+ * User-initiated unsubscribe: stops the bot (run inactive) and soft-removes the subscription
+ * so it no longer appears under My strategies.
+ */
+export async function unsubscribeStrategyRunAction(
+  _prev: StrategyRunActionState,
+  formData: FormData,
+): Promise<StrategyRunActionState> {
+  let userId: string;
+  try {
+    userId = await requireUserId();
+  } catch {
+    return { ok: false, message: "Please sign in to continue." };
+  }
+
+  const parsed = subscriptionIdSchema.safeParse(
+    formData.get("subscriptionId"),
+  );
+  if (!parsed.success) {
+    return { ok: false, message: "Invalid subscription." };
+  }
+  const subscriptionId = parsed.data;
+
+  const database = requireDb();
+  const now = new Date();
+
+  const [row] = await database
+    .select({
+      subStatus: userStrategySubscriptions.status,
+      runId: userStrategyRuns.id,
+      userApproval: users.approvalStatus,
+    })
+    .from(userStrategySubscriptions)
+    .innerJoin(
+      userStrategyRuns,
+      eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+    )
+    .innerJoin(users, eq(userStrategySubscriptions.userId, users.id))
+    .where(
+      and(
+        eq(userStrategySubscriptions.id, subscriptionId),
+        eq(userStrategySubscriptions.userId, userId),
+        isNull(userStrategySubscriptions.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  if (!row) {
+    return { ok: false, message: "Subscription not found." };
+  }
+
+  if (row.userApproval !== "approved") {
+    return { ok: false, message: "Your account is not approved for this action." };
+  }
+
+  if (row.subStatus === "cancelled") {
+    return { ok: true, message: "This strategy is already removed from your account." };
+  }
+
+  await database.transaction(async (tx) => {
+    await tx
+      .update(userStrategyRuns)
+      .set({
+        status: "inactive",
+        pausedAt: now,
+        lastStateReason: "user_unsubscribe",
+        updatedAt: now,
+      })
+      .where(eq(userStrategyRuns.id, row.runId));
+
+    await tx
+      .update(userStrategySubscriptions)
+      .set({
+        status: "cancelled",
+        deletedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(userStrategySubscriptions.id, subscriptionId));
+  });
+
+  revalidatePath("/user/my-strategies");
+  return { ok: true, message: "You are unsubscribed — this strategy will no longer appear here." };
+}
+
 export { initialState as strategyRunActionInitialState };

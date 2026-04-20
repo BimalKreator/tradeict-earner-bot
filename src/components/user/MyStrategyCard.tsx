@@ -1,16 +1,17 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { formatDateTimeIST } from "@/lib/access-remaining-days-ist";
 import { formatInrAmount } from "@/lib/format-inr";
 import { runStatusLabel } from "@/lib/my-strategy-run-labels";
 import {
   activateStrategyRunAction,
-  inactivateStrategyRunAction,
   pauseStrategyRunAction,
   strategyRunActionInitialState,
+  unsubscribeStrategyRunAction,
 } from "@/server/actions/userStrategyRun";
 import type { MyStrategyRow } from "@/server/queries/user-my-strategies";
 
@@ -21,7 +22,7 @@ export type MyStrategyCardViewModel = MyStrategyRow & {
   remainingCalendarDaysIST: number;
   canActivate: boolean;
   canPause: boolean;
-  canInactivate: boolean;
+  canUnsubscribe: boolean;
   activateButtonLabel: string;
   settingsMissing: boolean;
   showRenewCta: boolean;
@@ -52,7 +53,9 @@ function runBadgeClass(status: MyStrategyRow["runStatus"]): string {
 }
 
 export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
+  const router = useRouter();
   const msgRef = useRef<HTMLParagraphElement>(null);
+  const [unsubModalOpen, setUnsubModalOpen] = useState(false);
   const [activateState, activateAction, activatePending] = useActionState(
     activateStrategyRunAction,
     strategyRunActionInitialState,
@@ -61,24 +64,24 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
     pauseStrategyRunAction,
     strategyRunActionInitialState,
   );
-  const [inactivateState, inactivateAction, inactivatePending] = useActionState(
-    inactivateStrategyRunAction,
+  const [unsubState, unsubAction, unsubPending] = useActionState(
+    unsubscribeStrategyRunAction,
     strategyRunActionInitialState,
   );
 
   const feedback =
     activateState.message ||
     pauseState.message ||
-    inactivateState.message ||
+    unsubState.message ||
     "";
   const feedbackOk =
     activateState.ok === true ||
     pauseState.ok === true ||
-    inactivateState.ok === true
+    unsubState.ok === true
       ? true
       : activateState.ok === false ||
           pauseState.ok === false ||
-          inactivateState.ok === false
+          unsubState.ok === false
         ? false
         : null;
 
@@ -90,13 +93,78 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
     }
   }, [feedback]);
 
+  useEffect(() => {
+    if (unsubState.ok === true) {
+      setUnsubModalOpen(false);
+    }
+    if (
+      activateState.ok === true ||
+      pauseState.ok === true ||
+      unsubState.ok === true
+    ) {
+      router.refresh();
+    }
+  }, [activateState.ok, pauseState.ok, unsubState.ok, router]);
+
   const settingsHref = `/user/my-strategies/${encodeURIComponent(row.slug)}/settings`;
   const renewHref = `/user/strategies/${encodeURIComponent(row.slug)}/checkout?intent=renew`;
 
-  const anyPending = activatePending || pausePending || inactivatePending;
+  const anyPending = activatePending || pausePending || unsubPending;
 
   return (
-    <GlassPanel className="flex h-full flex-col overflow-hidden border border-white/[0.08] bg-gradient-to-b from-white/[0.05] to-transparent">
+    <GlassPanel className="relative flex h-full flex-col overflow-hidden border border-white/[0.08] bg-gradient-to-b from-white/[0.05] to-transparent">
+      {unsubModalOpen ? (
+        <div
+          className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          role="presentation"
+          onClick={() => !unsubPending && setUnsubModalOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`unsub-title-${row.subscriptionId}`}
+            className="w-full max-w-md rounded-2xl border border-white/[0.12] bg-[#0b1220] p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              id={`unsub-title-${row.subscriptionId}`}
+              className="font-[family-name:var(--font-display)] text-lg font-semibold text-white"
+            >
+              Remove this strategy?
+            </h3>
+            <p className="mt-2 text-sm text-slate-300">
+              This unsubscribes you from <span className="font-medium text-white">{row.name}</span>.
+              The bot will stop taking new trades, and this card will disappear from My strategies.
+              Existing exchange positions are not auto-closed here — close them on Delta if needed.
+            </p>
+            {unsubState.ok === false && unsubState.message ? (
+              <p className="mt-3 text-sm text-red-200/95" role="alert">
+                {unsubState.message}
+              </p>
+            ) : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                disabled={unsubPending}
+                onClick={() => setUnsubModalOpen(false)}
+                className="rounded-xl border border-white/[0.15] bg-white/[0.06] px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/[0.1] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <form action={unsubAction} className="inline">
+                <input type="hidden" name="subscriptionId" value={row.subscriptionId} />
+                <button
+                  type="submit"
+                  disabled={unsubPending}
+                  className="rounded-xl border border-red-500/50 bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+                >
+                  {unsubPending ? "Removing…" : "Remove / Unsubscribe"}
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-1 flex-col gap-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-[var(--text-primary)]">
@@ -222,7 +290,11 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
           </div>
         ) : null}
 
-        <div className="mt-auto flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap">
+        <div className="mt-auto space-y-2 pt-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            Quick actions
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           {row.canActivate ? (
             <form action={activateAction} className="min-w-0 flex-1">
               <input type="hidden" name="subscriptionId" value={row.subscriptionId} />
@@ -243,23 +315,23 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
               <button
                 type="submit"
                 disabled={anyPending}
-                className="w-full rounded-xl border border-white/[0.12] bg-black/30 py-2.5 text-sm font-medium text-[var(--text-primary)] transition hover:bg-black/45 disabled:opacity-50"
+                className="w-full rounded-xl border border-amber-500/40 bg-amber-500/15 py-2.5 text-sm font-medium text-amber-100 transition hover:bg-amber-500/25 disabled:opacity-50"
               >
-                {pausePending ? "Pausing…" : "Pause"}
+                {pausePending ? "Pausing…" : "Pause Strategy"}
               </button>
             </form>
           ) : null}
-          {row.canInactivate ? (
-            <form action={inactivateAction} className="min-w-0 flex-1">
-              <input type="hidden" name="subscriptionId" value={row.subscriptionId} />
+          {row.canUnsubscribe ? (
+            <div className="min-w-0 flex-1">
               <button
-                type="submit"
+                type="button"
                 disabled={anyPending}
-                className="w-full rounded-xl border border-slate-500/35 bg-slate-500/10 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-slate-500/20 disabled:opacity-50"
+                onClick={() => setUnsubModalOpen(true)}
+                className="w-full rounded-xl border border-red-500/40 bg-red-500/10 py-2.5 text-sm font-medium text-red-100 transition hover:bg-red-500/20 disabled:opacity-50"
               >
-                {inactivatePending ? "Turning off…" : "Inactivate"}
+                Remove / Unsubscribe
               </button>
-            </form>
+            </div>
           ) : null}
           <Link
             href={settingsHref}
@@ -275,6 +347,7 @@ export function MyStrategyCard({ row }: { row: MyStrategyCardViewModel }) {
               Renew
             </Link>
           ) : null}
+          </div>
         </div>
       </div>
     </GlassPanel>

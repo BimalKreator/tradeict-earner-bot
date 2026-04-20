@@ -1,7 +1,11 @@
+import { contractsFromCollateralLeverageAndContractValue } from "@/server/exchange/delta-contract-sizing";
+import { fetchDeltaIndiaProductContractValue } from "@/server/exchange/delta-product-resolver";
+
 import {
   findEligibleRunsForStrategyExecution,
   type EligibleStrategyRunRow,
 } from "./eligibility";
+import { resolveFinalAllocatedCapitalUsd } from "./execution-preferences";
 import { findEligibleVirtualRunsForStrategyExecution } from "./virtual-eligibility";
 import { enqueueStrategySignalJobs } from "./execution-queue";
 import { normalizeStrategySignalAction } from "./signal-action";
@@ -69,10 +73,50 @@ export async function dispatchStrategyExecutionSignal(
   ]);
 
   const venue = signal.exchangeVenue;
+
+  let contractValueUsd: number | null = null;
+  if (signalAction === "entry" && liveRuns.length > 0) {
+    try {
+      contractValueUsd = await fetchDeltaIndiaProductContractValue(signal.symbol);
+    } catch {
+      contractValueUsd = null;
+    }
+  }
+
   const livePayloads: TradingExecutionJobPayload[] = [];
   for (const r of liveRuns) {
     const exchangeConnectionId = resolveLiveExchangeConnectionId(r, venue);
     if (exchangeConnectionId == null) continue;
+
+    let quantity = signal.quantity.trim();
+    if (
+      signalAction === "entry" &&
+      contractValueUsd != null &&
+      contractValueUsd > 0
+    ) {
+      const capitalUsd = resolveFinalAllocatedCapitalUsd({
+        runSettingsJson: r.runSettingsJson,
+        columnCapital: r.capitalToUseInr,
+        recommendedCapitalInr: r.recommendedCapitalInr,
+      });
+      const lev = Number(r.leverage);
+      if (
+        capitalUsd != null &&
+        capitalUsd > 0 &&
+        Number.isFinite(lev) &&
+        lev > 0
+      ) {
+        const contracts = contractsFromCollateralLeverageAndContractValue({
+          collateralUsd: capitalUsd,
+          leverage: lev,
+          contractValueUsd,
+        });
+        if (contracts > 0) {
+          quantity = String(contracts);
+        }
+      }
+    }
+
     livePayloads.push({
       kind: "execute_strategy_signal",
       executionMode: "live",
@@ -81,7 +125,7 @@ export async function dispatchStrategyExecutionSignal(
       symbol: signal.symbol,
       side: signal.side,
       orderType: signal.orderType,
-      quantity: signal.quantity,
+      quantity,
       limitPrice: signal.limitPrice ?? null,
       targetUserId: r.userId,
       subscriptionId: r.subscriptionId,

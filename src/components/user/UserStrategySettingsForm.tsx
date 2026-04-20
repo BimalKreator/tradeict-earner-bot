@@ -298,11 +298,23 @@ export function UserStrategySettingsForm({
 
       <GlassPanel className="space-y-4 border border-white/[0.08]">
         <div>
+          <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Your capital allocation & leverage
+          </h2>
+          <p className="mt-2 text-xs leading-relaxed text-[var(--text-muted)]">
+            <strong className="text-[var(--text-primary)]">Allocated capital (USD)</strong> and{" "}
+            <strong className="text-[var(--text-primary)]">leverage</strong> are saved on your strategy
+            run and used to size Delta orders (contract count from collateral × leverage ÷ contract
+            value). Strategy defaults are only fallbacks when you leave a field unset; the catalog
+            minimum and max leverage still apply as guardrails.
+          </p>
+        </div>
+        <div>
           <label
             htmlFor="capitalToUseInr"
             className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
           >
-            Capital to use (USD)
+            Allocated capital (USD)
           </label>
           <input
             id="capitalToUseInr"
@@ -324,6 +336,11 @@ export function UserStrategySettingsForm({
               {capitalErr}
             </p>
           ) : null}
+          <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-muted)]">
+            Optional advanced override: <code className="text-sky-300/90">run_settings_json.execution.allocatedCapitalUsd</code>{" "}
+            or <code className="text-sky-300/90">capitalPercentage</code> (0–100 of the strategy
+            recommended amount) if you manage runs via API.
+          </p>
         </div>
 
         <div className={maxLevNum == null ? "opacity-60" : ""}>
@@ -331,7 +348,7 @@ export function UserStrategySettingsForm({
             htmlFor="leverage"
             className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]"
           >
-            Leverage
+            Leverage (×)
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
             <div className="flex min-h-11 w-full flex-1 items-center py-1 sm:max-w-md">

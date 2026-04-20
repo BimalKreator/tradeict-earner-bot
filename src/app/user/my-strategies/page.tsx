@@ -72,12 +72,10 @@ function toViewModel(
   const canActivate =
     runOk && USER_CAN_ACTIVATE_FROM.has(row.runStatus);
   const canPause = runOk && row.runStatus === "active";
-  const canInactivate =
-    runOk &&
-    (row.runStatus === "active" || row.runStatus === "paused_by_user");
+  const canUnsubscribe = row.subscriptionStatus !== "cancelled";
   const activateButtonLabel = RESUME_BUTTON_STATUSES.has(row.runStatus)
-    ? "Resume"
-    : "Activate";
+    ? "Resume Strategy"
+    : "Activate Strategy";
   const settingsMissing = runOk && settingsFieldsMissing(row);
   const showRenewCta = expired || remainingCalendarDaysIST <= 7;
 
@@ -87,7 +85,7 @@ function toViewModel(
     remainingCalendarDaysIST,
     canActivate,
     canPause,
-    canInactivate,
+    canUnsubscribe,
     activateButtonLabel,
     settingsMissing,
     showRenewCta,

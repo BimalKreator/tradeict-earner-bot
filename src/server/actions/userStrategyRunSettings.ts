@@ -10,7 +10,10 @@ import {
   createUserStrategyRunSettingsSchema,
   type UserStrategySettingsConstraints,
 } from "@/lib/user-strategy-settings-schema";
-import { withHedgeScalpingRunSymbol } from "@/lib/user-strategy-run-settings-json";
+import {
+  withExecutionPreferences,
+  withHedgeScalpingRunSymbol,
+} from "@/lib/user-strategy-run-settings-json";
 import { requireUserId } from "@/server/auth/require-user";
 import { logAuditEvent } from "@/server/audit/audit-logger";
 import type { Database } from "@/server/db";
@@ -256,6 +259,22 @@ export async function updateUserStrategySettingsAction(
     newLeverageStr = toNumericString(lev);
   }
 
+  const levForJson =
+    newLeverageStr != null && String(newLeverageStr).trim() !== ""
+      ? Number(String(newLeverageStr).replace(/,/g, "").trim())
+      : oldLeverage != null && String(oldLeverage).trim() !== ""
+        ? Number(String(oldLeverage).replace(/,/g, "").trim())
+        : NaN;
+  const nextRunSettingsJson = withExecutionPreferences(
+    runSettingsPatch ?? row.runSettingsJson,
+    {
+      allocatedCapitalUsd: cap,
+      ...(Number.isFinite(levForJson) && levForJson > 0
+        ? { leverage: levForJson }
+        : {}),
+    },
+  );
+
   const now = new Date();
 
   await database.transaction(async (tx) => {
@@ -266,7 +285,7 @@ export async function updateUserStrategySettingsAction(
         leverage: newLeverageStr,
         primaryExchangeConnectionId: primaryNext,
         secondaryExchangeConnectionId: secondaryNext,
-        ...(runSettingsPatch != null ? { runSettingsJson: runSettingsPatch } : {}),
+        runSettingsJson: nextRunSettingsJson,
         updatedAt: now,
       })
       .where(eq(userStrategyRuns.id, row.runId));

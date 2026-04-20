@@ -5,6 +5,7 @@ const navItems = [
   { href: "/user/reports", label: "Reports" },
   { href: "/user/strategies", label: "Strategies" },
   { href: "/user/virtual-trading", label: "Virtual trading" },
+  { href: "/user/live-trades", label: "Live trades" },
   { href: "/user/my-strategies", label: "My strategies" },
   { href: "/user/transactions", label: "Transactions" },
   { href: "/user/funds", label: "Funds" },
