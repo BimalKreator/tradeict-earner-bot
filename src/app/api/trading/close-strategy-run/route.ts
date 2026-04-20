@@ -631,6 +631,7 @@ async function closeRealRun(
       symbol: botPositions.symbol,
       netQty: botPositions.netQuantity,
       exchangeConnectionId: botPositions.exchangeConnectionId,
+      metadata: botPositions.metadata,
     })
     .from(botPositions)
     .where(
@@ -676,11 +677,13 @@ async function closeRealRun(
           netQuantity: "0",
           averageEntryPrice: null,
           updatedAt: new Date(),
-          metadata: sql`coalesce(${botPositions.metadata}, '{}'::jsonb) || jsonb_build_object(
-            'ghost_position_flushed_at', now(),
-            'ghost_position_previous_net_qty', ${p.netQty},
-            'ghost_position_last_filled_qty', ${lastFilled?.filledQty ?? null}
-          )`,
+          metadata: {
+            ...(p.metadata && typeof p.metadata === "object" ? p.metadata : {}),
+            ghost_position_flushed_at: new Date().toISOString(),
+            ghost_position_previous_net_qty: String(p.netQty ?? ""),
+            ghost_position_last_filled_qty:
+              lastFilled?.filledQty != null ? String(lastFilled.filledQty) : null,
+          },
         })
         .where(eq(botPositions.id, p.id));
       ghostFlushed += 1;
