@@ -236,6 +236,10 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
 
   try {
     const ledgerPrefetch = await loadVirtualLedger(db, params.run.id);
+    const exitSymbol =
+      params.run.openSymbol?.trim() ||
+      ledgerPrefetch.find((row) => row.symbol && row.symbol.trim().length > 0)?.symbol ||
+      "BTCUSD";
     const d1Prefetch = deriveLedgerMetrics(
       ledgerPrefetch.filter((o) => classifyHedgeScalpingVirtualDualAccount(o) === "primary"),
       null,
@@ -274,8 +278,8 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
       return { ok: true, closed: 0 };
     }
 
-    const symD1 = d1Prefetch.openSymbol?.trim() || params.run.openSymbol?.trim() || "";
-    const symD2 = d2Prefetch.openSymbol?.trim() || symD1;
+    const symD1 = d1Prefetch.openSymbol?.trim() || exitSymbol;
+    const symD2 = d2Prefetch.openSymbol?.trim() || exitSymbol;
     const openAvgFromRun =
       params.run.openAvgEntryPrice != null && String(params.run.openAvgEntryPrice).trim() !== ""
         ? Number(String(params.run.openAvgEntryPrice).trim())
@@ -286,7 +290,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
         : null;
 
     const pxD1 = await resolveManualCloseExitPx({
-      symbol: symD1,
+      symbol: exitSymbol,
       ledgerAvg:
         d1Prefetch.avgEntryPrice != null && d1Prefetch.avgEntryPrice > 0
           ? d1Prefetch.avgEntryPrice
@@ -298,7 +302,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
       logLabel: "d1",
     });
     const pxD2 = await resolveManualCloseExitPx({
-      symbol: symD2 || symD1,
+      symbol: exitSymbol,
       ledgerAvg:
         d2Prefetch.avgEntryPrice != null && d2Prefetch.avgEntryPrice > 0
           ? d2Prefetch.avgEntryPrice
@@ -324,7 +328,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
 
       let closed = 0;
 
-      if (Math.abs(d1Met.openNetQty) > 1e-8 && symD1.length > 0) {
+      if (Math.abs(d1Met.openNetQty) > 1e-8) {
         const qty = Math.abs(d1Met.openNetQty);
         const side = oppositeSideForNet(d1Met.openNetQty);
         const entryPx = d1Met.avgEntryPrice != null && d1Met.avgEntryPrice > 0 ? d1Met.avgEntryPrice : pxD1;
@@ -342,7 +346,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
           virtualPaperRunId: params.run.id,
           userId: params.eligRow.userId,
           strategyId: params.eligRow.strategyId,
-          symbol: symD1,
+          symbol: exitSymbol,
           side,
           quantity: qty,
           fillPrice: pxD1,
@@ -367,7 +371,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
         null,
       );
 
-      if (Math.abs(d2Met.openNetQty) > 1e-8 && symD2.length > 0) {
+      if (Math.abs(d2Met.openNetQty) > 1e-8) {
         const px = pxD2 > 0 ? pxD2 : pxD1;
         const qty = Math.abs(d2Met.openNetQty);
         const side = oppositeSideForNet(d2Met.openNetQty);
@@ -386,7 +390,7 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
           virtualPaperRunId: params.run.id,
           userId: params.eligRow.userId,
           strategyId: params.eligRow.strategyId,
-          symbol: symD2,
+          symbol: exitSymbol,
           side,
           quantity: qty,
           fillPrice: px,
