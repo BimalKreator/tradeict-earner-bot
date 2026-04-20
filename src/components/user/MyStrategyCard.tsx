@@ -10,9 +10,9 @@ import { runStatusLabel } from "@/lib/my-strategy-run-labels";
 import {
   activateStrategyRunAction,
   pauseStrategyRunAction,
-  strategyRunActionInitialState,
   unsubscribeStrategyRunAction,
 } from "@/server/actions/userStrategyRun";
+import { strategyRunActionInitialState } from "@/server/actions/userStrategyRun.state";
 import type { MyStrategyRow } from "@/server/queries/user-my-strategies";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";

@@ -14,25 +14,13 @@ import {
   withExecutionPreferences,
   withHedgeScalpingRunSymbol,
 } from "@/lib/user-strategy-run-settings-json";
+import type { UserStrategySettingsActionState } from "@/server/actions/userStrategyRunSettings.state";
 import { requireUserId } from "@/server/auth/require-user";
 import { logAuditEvent } from "@/server/audit/audit-logger";
 import type { Database } from "@/server/db";
 import { strategies, userStrategyRuns, userStrategySubscriptions } from "@/server/db/schema";
 import { requireDb } from "@/server/db/require-db";
 import { listUserDeltaIndiaExchangeConnections } from "@/server/queries/user-exchange-connection";
-
-export type UserStrategySettingsActionState = {
-  ok: boolean | null;
-  message: string;
-  fieldErrors: Record<string, string>;
-};
-
-export const userStrategySettingsActionInitialState: UserStrategySettingsActionState =
-  {
-    ok: null,
-    message: "",
-    fieldErrors: {},
-  };
 
 function toNumericString(n: number): string {
   return n.toFixed(2);

@@ -10,9 +10,11 @@ import {
 } from "@/lib/user-strategy-settings-schema";
 import {
   updateUserStrategySettingsAction,
+} from "@/server/actions/userStrategyRunSettings";
+import {
   userStrategySettingsActionInitialState,
   type UserStrategySettingsActionState,
-} from "@/server/actions/userStrategyRunSettings";
+} from "@/server/actions/userStrategyRunSettings.state";
 import type { HedgeScalpingConfig } from "@/lib/hedge-scalping-config";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";

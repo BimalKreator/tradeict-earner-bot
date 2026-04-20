@@ -5,6 +5,7 @@ import { safeRevalidatePath } from "@/server/cache/safe-revalidate-path";
 import { z } from "zod";
 
 import { requireUserId } from "@/server/auth/require-user";
+import type { StrategyRunActionState } from "@/server/actions/userStrategyRun.state";
 import {
   strategies,
   userStrategyRuns,
@@ -25,18 +26,6 @@ function numericFieldPresent(raw: string | null | undefined): boolean {
   if (raw == null) return false;
   return String(raw).trim() !== "";
 }
-
-export type StrategyRunActionState = {
-  ok: boolean | null;
-  message: string;
-  /** When set, client should show a link to complete capital / leverage. */
-  settingsHref?: string;
-};
-
-const initialState: StrategyRunActionState = {
-  ok: null,
-  message: "",
-};
 
 export async function activateStrategyRunAction(
   _prev: StrategyRunActionState,
@@ -469,5 +458,3 @@ export async function unsubscribeStrategyRunAction(
     };
   }
 }
-
-export { initialState as strategyRunActionInitialState };
