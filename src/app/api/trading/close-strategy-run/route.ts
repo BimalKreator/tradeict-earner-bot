@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
@@ -208,6 +208,47 @@ async function finalizeHedgeScalpingVirtualRunTx(
   return { runs: runRows.length, clips: clipRows.length };
 }
 
+async function finalizeAllActiveHedgeScalpingVirtualRunsTx(
+  tx: HedgeScalpingDbTx,
+  params: { userId: string; strategyId: string },
+): Promise<{ runs: number; clips: number }> {
+  const now = new Date();
+  const activeRuns = await tx
+    .select({ runId: hedgeScalpingVirtualRuns.runId })
+    .from(hedgeScalpingVirtualRuns)
+    .where(
+      and(
+        eq(hedgeScalpingVirtualRuns.userId, params.userId),
+        eq(hedgeScalpingVirtualRuns.strategyId, params.strategyId),
+        eq(hedgeScalpingVirtualRuns.status, "active"),
+      ),
+    );
+  const runIds = activeRuns.map((r) => r.runId);
+  if (runIds.length === 0) return { runs: 0, clips: 0 };
+  const runRows = await tx
+    .update(hedgeScalpingVirtualRuns)
+    .set({ status: "completed", closedAt: now })
+    .where(
+      and(
+        eq(hedgeScalpingVirtualRuns.userId, params.userId),
+        eq(hedgeScalpingVirtualRuns.strategyId, params.strategyId),
+        eq(hedgeScalpingVirtualRuns.status, "active"),
+      ),
+    )
+    .returning({ runId: hedgeScalpingVirtualRuns.runId });
+  const clipRows = await tx
+    .update(hedgeScalpingVirtualClips)
+    .set({ status: "completed", closedAt: now })
+    .where(
+      and(
+        inArray(hedgeScalpingVirtualClips.runId, runIds),
+        eq(hedgeScalpingVirtualClips.status, "active"),
+      ),
+    )
+    .returning({ clipId: hedgeScalpingVirtualClips.clipId });
+  return { runs: runRows.length, clips: clipRows.length };
+}
+
 async function syncVirtualPaperRunFlatAfterManualCloseTx(
   tx: HedgeScalpingDbTx,
   virtualPaperRunId: string,
@@ -280,6 +321,15 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
           );
         } else {
           console.warn(`${LOG_MANUAL} already_flat_ledger — no hedge run id (ledger + DB lookup)`);
+        }
+        const finAll = await finalizeAllActiveHedgeScalpingVirtualRunsTx(tx, {
+          userId: params.run.userId,
+          strategyId: params.run.strategyId,
+        });
+        if (finAll.runs > 0 || finAll.clips > 0) {
+          console.log(
+            `${LOG_MANUAL} already_flat_ledger force_finalize_active_runs runs_rows=${finAll.runs} clips_rows=${finAll.clips}`,
+          );
         }
         await syncVirtualPaperRunFlatAfterManualCloseTx(tx, params.run.id);
       });
@@ -432,6 +482,15 @@ async function executeManualCloseHedgeScalpingVirtual(params: {
         );
       } else {
         console.warn(`${LOG_MANUAL} no hedge run id resolved — hedge_scalping_virtual_runs not finalized`);
+      }
+      const finAll = await finalizeAllActiveHedgeScalpingVirtualRunsTx(tx, {
+        userId: params.run.userId,
+        strategyId: params.run.strategyId,
+      });
+      if (finAll.runs > 0 || finAll.clips > 0) {
+        console.log(
+          `${LOG_MANUAL} hedge_scalping force_finalize_active_runs runs_rows=${finAll.runs} clips_rows=${finAll.clips}`,
+        );
       }
 
       await syncVirtualPaperRunFlatAfterManualCloseTx(tx, params.run.id);

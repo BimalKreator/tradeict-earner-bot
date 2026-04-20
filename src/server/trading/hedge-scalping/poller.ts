@@ -92,6 +92,7 @@ type PendingLiveSignal = {
   markPrice: number;
   actionType: "entry" | "exit";
   metadata?: Record<string, unknown>;
+  entryAudit?: HsEntryAuditPayload;
 };
 
 type HsEntryAuditPayload = {
@@ -139,6 +140,11 @@ async function dispatchPendingHsLiveSignals(
         liveJobsEnqueued += res.liveJobsEnqueued ?? 0;
         console.log(
           `${LOG} live dispatch ok correlation=${s.correlationId} strategy=${s.strategyId} user=${s.userId} jobs=${res.jobsEnqueued} live=${res.liveJobsEnqueued ?? 0}`,
+        );
+      }
+      if (s.actionType === "entry" && s.entryAudit) {
+        console.log(
+          `${LOG} event="hs_entry_audit" userId="${s.entryAudit.userId}" symbol="${s.entryAudit.symbol}" rawContractValue=${s.entryAudit.rawContractValue ?? "null"} normalizedUsdContractValue=${s.entryAudit.normalizedUsdContractValue} d1Qty=${s.entryAudit.d1Qty} d2Qty=${s.entryAudit.d2Qty} usedMarginUsd=${s.entryAudit.usedMarginUsd} liveJobsEnqueued=${res.liveJobsEnqueued ?? 0}`,
         );
       }
     } catch (e) {
@@ -283,9 +289,22 @@ async function executeHedgeScalpingIntentsTx(
     mark: number;
     cfg: HedgeScalpingConfig;
     symbol: string;
+    runLeverage: number;
+    rawContractValue: number | null;
+    normalizedUsdContractValue: number;
   },
 ): Promise<PendingLiveSignal[]> {
-  const { hedgeRun, paperRunId, intents, mark, cfg, symbol } = ctx;
+  const {
+    hedgeRun,
+    paperRunId,
+    intents,
+    mark,
+    cfg,
+    symbol,
+    runLeverage,
+    rawContractValue,
+    normalizedUsdContractValue,
+  } = ctx;
   const runId = hedgeRun.runId;
   const userId = hedgeRun.userId;
   const strategyId = hedgeRun.strategyId;
@@ -526,6 +545,15 @@ async function executeHedgeScalpingIntentsTx(
           step_level: intent.stepLevel,
           expected_price: intent.expectedPrice,
         },
+        entryAudit: {
+          userId,
+          symbol,
+          rawContractValue,
+          normalizedUsdContractValue,
+          d1Qty,
+          d2Qty: stepQty,
+          usedMarginUsd: stepQty / runLeverage,
+        },
       });
       console.log(
         `${LOG} OPEN_D2_CLIP run=${runId} step=${intent.stepLevel} side=${intent.side} qty=${fmt(stepQty)} entry=${fmt(intent.expectedPrice)}`,
@@ -565,6 +593,14 @@ async function processOneActiveRun(params: {
     return;
   }
   const mark = markPx;
+  const rawContractValue = await fetchDeltaIndiaProductContractValue(sym);
+  const normalizedUsdContractValue = normalizeUsdContractValue(rawContractValue, mark);
+  const liveEligibleRuns = await findEligibleRunsForStrategyExecution(run.strategyId, {
+    targetUserIds: [run.userId],
+    signalAction: "entry",
+  });
+  const runLeverage =
+    liveEligibleRuns.length > 0 ? Math.max(1, num(liveEligibleRuns[0]!.leverage)) : 1;
   const entry = num(run.d1EntryPrice);
   const prevMax = num(run.maxFavorablePrice);
   const merged = mergeMaxFavorable(run.d1Side, prevMax, mark);
@@ -663,6 +699,9 @@ async function processOneActiveRun(params: {
       mark,
       cfg,
       symbol,
+      runLeverage,
+      rawContractValue,
+      normalizedUsdContractValue,
     });
   });
   if (liveSignals.length > 0) {
@@ -873,15 +912,6 @@ export async function processHedgeScalpingNewEntriesPhase(
       const now = new Date();
 
       try {
-        const entryAudit = {
-          userId,
-          symbol: "",
-          rawContractValue: null,
-          normalizedUsdContractValue: 1,
-          d1Qty: 0,
-          d2Qty: 0,
-          usedMarginUsd: 0,
-        } as HsEntryAuditPayload;
         const liveSignals = await db.transaction(async (tx) => {
           const paperRunId = await resolveVirtualPaperRunId(tx, {
             userId,
@@ -925,13 +955,6 @@ export async function processHedgeScalpingNewEntriesPhase(
           const d2StepQty = computeHedgeScalpingD2StepQty(d1QtyNum, cfg.delta2.stepQtyPct);
           const runLeverage =
             liveEligibleRuns.length > 0 ? Math.max(1, num(liveEligibleRuns[0]!.leverage)) : 1;
-          entryAudit.userId = userId;
-          entryAudit.symbol = symbol;
-          entryAudit.rawContractValue = rawContractValueUsd;
-          entryAudit.normalizedUsdContractValue = contractValueUsd;
-          entryAudit.d1Qty = d1QtyNum;
-          entryAudit.d2Qty = d2StepQty;
-          entryAudit.usedMarginUsd = (d1QtyNum + d2StepQty) / runLeverage;
           if (!(d1QtyNum > 0) || !(d2StepQty > 0)) {
             console.warn(
               `${LOG} NEW_RUN skip — zero qty user=${userId} strategy=${strat.id} balance=${balanceUsd} markUsd=${markUsd} workerMark=${currentMarkPrice}`,
@@ -1010,6 +1033,15 @@ export async function processHedgeScalpingNewEntriesPhase(
               markPrice: markUsd,
               actionType: "entry" as const,
               metadata: { leg: "d1_new_run" },
+              entryAudit: {
+                userId,
+                symbol,
+                rawContractValue: rawContractValueUsd,
+                normalizedUsdContractValue: contractValueUsd,
+                d1Qty: d1QtyNum,
+                d2Qty: 0,
+                usedMarginUsd: d1QtyNum / runLeverage,
+              },
             },
             {
               correlationId: hsCorrelationD2Entry(1, clipId),
@@ -1021,14 +1053,20 @@ export async function processHedgeScalpingNewEntriesPhase(
               markPrice: markUsd,
               actionType: "entry" as const,
               metadata: { leg: "d2_step_1_new_run", step_level: 1 },
+              entryAudit: {
+                userId,
+                symbol,
+                rawContractValue: rawContractValueUsd,
+                normalizedUsdContractValue: contractValueUsd,
+                d1Qty: d1QtyNum,
+                d2Qty: d2StepQty,
+                usedMarginUsd: d2StepQty / runLeverage,
+              },
             },
           ];
         });
         if (liveSignals.length > 0) {
-          const dispatch = await dispatchPendingHsLiveSignals(liveSignals);
-          console.log(
-            `${LOG} event="hs_entry_audit" userId="${entryAudit.userId}" symbol="${entryAudit.symbol}" rawContractValue=${entryAudit.rawContractValue ?? "null"} normalizedUsdContractValue=${entryAudit.normalizedUsdContractValue} d1Qty=${entryAudit.d1Qty} d2Qty=${entryAudit.d2Qty} usedMarginUsd=${entryAudit.usedMarginUsd} liveJobsEnqueued=${dispatch.liveJobsEnqueued}`,
-          );
+          await dispatchPendingHsLiveSignals(liveSignals);
         }
       } catch (e) {
         const err = e as { code?: string; message?: string };
