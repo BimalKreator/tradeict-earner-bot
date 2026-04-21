@@ -5,6 +5,10 @@ import { safeRevalidatePath } from "@/server/cache/safe-revalidate-path";
 import type { ZodIssue } from "zod";
 
 import { isHedgeScalpingStrategySlug, parseAllowedSymbolsList } from "@/lib/hedge-scalping-config";
+import {
+  isTrendProfitLockScalpingStrategySlug,
+} from "@/lib/trend-profit-lock-config";
+import { parseTrendProfitLockConfigFromFormData } from "@/lib/trend-profit-lock-form";
 import { resolveHedgeScalpingConfigForUi } from "@/server/trading/hedge-scalping/load-hedge-scalping-config";
 import {
   createUserStrategyRunSettingsSchema,
@@ -13,6 +17,7 @@ import {
 import {
   withExecutionPreferences,
   withHedgeScalpingRunSymbol,
+  withTrendProfitLockRunSettings,
 } from "@/lib/user-strategy-run-settings-json";
 import type { UserStrategySettingsActionState } from "@/server/actions/userStrategyRunSettings.state";
 import { requireUserId } from "@/server/auth/require-user";
@@ -230,6 +235,24 @@ export async function updateUserStrategySettingsAction(
       };
     }
     runSettingsPatch = withHedgeScalpingRunSymbol(row.runSettingsJson, hedgeSymRaw);
+  }
+  if (isTrendProfitLockScalpingStrategySlug(row.strategySlug)) {
+    const tplParsed = parseTrendProfitLockConfigFromFormData(formData);
+    if (!tplParsed.ok) {
+      const flat: Record<string, string> = {};
+      for (const [k, v] of Object.entries(tplParsed.fieldErrors)) {
+        flat[k] = v[0] ?? "Invalid value.";
+      }
+      return {
+        ok: false,
+        message: "Fix Trend Profit Lock settings and try again.",
+        fieldErrors: flat,
+      };
+    }
+    runSettingsPatch = withTrendProfitLockRunSettings(
+      runSettingsPatch ?? row.runSettingsJson,
+      tplParsed.value as unknown as Record<string, unknown>,
+    );
   }
 
   let newCapitalStr = toNumericString(cap);

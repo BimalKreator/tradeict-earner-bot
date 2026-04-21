@@ -66,6 +66,32 @@ async function main() {
 
   const strategyRows = [
     {
+      id: "1769ec34-73b5-4a59-bc2f-5315bc888c07",
+      slug: "trend-profit-lock-scalping",
+      name: "Trend Profit Lock Scalping",
+      description:
+        "Live dual-account scalping strategy for BTCUSD perpetual (D1 anchor + D2 step scalps).",
+      defaultMonthlyFeeInr: "999.00",
+      defaultRevenueSharePercent: "50.00",
+      status: "active" as const,
+      settingsJson: {
+        timeframe: "1m",
+        halftrendAmplitude: 2,
+        symbol: "BTCUSD",
+        d1CapitalAllocationPct: 100,
+        d1TargetPct: 12,
+        d1StoplossPct: 1,
+        d1BreakevenTriggerPct: 30,
+        d2Steps: [
+          { step: 1, stepTriggerPct: 0.2, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
+          { step: 2, stepTriggerPct: 0.4, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
+          { step: 3, stepTriggerPct: 0.6, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
+          { step: 4, stepTriggerPct: 0.8, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
+          { step: 5, stepTriggerPct: 1.0, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
+        ],
+      },
+    },
+    {
       slug: "momentum-btc",
       name: "BTC Momentum",
       description:

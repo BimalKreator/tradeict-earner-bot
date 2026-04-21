@@ -6,6 +6,11 @@ import {
   isHedgeScalpingStrategySlug,
   type HedgeScalpingTimeframe,
 } from "@/lib/hedge-scalping-config";
+import {
+  isTrendProfitLockScalpingStrategySlug,
+  type TrendProfitLockConfig,
+} from "@/lib/trend-profit-lock-config";
+import { resolveTrendProfitLockConfigForUi } from "@/lib/trend-profit-lock-form";
 
 export type AdminStrategyFormDefaults = {
   slug: string;
@@ -32,6 +37,22 @@ export type AdminStrategyFormDefaults = {
     delta2StepQtyPct: string;
     delta2TargetProfitPct: string;
     delta2StopLossPct: string;
+  } | null;
+  trendProfitLock: {
+    timeframe: TrendProfitLockConfig["timeframe"];
+    halftrendAmplitude: string;
+    symbol: string;
+    d1CapitalAllocationPct: string;
+    d1TargetPct: string;
+    d1StoplossPct: string;
+    d1BreakevenTriggerPct: string;
+    d2Steps: {
+      step: number;
+      stepTriggerPct: string;
+      stepQtyPctOfD1: string;
+      stepTargetPct: string;
+      stepStoplossPct: string;
+    }[];
   } | null;
 };
 
@@ -60,6 +81,7 @@ export function strategyDefaultsFromRow(row: {
         : "paused";
 
   const isHedgeScalping = isHedgeScalpingStrategySlug(row.slug);
+  const isTrendProfitLock = isTrendProfitLockScalpingStrategySlug(row.slug);
   const hedgeParsed = isHedgeScalping
     ? hedgeScalpingConfigSchema.safeParse(row.settingsJson)
     : null;
@@ -69,6 +91,9 @@ export function strategyDefaultsFromRow(row: {
   const rawHsD1 = (rawHs.delta1 ?? {}) as Record<string, unknown>;
   const rawHsD2 = (rawHs.delta2 ?? {}) as Record<string, unknown>;
   const hsFallback = defaultHedgeScalpingConfig();
+  const tplResolved = isTrendProfitLock
+    ? resolveTrendProfitLockConfigForUi({ strategySettingsJson: row.settingsJson })
+    : null;
 
   return {
     slug: row.slug,
@@ -164,6 +189,36 @@ export function strategyDefaultsFromRow(row: {
               ? hedgeParsed.data.delta2.stopLossPct
               : ((rawHsD2.stopLossPct as number | undefined) ?? hsFallback.delta2.stopLossPct),
           ),
+        },
+    trendProfitLock: !isTrendProfitLock
+      ? null
+      : {
+          timeframe: tplResolved!.timeframe,
+          halftrendAmplitude: String(
+            tplResolved!.halftrendAmplitude,
+          ),
+          symbol: String(
+            tplResolved!.symbol,
+          ),
+          d1CapitalAllocationPct: String(
+            tplResolved!.d1CapitalAllocationPct,
+          ),
+          d1TargetPct: String(
+            tplResolved!.d1TargetPct,
+          ),
+          d1StoplossPct: String(
+            tplResolved!.d1StoplossPct,
+          ),
+          d1BreakevenTriggerPct: String(
+            tplResolved!.d1BreakevenTriggerPct,
+          ),
+          d2Steps: tplResolved!.d2Steps.map((s) => ({
+            step: s.step,
+            stepTriggerPct: String(s.stepTriggerPct),
+            stepQtyPctOfD1: String(s.stepQtyPctOfD1),
+            stepTargetPct: String(s.stepTargetPct),
+            stepStoplossPct: String(s.stepStoplossPct),
+          })),
         },
   };
 }

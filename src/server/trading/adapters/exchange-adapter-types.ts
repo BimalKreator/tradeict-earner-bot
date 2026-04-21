@@ -55,6 +55,27 @@ export type ExchangeOpenPositionsResult =
   | { ok: true; positions: ExchangeOpenPosition[]; raw?: Record<string, unknown> | null }
   | { ok: false; error: string; raw?: Record<string, unknown> | null };
 
+export type PlaceReduceOnlyStopLossInput = {
+  internalClientOrderId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: string;
+  stopPrice: string;
+};
+
+export type AmendStopLossOrderInput = {
+  existingExternalOrderId: string;
+  replacementInternalClientOrderId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: string;
+  newStopPrice: string;
+};
+
+export type AmendStopLossOrderResult =
+  | { ok: true; externalOrderId: string; raw: Record<string, unknown>; cancelledExisting: boolean }
+  | { ok: false; error: string; raw?: Record<string, unknown> };
+
 /**
  * Exchange-specific execution. Implementations must never log secrets.
  */
@@ -74,4 +95,10 @@ export interface ExchangeTradingAdapter {
      */
     symbols?: string[];
   }): Promise<ExchangeOpenPositionsResult>;
+
+  /** Optional — place protective reduce-only stop-loss at the venue. */
+  placeReduceOnlyStopLoss?(input: PlaceReduceOnlyStopLossInput): Promise<PlaceOrderResult>;
+
+  /** Optional — strict in-place stop-loss amendment via cancel-and-replace flow. */
+  amendStopLossOrder?(input: AmendStopLossOrderInput): Promise<AmendStopLossOrderResult>;
 }

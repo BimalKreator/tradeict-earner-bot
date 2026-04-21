@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { trendProfitLockConfigSchema } from "./trend-profit-lock-config";
 
 const hedgeScalpingRunSymbolSchema = z.object({
   symbol: z.string().trim().min(1),
@@ -12,9 +13,48 @@ const executionPreferencesSchema = z.object({
   leverage: z.number().positive().optional(),
 });
 
+const trendProfitLockRuntimeSchema = z.object({
+  lastFlipCandleTime: z.number().int().optional(),
+  lastCompletedD1FlipDirection: z.enum(["LONG", "SHORT"]).optional(),
+  d1: z
+    .object({
+      side: z.enum(["LONG", "SHORT"]),
+      entryPrice: z.number().finite(),
+      targetPrice: z.number().finite(),
+      stoplossPrice: z.number().finite(),
+      breakevenTriggerPct: z.number().finite(),
+      breakevenQueuedAt: z.string().optional(),
+      breakevenExecutedAt: z.string().optional(),
+      breakevenOrderCorrelationId: z.string().optional(),
+    })
+    .optional(),
+  d2TriggeredSteps: z.array(z.number().int()).optional(),
+  d2StepsState: z
+    .record(
+      z.string(),
+      z.object({
+        step: z.number().int(),
+        triggerPrice: z.number().finite(),
+        entryMarkPrice: z.number().finite(),
+        side: z.enum(["LONG", "SHORT"]),
+        qty: z.number().int().positive(),
+        targetPrice: z.number().finite(),
+        stoplossPrice: z.number().finite(),
+        executedAt: z.string(),
+        correlationId: z.string(),
+        status: z.enum(["open", "closed"]),
+        closeReason: z.enum(["target", "stoploss", "unknown"]).optional(),
+        closedAt: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+
 /** JSON stored on `user_strategy_runs.run_settings_json` / `virtual_strategy_runs.run_settings_json`. */
 export const userStrategyRunSettingsJsonSchema = z.object({
   hedgeScalping: hedgeScalpingRunSymbolSchema.optional(),
+  trendProfitLock: trendProfitLockConfigSchema.partial().optional(),
+  trendProfitLockRuntime: trendProfitLockRuntimeSchema.optional(),
   execution: executionPreferencesSchema.optional(),
 });
 
@@ -61,5 +101,16 @@ export function withExecutionPreferences(
         ? { leverage: prefs.leverage }
         : {}),
     },
+  };
+}
+
+export function withTrendProfitLockRunSettings(
+  existing: unknown,
+  trendProfitLock: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = parseUserStrategyRunSettingsJson(existing);
+  return {
+    ...base,
+    trendProfitLock,
   };
 }

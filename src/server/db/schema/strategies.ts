@@ -9,6 +9,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { HedgeScalpingConfig } from "@/lib/hedge-scalping-config";
+import type { TrendProfitLockConfig } from "@/lib/trend-profit-lock-config";
 import {
   strategyRiskLabelEnum,
   strategyStatusEnum,
@@ -16,6 +17,7 @@ import {
 } from "./enums";
 
 export type { HedgeScalpingConfig };
+export type { TrendProfitLockConfig };
 
 export const strategies = pgTable(
   "strategies",
@@ -60,7 +62,7 @@ export const strategies = pgTable(
      * `hedgeScalpingConfigSchema`.
      */
     settingsJson: jsonb("settings_json").$type<
-      Record<string, unknown> | HedgeScalpingConfig | null
+      Record<string, unknown> | HedgeScalpingConfig | TrendProfitLockConfig | null
     >(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

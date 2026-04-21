@@ -12,6 +12,7 @@ import {
   processHedgeScalpingNewEntriesPhase,
 } from "../hedge-scalping/poller";
 import { parseHedgeScalpingStrategySettings } from "../hedge-scalping/load-hedge-scalping-config";
+import { processTrendProfitLockTick } from "../trend-profit-lock/poller";
 import { tradingLog } from "../trading-log";
 import {
   computeChartLookbackSeconds,
@@ -278,6 +279,13 @@ async function runHedgeScalpingWorkerForTargets(params: {
     }
   }
 
+  try {
+    await processTrendProfitLockTick();
+  } catch (error) {
+    console.error("[TPL-POLLER-ERROR]", error);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
   return {
     ok: true,
     detail: `Polled hedge scalping feeds: ${feedSummaries.join(" | ") || "no data yet"}`,
@@ -343,6 +351,7 @@ export async function runHedgeScalpingWorkerOnce(
         symbol: c.symbol.trim().toUpperCase(),
         resolution: c.resolution.trim().toLowerCase(),
       });
+      await processTrendProfitLockTick();
     } catch (error) {
       console.error("[HS-POLLER-ERROR]", error);
       return { ok: false, error: error instanceof Error ? error.message : String(error) };

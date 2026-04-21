@@ -7,6 +7,11 @@ import {
   parseAllowedSymbolsList,
 } from "@/lib/hedge-scalping-config";
 import {
+  isTrendProfitLockScalpingStrategySlug,
+  type TrendProfitLockConfig,
+} from "@/lib/trend-profit-lock-config";
+import { resolveTrendProfitLockConfigForUi } from "@/lib/trend-profit-lock-form";
+import {
   extractHedgeScalpingSymbolFromRunSettingsJson,
   parseUserStrategyRunSettingsJson,
 } from "@/lib/user-strategy-run-settings-json";
@@ -43,6 +48,8 @@ export type UserStrategySettingsPageData = {
   initialHedgeScalpingSymbol: string | null;
   /** Merged with defaults so legacy rows missing `general.maxEntryDistanceFromSignalPct` etc. are safe for UI. */
   hedgeScalpingResolvedConfig: HedgeScalpingConfig | null;
+  isTrendProfitLockStrategy: boolean;
+  trendProfitLockInitialConfig: TrendProfitLockConfig | null;
 };
 
 const EDITABLE_RUN_STATUSES = new Set<RunRow["status"]>([
@@ -204,6 +211,8 @@ export async function getUserStrategySettingsPageData(
   let isHedgeScalpingStrategy = false;
   let hedgeScalpingResolvedConfig: HedgeScalpingConfig | null = null;
   let hedgeScalpingAllowedSymbols: string[] = [];
+  let isTrendProfitLockStrategy = false;
+  let trendProfitLockInitialConfig: TrendProfitLockConfig | null = null;
   try {
     isHedgeScalpingStrategy = isHedgeScalpingStrategySlug(row.strategySlug);
     hedgeScalpingResolvedConfig = isHedgeScalpingStrategy
@@ -223,6 +232,22 @@ export async function getUserStrategySettingsPageData(
     isHedgeScalpingStrategy = false;
     hedgeScalpingResolvedConfig = null;
     hedgeScalpingAllowedSymbols = [];
+  }
+
+  try {
+    isTrendProfitLockStrategy = isTrendProfitLockScalpingStrategySlug(row.strategySlug);
+    if (isTrendProfitLockStrategy) {
+      const runJson = parseUserStrategyRunSettingsJson(row.runSettingsJson);
+      trendProfitLockInitialConfig = resolveTrendProfitLockConfigForUi({
+        strategySettingsJson: row.strategySettingsJson,
+        runSettingsTrendProfitLock: runJson.trendProfitLock ?? null,
+      });
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("trend_profit_lock_settings_ui_failed", { slug: resolvedSlug, msg });
+    isTrendProfitLockStrategy = false;
+    trendProfitLockInitialConfig = null;
   }
 
   const savedSym = extractHedgeScalpingSymbolFromRunSettingsJson(
@@ -267,5 +292,7 @@ export async function getUserStrategySettingsPageData(
     hedgeScalpingAllowedSymbols,
     initialHedgeScalpingSymbol,
     hedgeScalpingResolvedConfig,
+    isTrendProfitLockStrategy,
+    trendProfitLockInitialConfig,
   };
 }

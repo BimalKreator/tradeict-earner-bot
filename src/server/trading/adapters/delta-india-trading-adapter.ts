@@ -14,9 +14,12 @@ import { fetchDeltaIndiaProductLeverageBounds } from "@/server/exchange/delta-pr
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
+  AmendStopLossOrderInput,
+  AmendStopLossOrderResult,
   ExchangeOpenPositionsResult,
   ExchangeTradingAdapter,
   OrderSyncResult,
+  PlaceReduceOnlyStopLossInput,
   PlaceOrderInput,
   PlaceOrderResult,
 } from "./exchange-adapter-types";
@@ -207,6 +210,11 @@ function buildPlaceOrderJsonBody(
   }
 
   return { body: JSON.stringify(payload) };
+}
+
+function isAlreadyClosedOrCancelledDeltaOrderError(text: string): boolean {
+  const s = text.toLowerCase();
+  return s.includes("already cancelled") || s.includes("already closed") || s.includes("not found");
 }
 
 function parseDeltaPositionNetQty(row: Record<string, unknown>): number {
@@ -410,6 +418,95 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       externalOrderId: parsed.externalOrderId,
       externalClientOrderId: clientOrderId,
       raw: r.json,
+    };
+  }
+
+  private async cancelOrderByExternalId(
+    externalOrderId: string,
+  ): Promise<{ ok: true; cancelled: boolean; raw: Record<string, unknown> } | { ok: false; error: string; raw?: Record<string, unknown> }> {
+    const path = `/v2/orders/${encodeURIComponent(externalOrderId)}`;
+    const r = await this.signedFetch("DELETE", path, "", "");
+    if (r.ok && deltaJsonSuccess(r.json)) {
+      return { ok: true, cancelled: true, raw: r.json };
+    }
+    const body = r.text.slice(0, 800);
+    if (!r.ok && r.status >= 400 && isAlreadyClosedOrCancelledDeltaOrderError(body)) {
+      return { ok: true, cancelled: false, raw: r.json };
+    }
+    return {
+      ok: false,
+      error: `Delta cancel order failed HTTP ${r.status}: ${body}`,
+      raw: r.json,
+    };
+  }
+
+  async placeReduceOnlyStopLoss(input: PlaceReduceOnlyStopLossInput): Promise<PlaceOrderResult> {
+    const product = await resolveDeltaIndiaProductId(input.symbol);
+    if (!product.ok) return { ok: false, error: product.error };
+    const sizeNorm = normalizeDeltaOrderContractSize(String(input.quantity));
+    if (!sizeNorm.ok) return { ok: false, error: sizeNorm.error };
+    const stopPx = String(input.stopPrice ?? "").trim();
+    if (!stopPx) return { ok: false, error: "stopPrice is required for stop-loss order." };
+
+    const payloadA: Record<string, string | number> = {
+      product_id: product.productId,
+      size: sizeNorm.size,
+      side: input.side,
+      order_type: "market_order",
+      stop_price: stopPx,
+      reduce_only: "true",
+      client_order_id: input.internalClientOrderId,
+    };
+    const payloadB: Record<string, string | number> = {
+      product_id: product.productId,
+      size: sizeNorm.size,
+      side: input.side,
+      order_type: "stop_order",
+      stop_order_type: "market_order",
+      stop_price: stopPx,
+      reduce_only: "true",
+      client_order_id: input.internalClientOrderId,
+    };
+
+    for (const payload of [payloadA, payloadB]) {
+      const r = await this.signedFetch("POST", "/v2/orders", "", JSON.stringify(payload));
+      if (!r.ok) continue;
+      if (!deltaJsonSuccess(r.json)) continue;
+      const parsed = parseDeltaOrderResultPayload(r.json);
+      if (!parsed) continue;
+      return {
+        ok: true,
+        externalOrderId: parsed.externalOrderId,
+        externalClientOrderId: input.internalClientOrderId,
+        raw: r.json,
+      };
+    }
+    return {
+      ok: false,
+      error: `Delta stop-loss place rejected for ${input.symbol}.`,
+    };
+  }
+
+  async amendStopLossOrder(input: AmendStopLossOrderInput): Promise<AmendStopLossOrderResult> {
+    const cancelled = await this.cancelOrderByExternalId(input.existingExternalOrderId);
+    if (!cancelled.ok) {
+      return { ok: false, error: cancelled.error, raw: cancelled.raw };
+    }
+    const placed = await this.placeReduceOnlyStopLoss({
+      internalClientOrderId: input.replacementInternalClientOrderId,
+      symbol: input.symbol,
+      side: input.side,
+      quantity: input.quantity,
+      stopPrice: input.newStopPrice,
+    });
+    if (!placed.ok) {
+      return { ok: false, error: placed.error, raw: placed.raw };
+    }
+    return {
+      ok: true,
+      externalOrderId: placed.externalOrderId,
+      raw: placed.raw,
+      cancelledExisting: cancelled.cancelled,
     };
   }
 

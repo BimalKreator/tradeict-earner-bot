@@ -17,6 +17,11 @@ import {
   parseAllowedSymbolsList,
   type HedgeScalpingConfig,
 } from "@/lib/hedge-scalping-config";
+import {
+  defaultTrendProfitLockConfig,
+  isTrendProfitLockScalpingStrategySlug,
+} from "@/lib/trend-profit-lock-config";
+import { parseTrendProfitLockConfigFromFormData } from "@/lib/trend-profit-lock-form";
 import { logAdminAction } from "@/server/audit/audit-logger";
 import { requireAdminId } from "@/server/auth/require-admin-id";
 import { strategies } from "@/server/db/schema";
@@ -295,6 +300,8 @@ export async function createStrategyAction(
         performanceChartJson: chartDb,
         settingsJson: isHedgeScalpingStrategySlug(slugRaw)
           ? defaultHedgeScalpingConfig()
+          : isTrendProfitLockScalpingStrategySlug(slugRaw)
+            ? defaultTrendProfitLockConfig()
           : null,
         updatedAt: now,
       })
@@ -399,6 +406,13 @@ export async function updateStrategyAction(
       return { fieldErrors: parsedHs.fieldErrors };
     }
     patch.settingsJson = parsedHs.value;
+  }
+  if (isTrendProfitLockScalpingStrategySlug(existing.slug)) {
+    const parsedTpl = parseTrendProfitLockConfigFromFormData(formData);
+    if (!parsedTpl.ok) {
+      return { fieldErrors: parsedTpl.fieldErrors };
+    }
+    patch.settingsJson = parsedTpl.value as unknown as Record<string, unknown>;
   }
 
   await database

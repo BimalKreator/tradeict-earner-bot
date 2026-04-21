@@ -16,6 +16,7 @@ import {
   type UserStrategySettingsActionState,
 } from "@/server/actions/userStrategyRunSettings.state";
 import type { HedgeScalpingConfig } from "@/lib/hedge-scalping-config";
+import type { TrendProfitLockConfig } from "@/lib/trend-profit-lock-config";
 
 import { GlassPanel } from "@/components/ui/GlassPanel";
 
@@ -52,6 +53,8 @@ export function UserStrategySettingsForm({
   hedgeScalpingAllowedSymbols = [],
   initialHedgeScalpingSymbol = null,
   hedgeScalpingResolvedConfig = null,
+  isTrendProfitLockStrategy = false,
+  trendProfitLockInitialConfig = null,
 }: {
   strategySlug?: string;
   constraints?: UserStrategySettingsConstraints;
@@ -67,6 +70,8 @@ export function UserStrategySettingsForm({
   initialHedgeScalpingSymbol?: string | null;
   /** Merged with defaults on the server; safe for legacy `settings_json`. */
   hedgeScalpingResolvedConfig?: HedgeScalpingConfig | null;
+  isTrendProfitLockStrategy?: boolean;
+  trendProfitLockInitialConfig?: TrendProfitLockConfig | null;
 }) {
   const initialCapitalSafe = toSafeString(initialCapitalToUseInr);
   const initialLeverageSafe = toSafeString(initialLeverage);
@@ -113,6 +118,7 @@ export function UserStrategySettingsForm({
   }, [capital, leverage, schema]);
 
   const fieldErrors = state.fieldErrors ?? {};
+  const tplError = (key: string) => fieldErrors[key];
   const capitalErr =
     liveErrors.capitalToUseInr ?? fieldErrors.capitalToUseInr;
   const leverageErr = liveErrors.leverage ?? fieldErrors.leverage;
@@ -226,6 +232,130 @@ export function UserStrategySettingsForm({
               the signal candle is farther than this from the HalfTrend baseline.
             </p>
           </div>
+        </GlassPanel>
+      ) : null}
+
+      {isTrendProfitLockStrategy && trendProfitLockInitialConfig ? (
+        <GlassPanel className="space-y-4 border border-white/[0.08]">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Trend Profit Lock Scalping
+          </h2>
+          <p className="text-xs text-[var(--text-muted)]">
+            Configure your run-level D1 and D2 parameters. Guardrails: D2 triggers must be
+            strictly increasing, and combined D2 quantity cannot exceed 100% of D1.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                Timeframe
+              </label>
+              <select
+                name="tpl_timeframe"
+                defaultValue={trendProfitLockInitialConfig.timeframe}
+                disabled={pending}
+                className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50"
+              >
+                <option value="1m">1m</option>
+                <option value="3m">3m</option>
+                <option value="5m">5m</option>
+                <option value="15m">15m</option>
+                <option value="30m">30m</option>
+                <option value="1h">1h</option>
+                <option value="4h">4h</option>
+              </select>
+              {tplError("tpl_timeframe") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_timeframe")}</p>
+              ) : null}
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                HalfTrend amplitude
+              </label>
+              <input name="tpl_halftrend_amplitude" defaultValue={trendProfitLockInitialConfig.halftrendAmplitude} disabled={pending} className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />
+              {tplError("tpl_halftrend_amplitude") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_halftrend_amplitude")}</p>
+              ) : null}
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                D1 capital allocation (%)
+              </label>
+              <input name="tpl_d1_capital_allocation_pct" defaultValue={trendProfitLockInitialConfig.d1CapitalAllocationPct} disabled={pending} className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />
+              {tplError("tpl_d1_capital_allocation_pct") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_d1_capital_allocation_pct")}</p>
+              ) : null}
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                D1 target (%)
+              </label>
+              <input name="tpl_d1_target_pct" defaultValue={trendProfitLockInitialConfig.d1TargetPct} disabled={pending} className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />
+              {tplError("tpl_d1_target_pct") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_d1_target_pct")}</p>
+              ) : null}
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                D1 stoploss (%)
+              </label>
+              <input name="tpl_d1_stoploss_pct" defaultValue={trendProfitLockInitialConfig.d1StoplossPct} disabled={pending} className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />
+              {tplError("tpl_d1_stoploss_pct") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_d1_stoploss_pct")}</p>
+              ) : null}
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                D1 breakeven trigger (%)
+              </label>
+              <input name="tpl_d1_breakeven_trigger_pct" defaultValue={trendProfitLockInitialConfig.d1BreakevenTriggerPct} disabled={pending} className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />
+              {tplError("tpl_d1_breakeven_trigger_pct") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_d1_breakeven_trigger_pct")}</p>
+              ) : null}
+            </div>
+            <div className="sm:col-span-2">
+              <label className="text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
+                Symbol
+              </label>
+              <input name="tpl_symbol" defaultValue={trendProfitLockInitialConfig.symbol} disabled={pending} className="form-touch mt-1 w-full rounded-xl border border-white/[0.12] bg-black/30 px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />
+              {tplError("tpl_symbol") ? (
+                <p className="mt-1 text-sm text-amber-200">{tplError("tpl_symbol")}</p>
+              ) : null}
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-white/[0.1]">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead className="bg-black/40 text-[var(--text-muted)]">
+                <tr>
+                  <th className="px-3 py-2">Step</th>
+                  <th className="px-3 py-2">Trigger %</th>
+                  <th className="px-3 py-2">Qty % of D1</th>
+                  <th className="px-3 py-2">Target %</th>
+                  <th className="px-3 py-2">Stoploss %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trendProfitLockInitialConfig.d2Steps.map((step) => (
+                  <tr key={step.step} className="border-t border-white/[0.06]">
+                    <td className="px-3 py-2 font-mono text-[var(--text-primary)]">{step.step}</td>
+                    <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_trigger_pct`} defaultValue={String(step.stepTriggerPct)} disabled={pending} className="w-full rounded-md border border-white/[0.12] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />{tplError(`tpl_d2_step_${step.step}_trigger_pct`) ? <p className="mt-1 text-[10px] text-amber-200">{tplError(`tpl_d2_step_${step.step}_trigger_pct`)}</p> : null}</td>
+                    <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_qty_pct_of_d1`} defaultValue={String(step.stepQtyPctOfD1)} disabled={pending} className="w-full rounded-md border border-white/[0.12] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />{tplError(`tpl_d2_step_${step.step}_qty_pct_of_d1`) ? <p className="mt-1 text-[10px] text-amber-200">{tplError(`tpl_d2_step_${step.step}_qty_pct_of_d1`)}</p> : null}</td>
+                    <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_target_pct`} defaultValue={String(step.stepTargetPct)} disabled={pending} className="w-full rounded-md border border-white/[0.12] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />{tplError(`tpl_d2_step_${step.step}_target_pct`) ? <p className="mt-1 text-[10px] text-amber-200">{tplError(`tpl_d2_step_${step.step}_target_pct`)}</p> : null}</td>
+                    <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_stoploss_pct`} defaultValue={String(step.stepStoplossPct)} disabled={pending} className="w-full rounded-md border border-white/[0.12] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-sky-500/40 focus:ring-2 disabled:opacity-50" />{tplError(`tpl_d2_step_${step.step}_stoploss_pct`) ? <p className="mt-1 text-[10px] text-amber-200">{tplError(`tpl_d2_step_${step.step}_stoploss_pct`)}</p> : null}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {fieldErrors.tpl_d2_total_allocation ? (
+            <p className="text-sm text-amber-200" role="alert">
+              {fieldErrors.tpl_d2_total_allocation}
+            </p>
+          ) : null}
+          {fieldErrors.tpl_trend_profit_lock ? (
+            <p className="text-sm text-amber-200" role="alert">
+              {fieldErrors.tpl_trend_profit_lock}
+            </p>
+          ) : null}
         </GlassPanel>
       ) : null}
 
