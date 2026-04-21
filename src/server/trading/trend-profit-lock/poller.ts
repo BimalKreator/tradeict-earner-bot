@@ -29,14 +29,55 @@ import {
 } from "@/server/trading/ta-engine/hedge-scalping-live-feed";
 import {
   computeChartLookbackSeconds,
-  filterClosedCandles,
   resolutionToSeconds,
   TA_CHART_TARGET_CLOSED_BARS,
+  type OhlcvCandle,
 } from "@/server/trading/ta-engine/rsi-scalper";
 import { tradingLog } from "@/server/trading/trading-log";
 
 const LOG = "[TPL-POLLER]";
 const DELTA_BASE_URL = process.env.HS_WORKER_DELTA_BASE_URL?.trim() || "https://api.india.delta.exchange";
+
+/** Throttle `tpl_halftrend_state_sync` to at most once per wall minute unless a new closed bucket appears. */
+const TPL_HALFTREND_SYNC_MIN_INTERVAL_MS = 60_000;
+const tplHalftrendSyncState = new Map<
+  string,
+  { lastLoggedClosedTime: number | null; lastLogWallMs: number }
+>();
+
+function tplHalftrendSyncKey(runId: string, symbol: string, resolution: string): string {
+  return `${runId}::${symbol.trim().toUpperCase()}::${resolution.trim().toLowerCase()}`;
+}
+
+function halfTrendTrendToUpDown(trend: number): "UP" | "DOWN" {
+  return trend === 0 ? "UP" : "DOWN";
+}
+
+/** Normalize OHLCV → HalfTrend series (sorted ascending by bar open time, seconds). */
+function mapSnapshotCandlesToHalfTrendSeries(raw: OhlcvCandle[]): HalfTrendCandle[] {
+  const out: HalfTrendCandle[] = [];
+  for (const c of raw) {
+    let t = Number(c.time);
+    if (t > 1e15) t = Math.floor(t / 1_000_000);
+    else if (t > 1e12) t = Math.floor(t / 1000);
+    const open = Number(c.open);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const close = Number(c.close);
+    const volume = Number(c.volume);
+    if (![t, open, high, low, close].every((x) => Number.isFinite(x))) continue;
+    out.push({
+      time: t,
+      open,
+      high,
+      low,
+      close,
+      volume: Number.isFinite(volume) ? volume : 0,
+    });
+  }
+  out.sort((a, b) => a.time - b.time);
+  return out;
+}
 
 type TplRuntimeState = {
   /** Latest closed bar `time` for which we already acted on a HalfTrend flip (avoids duplicate D1 on the same bar). */
@@ -290,28 +331,55 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const snapshot = getHedgeScalpingLiveSnapshot({ symbol, resolution });
     if (!snapshot || snapshot.candles.length < 40) continue;
 
-    const closed = filterClosedCandles(snapshot.candles, resSec);
-    if (closed.length < 30) continue;
-    const candles: HalfTrendCandle[] = closed.map((c) => ({
-      time: c.time,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-      volume: c.volume,
-    }));
-    const ht = calculateHalfTrendSignal(candles, cfg.halftrendAmplitude);
-    const lastClosedBarTime = candles[candles.length - 1]!.time;
-    const htPriorClosed =
-      candles.length >= 2
-        ? calculateHalfTrendSignal(candles.slice(0, -1), cfg.halftrendAmplitude)
+    /**
+     * HalfTrend must not read the feed's tail bar: it is still updating (repaint). Match TradingView by
+     * computing on all bars except the last snapshot bucket, then compare latest vs second-latest closed HT.
+     */
+    const seriesAll = mapSnapshotCandlesToHalfTrendSeries(snapshot.candles);
+    if (seriesAll.length < 31) continue;
+    const closedCandles: HalfTrendCandle[] = seriesAll.slice(0, -1);
+    if (closedCandles.length < 30) continue;
+
+    const amp = cfg.halftrendAmplitude;
+    const htLatestClosed = calculateHalfTrendSignal(closedCandles, amp);
+    const htPreviousClosed =
+      closedCandles.length >= 2
+        ? calculateHalfTrendSignal(closedCandles.slice(0, -1), amp)
         : null;
-    /** True only when the latest *closed* candle is where HalfTrend direction changed vs the prior bar. */
+
+    const latestClosedBarTime = closedCandles[closedCandles.length - 1]!.time;
     const halfTrendFreshFlipOnLatestClosed =
-      htPriorClosed != null &&
-      htPriorClosed.trend !== ht.trend &&
-      ht.flipCandleTime != null &&
-      ht.flipCandleTime === lastClosedBarTime;
+      htPreviousClosed != null && htLatestClosed.trend !== htPreviousClosed.trend;
+
+    if (htPreviousClosed != null) {
+      const syncKey = tplHalftrendSyncKey(run.runId, symbol, resolution);
+      const prev = tplHalftrendSyncState.get(syncKey) ?? {
+        lastLoggedClosedTime: null,
+        lastLogWallMs: 0,
+      };
+      const nowMs = Date.now();
+      const newClosedBucket = prev.lastLoggedClosedTime !== latestClosedBarTime;
+      const minuteElapsed = nowMs - prev.lastLogWallMs >= TPL_HALFTREND_SYNC_MIN_INTERVAL_MS;
+      if (newClosedBucket || minuteElapsed) {
+        tradingLog("info", "tpl_halftrend_state_sync", {
+          event: "tpl_halftrend_state_sync",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          resolution,
+          latestClosedTime: latestClosedBarTime,
+          htLatestClosedTrend: halfTrendTrendToUpDown(htLatestClosed.trend),
+          htPreviousClosedTrend: halfTrendTrendToUpDown(htPreviousClosed.trend),
+          halfTrendFreshFlipOnLatestClosed,
+          closedBarCount: closedCandles.length,
+        });
+        tplHalftrendSyncState.set(syncKey, {
+          lastLoggedClosedTime: latestClosedBarTime,
+          lastLogWallMs: nowMs,
+        });
+      }
+    }
     const mark = await resolveLiveMark(symbol, snapshot.lastPrice);
     if (mark == null) continue;
 
@@ -396,8 +464,8 @@ export async function processTrendProfitLockTick(): Promise<void> {
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
-    const d1EntrySide = sideFromFlip(ht.trend);
-    const isDuplicateTick = lastClosedBarTime === runtime.lastFlipCandleTime;
+    const d1EntrySide = sideFromFlip(htLatestClosed.trend);
+    const isDuplicateTick = latestClosedBarTime === runtime.lastFlipCandleTime;
     const isSameDirectionBlock = d1EntrySide === runtime.lastCompletedD1FlipDirection;
     const hasOpenD1Position = hasOpenD1;
     const isPostWipeoutSameTickBlock = clearedStaleD1RuntimeThisTick;
@@ -428,12 +496,12 @@ export async function processTrendProfitLockTick(): Promise<void> {
           isSameDirectionBlock,
           hasOpenD1Position,
           isPostWipeoutSameTickBlock,
-          lastClosedBarTime,
+          latestClosedBarTime,
           lastFlipCandleTime: runtime.lastFlipCandleTime ?? null,
           d1EntrySide,
           lastCompletedD1FlipDirection: runtime.lastCompletedD1FlipDirection ?? null,
-          halftrendTrend: ht.trend,
-          halftrendFlipCandleTime: ht.flipCandleTime,
+          halftrendTrendLatestClosed: htLatestClosed.trend,
+          halftrendTrendPreviousClosed: htPreviousClosed?.trend ?? null,
           prospectiveD1TargetPx,
           prospectiveD1TargetDistance,
           prospectiveD2JourneyUsable,
@@ -444,7 +512,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     if (
       halfTrendFreshFlipOnLatestClosed &&
       !clearedStaleD1RuntimeThisTick &&
-      lastClosedBarTime !== runtime.lastFlipCandleTime &&
+      latestClosedBarTime !== runtime.lastFlipCandleTime &&
       d1EntrySide !== runtime.lastCompletedD1FlipDirection &&
       !hasOpenD1
     ) {
@@ -506,7 +574,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         }
         if (qty > 0) {
           const d1Side = d1EntrySide;
-          const correlationId = `tpl_d1_${run.runId}_${lastClosedBarTime}_${d1Side.toLowerCase()}`;
+          const correlationId = `tpl_d1_${run.runId}_${latestClosedBarTime}_${d1Side.toLowerCase()}`;
           let dispatch: StrategySignalIntakeResponse;
           try {
             dispatch = await dispatchStrategyExecutionSignal({
@@ -526,7 +594,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
                 force_signal_quantity: true,
                 mark_price: mark,
                 timeframe: resolution,
-                halftrend_flip_time: ht.flipCandleTime,
+                halftrend_flip_time: latestClosedBarTime,
               },
             });
           } catch (e) {
@@ -554,7 +622,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           };
         }
       }
-      runtime.lastFlipCandleTime = lastClosedBarTime;
+      runtime.lastFlipCandleTime = latestClosedBarTime;
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
