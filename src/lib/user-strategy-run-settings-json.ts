@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { trendProfitLockConfigSchema } from "./trend-profit-lock-config";
+import { trendProfitLockConfigBaseSchema } from "./trend-profit-lock-config";
 
 const hedgeScalpingRunSymbolSchema = z.object({
   symbol: z.string().trim().min(1),
@@ -53,7 +53,7 @@ const trendProfitLockRuntimeSchema = z.object({
 /** JSON stored on `user_strategy_runs.run_settings_json` / `virtual_strategy_runs.run_settings_json`. */
 export const userStrategyRunSettingsJsonSchema = z.object({
   hedgeScalping: hedgeScalpingRunSymbolSchema.optional(),
-  trendProfitLock: trendProfitLockConfigSchema.partial().optional(),
+  trendProfitLock: trendProfitLockConfigBaseSchema.partial().optional(),
   trendProfitLockRuntime: trendProfitLockRuntimeSchema.optional(),
   execution: executionPreferencesSchema.optional(),
 });

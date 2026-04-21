@@ -562,7 +562,10 @@ export async function processTrendProfitLockTick(): Promise<void> {
     for (const step of cfg.d2Steps) {
       const existingState = d2States[String(step.step)];
       if (triggered.has(step.step) || existingState?.status === "open") continue;
-      const triggerPx = d1Side === "LONG" ? entryPx * (1 + step.stepTriggerPct / 100) : entryPx * (1 - step.stepTriggerPct / 100);
+      // D2 trigger is % of the D1 target journey, not a flat % move from entry.
+      const d1TargetDistance = Math.abs(d1TargetPx - entryPx);
+      const stepJourneyDistance = d1TargetDistance * (step.stepTriggerPct / 100);
+      const triggerPx = d1Side === "LONG" ? entryPx + stepJourneyDistance : entryPx - stepJourneyDistance;
       const reached = d1Side === "LONG" ? mark >= triggerPx : mark <= triggerPx;
       if (!reached) continue;
 

@@ -18,7 +18,7 @@ const d2StepSchema = z.object({
   stepStoplossPct: z.number().finite().min(0).max(100),
 });
 
-export const trendProfitLockConfigSchema = z.object({
+export const trendProfitLockConfigBaseSchema = z.object({
   timeframe: trendProfitLockTimeframeSchema.default("1m"),
   halftrendAmplitude: z.number().int().min(1).default(2),
   symbol: z.string().trim().min(1).default("BTCUSD"),
@@ -27,7 +27,9 @@ export const trendProfitLockConfigSchema = z.object({
   d1StoplossPct: z.number().finite().min(0).max(100).default(1),
   d1BreakevenTriggerPct: z.number().finite().min(0).max(100).default(30),
   d2Steps: z.array(d2StepSchema).length(5),
-}).superRefine((cfg, ctx) => {
+});
+
+export const trendProfitLockConfigSchema = trendProfitLockConfigBaseSchema.superRefine((cfg, ctx) => {
   let prevTrigger = -Infinity;
   let totalQtyPct = 0;
   for (let i = 0; i < cfg.d2Steps.length; i++) {

@@ -327,7 +327,7 @@ export function UserStrategySettingsForm({
               <thead className="bg-black/40 text-[var(--text-muted)]">
                 <tr>
                   <th className="px-3 py-2">Step</th>
-                  <th className="px-3 py-2">Trigger %</th>
+                  <th className="px-3 py-2">Trigger (% of D1 Target Dist.)</th>
                   <th className="px-3 py-2">Qty % of D1</th>
                   <th className="px-3 py-2">Target %</th>
                   <th className="px-3 py-2">Stoploss %</th>
