@@ -37,10 +37,26 @@ function resolveLiveExchangeConnectionIds(
   const hsLeg = resolveHedgeScalpingLegRouting(signal);
   if (hsLeg === "d1") {
     const primary = r.primaryExchangeConnectionId ?? r.exchangeConnectionId;
+    if (!primary) {
+      tradingLog("warn", "hs_live_route_missing_primary", {
+        strategyId: signal.strategyId,
+        runId: r.runId,
+        userId: r.userId,
+        correlationId: signal.correlationId,
+      });
+    }
     return primary ? [primary] : [];
   }
   if (hsLeg === "d2") {
     // Strict HS architecture: D2 must route to secondary only.
+    if (!r.secondaryExchangeConnectionId) {
+      tradingLog("warn", "hs_live_route_missing_secondary", {
+        strategyId: signal.strategyId,
+        runId: r.runId,
+        userId: r.userId,
+        correlationId: signal.correlationId,
+      });
+    }
     return r.secondaryExchangeConnectionId ? [r.secondaryExchangeConnectionId] : [];
   }
 

@@ -41,6 +41,7 @@ export function netExternalFlowFromMovements(
 export type UserFundsLiveExchangePayload = {
   ok: true;
   asOf: string;
+  /** Sum of all ready Delta account balances for the user. */
   liveBalance: string | null;
   availableMargin: string | null;
   netEquity: string | null;
@@ -78,8 +79,10 @@ export async function fetchUserFundsLiveFromDelta(
     };
   }
 
-  const [ec] = await db
+  const ecs = await db
     .select({
+      id: exchangeConnections.id,
+      accountLabel: exchangeConnections.accountLabel,
       status: exchangeConnections.status,
       lastTestStatus: exchangeConnections.lastTestStatus,
       apiKeyCiphertext: exchangeConnections.apiKeyCiphertext,
@@ -94,9 +97,9 @@ export async function fetchUserFundsLiveFromDelta(
       ),
     )
     .orderBy(desc(exchangeConnections.updatedAt))
-    .limit(1);
+    .limit(20);
 
-  if (!ec) {
+  if (ecs.length === 0) {
     return {
       ok: false,
       code: "no_connection",
@@ -104,7 +107,10 @@ export async function fetchUserFundsLiveFromDelta(
     };
   }
 
-  if (ec.status !== "active" || ec.lastTestStatus !== "success") {
+  const readyConnections = ecs.filter(
+    (ec) => ec.status === "active" && ec.lastTestStatus === "success",
+  );
+  if (readyConnections.length === 0) {
     return {
       ok: false,
       code: "exchange_not_ready",
@@ -112,12 +118,9 @@ export async function fetchUserFundsLiveFromDelta(
     };
   }
 
-  let adapter: DeltaIndiaTradingAdapter;
+  let encKey: Buffer;
   try {
-    const encKey = assertExchangeSecretsKeyConfigured();
-    const apiKey = decryptExchangeSecret(ec.apiKeyCiphertext, encKey);
-    const apiSecret = decryptExchangeSecret(ec.apiSecretCiphertext, encKey);
-    adapter = new DeltaIndiaTradingAdapter(apiKey, apiSecret);
+    encKey = assertExchangeSecretsKeyConfigured();
   } catch {
     return {
       ok: false,
@@ -125,29 +128,68 @@ export async function fetchUserFundsLiveFromDelta(
       message: "Could not read exchange credentials.",
     };
   }
+  let liveBalanceSum = 0;
+  let availableMarginSum = 0;
+  let netEquitySum = 0;
+  let hasAnyBalance = false;
+  let hasAnyAvailableMargin = false;
+  let hasAnyNetEquity = false;
+  const balanceErrors: string[] = [];
+  let movements: DeltaWalletMovement[] = [];
+  let transactionError: string | undefined;
 
-  const [bal, tx] = await Promise.all([
-    adapter.fetchWalletBalances(),
-    adapter.fetchWalletTransactions({ pageSize: 10 }),
-  ]);
+  for (const ec of readyConnections) {
+    try {
+      const apiKey = decryptExchangeSecret(ec.apiKeyCiphertext, encKey);
+      const apiSecret = decryptExchangeSecret(ec.apiSecretCiphertext, encKey);
+      const adapter = new DeltaIndiaTradingAdapter(apiKey, apiSecret);
+      const [bal, tx] = await Promise.all([
+        adapter.fetchWalletBalances(),
+        adapter.fetchWalletTransactions({ pageSize: 10 }),
+      ]);
 
-  const movements = tx.ok ? tx.movements : [];
-  const { netSigned } = netExternalFlowFromMovements(movements);
+      if (movements.length === 0) {
+        if (tx.ok) movements = tx.movements;
+        else transactionError = tx.error;
+      }
 
-  let liveBalance: string | null = null;
-  let availableMargin: string | null = null;
-  let netEquity: string | null = null;
-  let balanceError: string | undefined;
+      if (!bal.ok) {
+        balanceErrors.push(`${ec.accountLabel}: ${bal.error}`);
+        continue;
+      }
 
-  if (bal.ok) {
-    liveBalance = bal.liveBalanceDisplay;
-    availableMargin = bal.availableMarginTotal;
-    netEquity = bal.netEquity;
-  } else {
-    balanceError = bal.error;
+      const liveNum = Number(bal.liveBalanceDisplay);
+      if (Number.isFinite(liveNum)) {
+        liveBalanceSum += liveNum;
+        hasAnyBalance = true;
+      }
+
+      const marginNum = Number(bal.availableMarginTotal);
+      if (Number.isFinite(marginNum)) {
+        availableMarginSum += marginNum;
+        hasAnyAvailableMargin = true;
+      }
+
+      const netEqNum = Number(bal.netEquity);
+      if (Number.isFinite(netEqNum)) {
+        netEquitySum += netEqNum;
+        hasAnyNetEquity = true;
+      }
+    } catch {
+      balanceErrors.push(`${ec.accountLabel}: credentials unavailable`);
+    }
   }
 
-  const liveNum = liveBalance != null ? Number(liveBalance) : NaN;
+  if (!hasAnyBalance && readyConnections.length > 0) {
+    return {
+      ok: false,
+      code: "unknown",
+      message: "Could not fetch balances from ready Delta profiles.",
+    };
+  }
+
+  const { netSigned } = netExternalFlowFromMovements(movements);
+  const liveNum = hasAnyBalance ? liveBalanceSum : NaN;
   const netFundFlow =
     Number.isFinite(liveNum) && Number.isFinite(netSigned)
       ? String(liveNum - netSigned)
@@ -156,13 +198,13 @@ export async function fetchUserFundsLiveFromDelta(
   return {
     ok: true,
     asOf: new Date().toISOString(),
-    liveBalance,
-    availableMargin,
-    netEquity,
+    liveBalance: hasAnyBalance ? String(liveBalanceSum) : null,
+    availableMargin: hasAnyAvailableMargin ? String(availableMarginSum) : null,
+    netEquity: hasAnyNetEquity ? String(netEquitySum) : null,
     netFundFlow,
     netExternalMovementHint: Number.isFinite(netSigned) ? String(netSigned) : null,
     movements,
-    balanceError,
-    transactionError: tx.ok ? undefined : tx.error,
+    balanceError: balanceErrors.length > 0 ? balanceErrors.join(" | ") : undefined,
+    transactionError,
   };
 }

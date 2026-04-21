@@ -7,7 +7,7 @@ import { formatInrAmount, formatUsdAmount } from "@/lib/format-inr";
 import { isFundsLiveOk, type FundsLiveApiResponse } from "@/lib/funds-live-api";
 
 /**
- * Polls `/api/user/funds/live` every 60s for Delta balance; shows weekly revenue due from SSR props.
+ * Polls `/api/user/funds/live` every 60s for aggregated Delta balances; shows weekly revenue due from SSR props.
  */
 export function FundsSummaryWidget({
   revenueDueWeekInr,
@@ -53,8 +53,8 @@ export function FundsSummaryWidget({
             Funds snapshot
           </p>
           <p className="mt-2 text-sm text-[var(--text-muted)]">
-            Live Delta balance in USD (60s refresh) and revenue share due this IST week
-            (INR).
+            Total live Delta balance across linked profiles (e.g. D1 + D2) in USD (60s
+            refresh) and revenue share due this IST week (INR).
           </p>
         </div>
         <Link
@@ -67,7 +67,7 @@ export function FundsSummaryWidget({
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <div>
           <p className="text-[10px] uppercase text-[var(--text-muted)]">
-            Live balance (USD)
+            Total live balance (USD)
           </p>
           <p className="mt-0.5 font-[family-name:var(--font-display)] text-xl font-bold tabular-nums text-[var(--text-primary)]">
             {bal}
