@@ -26,6 +26,9 @@ const trendProfitLockRuntimeSchema = z.object({
       breakevenQueuedAt: z.string().optional(),
       breakevenExecutedAt: z.string().optional(),
       breakevenOrderCorrelationId: z.string().optional(),
+      stopLossOrderExternalId: z.string().optional(),
+      stopLossOrderClientId: z.string().optional(),
+      stopLossPlacedAt: z.string().optional(),
     })
     .optional(),
   d2TriggeredSteps: z.array(z.number().int()).optional(),

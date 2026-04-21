@@ -50,7 +50,7 @@ export type AdminStrategyFormDefaults = {
       step: number;
       stepTriggerPct: string;
       stepQtyPctOfD1: string;
-      stepTargetPct: string;
+      targetLinkType: TrendProfitLockConfig["d2Steps"][number]["targetLinkType"];
       stepStoplossPct: string;
     }[];
   } | null;
@@ -216,7 +216,7 @@ export function strategyDefaultsFromRow(row: {
             step: s.step,
             stepTriggerPct: String(s.stepTriggerPct),
             stepQtyPctOfD1: String(s.stepQtyPctOfD1),
-            stepTargetPct: String(s.stepTargetPct),
+            targetLinkType: s.targetLinkType,
             stepStoplossPct: String(s.stepStoplossPct),
           })),
         },

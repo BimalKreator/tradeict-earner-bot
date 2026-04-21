@@ -10,11 +10,19 @@ export const trendProfitLockTimeframeSchema = z.enum([
   "4h",
 ]);
 
+export const trendProfitLockTargetLinkTypeSchema = z.enum([
+  "D1_ENTRY",
+  "STEP_1_ENTRY",
+  "STEP_2_ENTRY",
+  "STEP_3_ENTRY",
+  "STEP_4_ENTRY",
+]);
+
 const d2StepSchema = z.object({
   step: z.number().int().min(1).max(5),
   stepTriggerPct: z.number().finite().min(0).max(100),
   stepQtyPctOfD1: z.number().finite().min(0).max(100),
-  stepTargetPct: z.number().finite().min(0).max(100),
+  targetLinkType: trendProfitLockTargetLinkTypeSchema,
   stepStoplossPct: z.number().finite().min(0).max(100),
 });
 
@@ -65,11 +73,11 @@ export function defaultTrendProfitLockConfig(): TrendProfitLockConfig {
     d1StoplossPct: 1,
     d1BreakevenTriggerPct: 30,
     d2Steps: [
-      { step: 1, stepTriggerPct: 0.2, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
-      { step: 2, stepTriggerPct: 0.4, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
-      { step: 3, stepTriggerPct: 0.6, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
-      { step: 4, stepTriggerPct: 0.8, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
-      { step: 5, stepTriggerPct: 1.0, stepQtyPctOfD1: 20, stepTargetPct: 0.3, stepStoplossPct: 12 },
+      { step: 1, stepTriggerPct: 20, stepQtyPctOfD1: 20, targetLinkType: "D1_ENTRY", stepStoplossPct: 12 },
+      { step: 2, stepTriggerPct: 30, stepQtyPctOfD1: 20, targetLinkType: "STEP_1_ENTRY", stepStoplossPct: 12 },
+      { step: 3, stepTriggerPct: 40, stepQtyPctOfD1: 20, targetLinkType: "STEP_2_ENTRY", stepStoplossPct: 12 },
+      { step: 4, stepTriggerPct: 50, stepQtyPctOfD1: 20, targetLinkType: "STEP_3_ENTRY", stepStoplossPct: 12 },
+      { step: 5, stepTriggerPct: 60, stepQtyPctOfD1: 20, targetLinkType: "STEP_4_ENTRY", stepStoplossPct: 12 },
     ],
   };
 }

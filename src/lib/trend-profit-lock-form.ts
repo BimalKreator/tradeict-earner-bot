@@ -1,5 +1,6 @@
 import {
   defaultTrendProfitLockConfig,
+  trendProfitLockTargetLinkTypeSchema,
   trendProfitLockConfigSchema,
   type TrendProfitLockConfig,
 } from "./trend-profit-lock-config";
@@ -29,7 +30,12 @@ export function parseTrendProfitLockConfigFromFormData(
         step,
         stepTriggerPct: n(formData.get(`tpl_d2_step_${step}_trigger_pct`)),
         stepQtyPctOfD1: n(formData.get(`tpl_d2_step_${step}_qty_pct_of_d1`)),
-        stepTargetPct: n(formData.get(`tpl_d2_step_${step}_target_pct`)),
+        targetLinkType:
+          trendProfitLockTargetLinkTypeSchema.safeParse(
+            String(formData.get(`tpl_d2_step_${step}_target_link_type`) ?? "").trim(),
+          ).success
+            ? String(formData.get(`tpl_d2_step_${step}_target_link_type`) ?? "").trim()
+            : "D1_ENTRY",
         stepStoplossPct: n(formData.get(`tpl_d2_step_${step}_stoploss_pct`)),
       };
     }),
@@ -61,7 +67,7 @@ export function parseTrendProfitLockConfigFromFormData(
           message = `Step ${step} trigger must be greater than Step ${step - 1}`;
         }
       } else if (p2 === "stepQtyPctOfD1") key = `tpl_d2_step_${step}_qty_pct_of_d1`;
-      else if (p2 === "stepTargetPct") key = `tpl_d2_step_${step}_target_pct`;
+      else if (p2 === "targetLinkType") key = `tpl_d2_step_${step}_target_link_type`;
       else if (p2 === "stepStoplossPct") key = `tpl_d2_step_${step}_stoploss_pct`;
     } else if (p0 === "d2Steps" && issue.message.toLowerCase().includes("cannot exceed 100")) {
       key = "tpl_d2_total_allocation";

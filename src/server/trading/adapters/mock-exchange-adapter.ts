@@ -1,4 +1,5 @@
 import type {
+  CancelOrderByExternalIdResult,
   ExchangeOpenPositionsResult,
   ExchangeTradingAdapter,
   OrderSyncResult,
@@ -45,6 +46,10 @@ export class MockExchangeAdapter implements ExchangeTradingAdapter {
       status: "unknown",
       raw: { mock: true, externalOrderId },
     };
+  }
+
+  async cancelOrderByExternalId(_externalOrderId: string): Promise<CancelOrderByExternalIdResult> {
+    return { ok: true, cancelled: true, raw: { mock: true } };
   }
 
   async fetchOpenPositions(): Promise<ExchangeOpenPositionsResult> {

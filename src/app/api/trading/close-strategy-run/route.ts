@@ -2,8 +2,9 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
-import { verifySessionToken } from "@/lib/session";
 import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
+import { parseUserStrategyRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
+import { verifySessionToken } from "@/lib/session";
 import {
   classifyHedgeScalpingVirtualDualAccount,
   deriveLedgerMetrics,
@@ -16,6 +17,7 @@ import { db } from "@/server/db";
 import {
   botPositions,
   botOrders,
+  exchangeConnections,
   hedgeScalpingVirtualClips,
   hedgeScalpingVirtualRuns,
   strategies,
@@ -33,6 +35,7 @@ import {
   insertHsVirtualFilledOrder,
   type HedgeScalpingDbTx,
 } from "@/server/trading/hedge-scalping/virtual-integration";
+import { resolveExchangeTradingAdapter } from "@/server/trading/adapters/resolve-exchange-adapter";
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
 import { assertVirtualRunStillEligibleForExecution } from "@/server/trading/virtual-eligibility";
 import { simulateVirtualOrder } from "@/server/trading/virtual-order-simulator";
@@ -52,6 +55,50 @@ function toWholeContractCloseQty(rawNetQty: number): number {
   const absNet = Math.abs(rawNetQty);
   if (!Number.isFinite(absNet) || absNet <= 0) return 0;
   return Math.floor(absNet);
+}
+
+function isTrendProfitLockSlug(slug: string | null | undefined): boolean {
+  return (slug ?? "").toLowerCase().includes("trend-profit-lock");
+}
+
+function clearTrendProfitLockD1StopMetadataFromRunSettings(raw: unknown): Record<string, unknown> {
+  const base =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>) }
+      : {};
+  const rt = base.trendProfitLockRuntime;
+  if (rt && typeof rt === "object" && !Array.isArray(rt)) {
+    const rto = { ...(rt as Record<string, unknown>) };
+    const d1 = rto.d1;
+    if (d1 && typeof d1 === "object" && !Array.isArray(d1)) {
+      const d1o = { ...(d1 as Record<string, unknown>) };
+      delete d1o.stopLossOrderExternalId;
+      delete d1o.stopLossOrderClientId;
+      delete d1o.stopLossPlacedAt;
+      rto.d1 = d1o;
+    }
+    base.trendProfitLockRuntime = rto;
+  }
+  return base;
+}
+
+async function loadExchangeAdapterForConnection(exchangeConnectionId: string) {
+  if (!db) return { ok: false as const, error: "no_database" };
+  const [ec] = await db
+    .select({
+      provider: exchangeConnections.provider,
+      apiKeyCiphertext: exchangeConnections.apiKeyCiphertext,
+      apiSecretCiphertext: exchangeConnections.apiSecretCiphertext,
+    })
+    .from(exchangeConnections)
+    .where(eq(exchangeConnections.id, exchangeConnectionId))
+    .limit(1);
+  if (!ec) return { ok: false as const, error: "exchange_connection_not_found" };
+  return resolveExchangeTradingAdapter({
+    provider: ec.provider,
+    apiKeyCiphertext: ec.apiKeyCiphertext,
+    apiSecretCiphertext: ec.apiSecretCiphertext,
+  });
 }
 
 /** Hedge D1 entry correlation only: `hs_d1_<runId>` (not `hs_d1_exit_...`). */
@@ -650,6 +697,34 @@ async function closeVirtualRun(
   return { ok: true as const, closed, detail: "virtual_closed" };
 }
 
+async function resolveVenueSignedNetForManualClose(params: {
+  exchangeConnectionId: string;
+  symbol: string;
+  localNet: number;
+}): Promise<{ signedNet: number; source: "venue" | "local" }> {
+  const adap = await loadExchangeAdapterForConnection(params.exchangeConnectionId);
+  if (!adap.ok || !adap.adapter.fetchOpenPositions) {
+    return { signedNet: params.localNet, source: "local" };
+  }
+  const snap = await adap.adapter.fetchOpenPositions({ symbols: [params.symbol] });
+  if (!snap.ok) {
+    tradingLog("warn", "manual_close_venue_qty_fetch_failed", {
+      error: snap.error,
+      symbol: params.symbol,
+      exchangeConnectionId: params.exchangeConnectionId,
+    });
+    return { signedNet: params.localNet, source: "local" };
+  }
+  const symU = params.symbol.trim().toUpperCase();
+  const row = snap.positions.find((x) => x.symbol.trim().toUpperCase() === symU);
+  if (!row) {
+    return { signedNet: 0, source: "venue" };
+  }
+  const ex = Number(row.netQty);
+  if (!Number.isFinite(ex)) return { signedNet: params.localNet, source: "local" };
+  return { signedNet: ex, source: "venue" };
+}
+
 async function closeRealRun(
   runId: string,
   requesterUserId: string,
@@ -671,17 +746,45 @@ async function closeRealRun(
       primaryEx: userStrategyRuns.primaryExchangeConnectionId,
       secondaryEx: userStrategyRuns.secondaryExchangeConnectionId,
       subscriptionId: userStrategyRuns.subscriptionId,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
+      strategySlug: strategies.slug,
     })
     .from(userStrategyRuns)
     .innerJoin(
       userStrategySubscriptions,
       eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
     )
+    .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
     .where(eq(userStrategyRuns.id, runId))
     .limit(1);
   if (!run) return { ok: false as const, error: "run_not_found" };
   if (!isAdmin && run.userId !== requesterUserId) {
     return { ok: false as const, error: "forbidden" };
+  }
+
+  if (isTrendProfitLockSlug(run.strategySlug) && run.primaryEx) {
+    const parsed = parseUserStrategyRunSettingsJson(run.runSettingsJson);
+    const stopId = parsed.trendProfitLockRuntime?.d1?.stopLossOrderExternalId?.trim();
+    if (stopId) {
+      const adap = await loadExchangeAdapterForConnection(run.primaryEx);
+      if (adap.ok && adap.adapter.cancelOrderByExternalId) {
+        const c = await adap.adapter.cancelOrderByExternalId(stopId);
+        tradingLog(c.ok ? "info" : "warn", "manual_close_tpl_protective_stop_cancel", {
+          requestId,
+          runId,
+          stopOrderId: stopId,
+          ok: c.ok,
+          cancelled: c.ok ? c.cancelled : undefined,
+          error: c.ok ? null : c.error,
+        });
+      } else if (!adap.ok) {
+        tradingLog("warn", "manual_close_tpl_stop_cancel_adapter_unavailable", {
+          requestId,
+          runId,
+          error: adap.error,
+        });
+      }
+    }
   }
 
   const positions = await db
@@ -696,6 +799,7 @@ async function closeRealRun(
     .where(
       and(
         eq(botPositions.subscriptionId, run.subscriptionId),
+        eq(botPositions.strategyId, run.strategyId),
         sql`abs(cast(${botPositions.netQuantity} as numeric)) > 0.00000001`,
       ),
     );
@@ -711,8 +815,61 @@ async function closeRealRun(
   let closed = 0;
   let ghostFlushed = 0;
   for (const p of positions) {
-    const net = Number(p.netQty ?? "0");
-    if (!(Math.abs(net) > 1e-8)) continue;
+    const localNet = Number(p.netQty ?? "0");
+    if (!(Math.abs(localNet) > 1e-8)) continue;
+
+    const { signedNet: net, source: qtySource } = await resolveVenueSignedNetForManualClose({
+      exchangeConnectionId: p.exchangeConnectionId,
+      symbol: p.symbol,
+      localNet,
+    });
+
+    if (!(Math.abs(net) > 1e-8)) {
+      const [lastFilled] = await db
+        .select({
+          filledQty: botOrders.filledQty,
+          createdAt: botOrders.createdAt,
+        })
+        .from(botOrders)
+        .where(
+          and(
+            eq(botOrders.subscriptionId, run.subscriptionId),
+            eq(botOrders.strategyId, run.strategyId),
+            eq(botOrders.exchangeConnectionId, p.exchangeConnectionId),
+            eq(botOrders.symbol, p.symbol),
+          ),
+        )
+        .orderBy(desc(botOrders.createdAt))
+        .limit(1);
+      await db
+        .update(botPositions)
+        .set({
+          netQuantity: "0",
+          averageEntryPrice: null,
+          updatedAt: new Date(),
+          metadata: {
+            ...(p.metadata && typeof p.metadata === "object" ? p.metadata : {}),
+            ghost_position_flushed_at: new Date().toISOString(),
+            ghost_position_previous_net_qty: String(p.netQty ?? ""),
+            ghost_position_flush_reason: "venue_flat_manual_close",
+            ghost_position_qty_source: qtySource,
+            ghost_position_last_filled_qty:
+              lastFilled?.filledQty != null ? String(lastFilled.filledQty) : null,
+          },
+        })
+        .where(eq(botPositions.id, p.id));
+      ghostFlushed += 1;
+      tradingLog("warn", "manual_close_real_ghost_flush_venue_flat", {
+        requestId,
+        runId,
+        symbol: p.symbol,
+        exchangeConnectionId: p.exchangeConnectionId,
+        localNetQty: localNet,
+        qtySource,
+      });
+      continue;
+    }
+
     const wholeContracts = toWholeContractCloseQty(net);
     if (wholeContracts < 1) {
       const [lastFilled] = await db
@@ -724,6 +881,7 @@ async function closeRealRun(
         .where(
           and(
             eq(botOrders.subscriptionId, run.subscriptionId),
+            eq(botOrders.strategyId, run.strategyId),
             eq(botOrders.exchangeConnectionId, p.exchangeConnectionId),
             eq(botOrders.symbol, p.symbol),
           ),
@@ -779,6 +937,7 @@ async function closeRealRun(
         close_all_legs: true,
         manual_emergency_close: true,
         manual_close_request_id: requestId,
+        venue_qty_source: qtySource,
       },
     });
     if (!res.ok) {
@@ -802,10 +961,22 @@ async function closeRealRun(
       jobsEnqueued: res.jobsEnqueued,
       liveJobsEnqueued: res.liveJobsEnqueued ?? 0,
       virtualJobsEnqueued: res.virtualJobsEnqueued ?? 0,
+      qtySource,
       correlationId: `manual_close_real_${runId}_${p.exchangeConnectionId}_*`,
     });
     closed += res.jobsEnqueued;
   }
+
+  if (isTrendProfitLockSlug(run.strategySlug)) {
+    await db
+      .update(userStrategyRuns)
+      .set({
+        runSettingsJson: clearTrendProfitLockD1StopMetadataFromRunSettings(run.runSettingsJson),
+        updatedAt: new Date(),
+      })
+      .where(eq(userStrategyRuns.id, run.runId));
+  }
+
   tradingLog("info", "manual_close_real_done", {
     requestId,
     runId,

@@ -10,12 +10,16 @@ import type {
   DeltaWalletTransactionsSnapshot,
 } from "@/server/exchange/delta-india-wallet-types";
 import { normalizeDeltaOrderContractSize } from "@/server/exchange/delta-order-contract-size";
-import { fetchDeltaIndiaProductLeverageBounds } from "@/server/exchange/delta-product-resolver";
+import {
+  fetchDeltaIndiaProductLeverageBounds,
+  fetchDeltaIndiaProductTickSize,
+} from "@/server/exchange/delta-product-resolver";
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
   AmendStopLossOrderInput,
   AmendStopLossOrderResult,
+  CancelOrderByExternalIdResult,
   ExchangeOpenPositionsResult,
   ExchangeTradingAdapter,
   OrderSyncResult,
@@ -174,6 +178,18 @@ function asPositiveFinite(raw: unknown): number | null {
         ? Number(raw.trim())
         : NaN;
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Round a numeric stop to Delta's `tick_size` grid and return the API string form. */
+function formatStopPriceForDeltaTick(stopPriceNum: number, tickSizeStr: string | null): string {
+  if (!Number.isFinite(stopPriceNum) || stopPriceNum <= 0) return String(stopPriceNum);
+  if (!tickSizeStr) return String(stopPriceNum);
+  const tick = Number(tickSizeStr);
+  if (!Number.isFinite(tick) || tick <= 0) return String(stopPriceNum);
+  const rounded = Math.round(stopPriceNum / tick) * tick;
+  const dot = tickSizeStr.indexOf(".");
+  const decimals = dot >= 0 ? tickSizeStr.slice(dot + 1).length : 0;
+  return decimals > 0 ? rounded.toFixed(decimals) : String(Math.round(rounded));
 }
 
 function buildPlaceOrderJsonBody(
@@ -421,9 +437,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     };
   }
 
-  private async cancelOrderByExternalId(
-    externalOrderId: string,
-  ): Promise<{ ok: true; cancelled: boolean; raw: Record<string, unknown> } | { ok: false; error: string; raw?: Record<string, unknown> }> {
+  async cancelOrderByExternalId(externalOrderId: string): Promise<CancelOrderByExternalIdResult> {
     const path = `/v2/orders/${encodeURIComponent(externalOrderId)}`;
     const r = await this.signedFetch("DELETE", path, "", "");
     if (r.ok && deltaJsonSuccess(r.json)) {
@@ -445,35 +459,49 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     if (!product.ok) return { ok: false, error: product.error };
     const sizeNorm = normalizeDeltaOrderContractSize(String(input.quantity));
     if (!sizeNorm.ok) return { ok: false, error: sizeNorm.error };
-    const stopPx = String(input.stopPrice ?? "").trim();
-    if (!stopPx) return { ok: false, error: "stopPrice is required for stop-loss order." };
+    const stopRaw = String(input.stopPrice ?? "").trim();
+    if (!stopRaw) return { ok: false, error: "stopPrice is required for stop-loss order." };
+    const stopNum = Number(stopRaw);
+    if (!Number.isFinite(stopNum) || stopNum <= 0) {
+      return { ok: false, error: "stopPrice must be a positive number for stop-loss order." };
+    }
+    const tickStr = await fetchDeltaIndiaProductTickSize(input.symbol);
+    const stopPx = formatStopPriceForDeltaTick(stopNum, tickStr);
 
-    const payloadA: Record<string, string | number> = {
-      product_id: product.productId,
-      size: sizeNorm.size,
-      side: input.side,
-      order_type: "market_order",
-      stop_price: stopPx,
-      reduce_only: "true",
-      client_order_id: input.internalClientOrderId,
-    };
-    const payloadB: Record<string, string | number> = {
-      product_id: product.productId,
-      size: sizeNorm.size,
-      side: input.side,
-      order_type: "stop_order",
-      stop_order_type: "market_order",
-      stop_price: stopPx,
-      reduce_only: "true",
-      client_order_id: input.internalClientOrderId,
-    };
+    const triggers = ["mark_price", "last_traded_price", "spot_price"] as const;
+    let lastErr = "";
 
-    for (const payload of [payloadA, payloadB]) {
+    for (const trigger of triggers) {
+      const payload: Record<string, string | number> = {
+        product_id: product.productId,
+        size: sizeNorm.size,
+        side: input.side,
+        order_type: "market_order",
+        stop_order_type: "stop_loss_order",
+        stop_price: stopPx,
+        stop_trigger_method: trigger,
+        reduce_only: "true",
+        mmp: "disabled",
+        client_order_id: input.internalClientOrderId,
+      };
       const r = await this.signedFetch("POST", "/v2/orders", "", JSON.stringify(payload));
-      if (!r.ok) continue;
-      if (!deltaJsonSuccess(r.json)) continue;
+      const errSnippet =
+        typeof r.json.error === "object" && r.json.error !== null
+          ? JSON.stringify(r.json.error).slice(0, 600)
+          : r.text.slice(0, 600);
+      if (!r.ok) {
+        lastErr = `HTTP ${r.status}: ${errSnippet}`;
+        continue;
+      }
+      if (!deltaJsonSuccess(r.json)) {
+        lastErr = `success!=true: ${errSnippet}`;
+        continue;
+      }
       const parsed = parseDeltaOrderResultPayload(r.json);
-      if (!parsed) continue;
+      if (!parsed) {
+        lastErr = "missing_order_result";
+        continue;
+      }
       return {
         ok: true,
         externalOrderId: parsed.externalOrderId,
@@ -483,7 +511,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     }
     return {
       ok: false,
-      error: `Delta stop-loss place rejected for ${input.symbol}.`,
+      error: `Delta stop-loss place rejected for ${input.symbol} (${lastErr || "unknown"})`,
     };
   }
 

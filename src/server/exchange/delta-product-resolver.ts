@@ -203,6 +203,18 @@ export async function fetchDeltaIndiaProductMinOrderContracts(
 }
 
 /**
+ * Delta product `tick_size` (minimum price increment) for order prices.
+ */
+export async function fetchDeltaIndiaProductTickSize(symbol: string): Promise<string | null> {
+  const result = await fetchDeltaIndiaProductResultRecord(symbol);
+  if (!result) return null;
+  const raw = result.tick_size ?? result.quote_tick_size;
+  if (typeof raw === "string" && raw.trim() !== "") return raw.trim();
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return String(raw);
+  return null;
+}
+
+/**
  * Fetches `GET /v2/products` (Delta India public REST) and caches symbol → id for {@link cacheTtlMs}.
  *
  * @see https://docs.delta.exchange/ — Products list + cursor pagination (`meta.after`).

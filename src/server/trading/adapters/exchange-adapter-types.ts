@@ -76,6 +76,10 @@ export type AmendStopLossOrderResult =
   | { ok: true; externalOrderId: string; raw: Record<string, unknown>; cancelledExisting: boolean }
   | { ok: false; error: string; raw?: Record<string, unknown> };
 
+export type CancelOrderByExternalIdResult =
+  | { ok: true; cancelled: boolean; raw?: Record<string, unknown> }
+  | { ok: false; error: string; raw?: Record<string, unknown> };
+
 /**
  * Exchange-specific execution. Implementations must never log secrets.
  */
@@ -83,6 +87,9 @@ export interface ExchangeTradingAdapter {
   readonly providerId: string;
 
   placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult>;
+
+  /** Optional — cancel by venue order id (e.g. manual flatten / emergency cleanup). */
+  cancelOrderByExternalId?(externalOrderId: string): Promise<CancelOrderByExternalIdResult>;
 
   /** Optional — used to reconcile `bot_orders` with the venue. */
   syncOrderStatus(externalOrderId: string): Promise<OrderSyncResult>;

@@ -152,8 +152,6 @@ export default async function UserStrategySettingsPage({ params }: PageProps) {
         hedgeScalpingAllowedSymbols={data.hedgeScalpingAllowedSymbols ?? []}
         initialHedgeScalpingSymbol={data.initialHedgeScalpingSymbol ?? null}
         hedgeScalpingResolvedConfig={data.hedgeScalpingResolvedConfig ?? null}
-        isTrendProfitLockStrategy={data.isTrendProfitLockStrategy ?? false}
-        trendProfitLockInitialConfig={data.trendProfitLockInitialConfig ?? null}
       />
     </div>
   );

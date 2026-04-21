@@ -22,6 +22,7 @@ import { resolveFinalAllocatedCapitalUsd } from "@/server/trading/execution-pref
 import { calculateHalfTrendSignal, type HalfTrendCandle } from "@/server/trading/indicators/halftrend";
 import { resolveExchangeTradingAdapter } from "@/server/trading/adapters/resolve-exchange-adapter";
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
+import type { StrategySignalIntakeResponse } from "@/server/trading/signals/types";
 import {
   ensureHedgeScalpingLiveFeed,
   getHedgeScalpingLiveSnapshot,
@@ -38,6 +39,7 @@ const LOG = "[TPL-POLLER]";
 const DELTA_BASE_URL = process.env.HS_WORKER_DELTA_BASE_URL?.trim() || "https://api.india.delta.exchange";
 
 type TplRuntimeState = {
+  /** Latest closed bar `time` for which we already acted on a HalfTrend flip (avoids duplicate D1 on the same bar). */
   lastFlipCandleTime?: number;
   lastCompletedD1FlipDirection?: "LONG" | "SHORT";
   d1?: {
@@ -117,9 +119,42 @@ function favorableDistancePct(entry: number, mark: number, side: "LONG" | "SHORT
   return ((entry - mark) / entry) * 100;
 }
 
+function resolveLinkedTargetPrice(params: {
+  d1EntryPrice: number;
+  /** Used when `d1EntryPrice` is missing/invalid so linked steps never resolve to NaN. */
+  markPrice: number;
+  targetLinkType: "D1_ENTRY" | "STEP_1_ENTRY" | "STEP_2_ENTRY" | "STEP_3_ENTRY" | "STEP_4_ENTRY";
+  d2States: TplRuntimeState["d2StepsState"];
+}): { price: number; linkedStep: number | null; fallbackUsed: boolean } {
+  const d1Ok = Number.isFinite(params.d1EntryPrice) && params.d1EntryPrice > 0;
+  const markOk = Number.isFinite(params.markPrice) && params.markPrice > 0;
+  const anchor = d1Ok ? params.d1EntryPrice : markOk ? params.markPrice : Number.NaN;
+  const link = params.targetLinkType;
+  if (link === "D1_ENTRY") {
+    return { price: anchor, linkedStep: null, fallbackUsed: !d1Ok };
+  }
+  const stepNum = Number(link.replace("STEP_", "").replace("_ENTRY", ""));
+  if (!Number.isFinite(stepNum) || stepNum < 1) {
+    return { price: anchor, linkedStep: null, fallbackUsed: true };
+  }
+  const linked = params.d2States?.[String(stepNum)];
+  if (linked && Number.isFinite(linked.entryMarkPrice) && linked.entryMarkPrice > 0) {
+    return { price: linked.entryMarkPrice, linkedStep: stepNum, fallbackUsed: false };
+  }
+  return { price: anchor, linkedStep: stepNum, fallbackUsed: true };
+}
+
 async function resolveLiveMark(symbol: string, fallback: number | null): Promise<number | null> {
-  const mark = await fetchDeltaIndiaTickerMarkPrice({ symbol });
-  if (mark != null && Number.isFinite(mark) && mark > 0) return mark;
+  try {
+    const mark = await fetchDeltaIndiaTickerMarkPrice({ symbol });
+    if (mark != null && Number.isFinite(mark) && mark > 0) return mark;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tradingLog("warn", "tpl_resolve_live_mark_fetch_failed", {
+      symbol,
+      error: msg.slice(0, 300),
+    });
+  }
   if (fallback != null && Number.isFinite(fallback) && fallback > 0) return fallback;
   return null;
 }
@@ -129,16 +164,24 @@ async function persistRuntime(
   parsedRun: Record<string, unknown>,
   runtime: TplRuntimeState,
 ): Promise<void> {
-  await db!
-    .update(userStrategyRuns)
-    .set({
-      runSettingsJson: {
-        ...parsedRun,
-        trendProfitLockRuntime: runtime,
-      },
-      updatedAt: new Date(),
-    })
-    .where(eq(userStrategyRuns.id, runId));
+  try {
+    await db!
+      .update(userStrategyRuns)
+      .set({
+        runSettingsJson: {
+          ...parsedRun,
+          trendProfitLockRuntime: runtime,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(userStrategyRuns.id, runId));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tradingLog("error", "tpl_persist_runtime_failed", {
+      runId,
+      error: msg.slice(0, 500),
+    });
+  }
 }
 
 async function tryRecordExecutionLogByCorrelation(params: {
@@ -149,24 +192,33 @@ async function tryRecordExecutionLogByCorrelation(params: {
   payload: Record<string, unknown>;
 }): Promise<void> {
   if (!params.exchangeConnectionId) return;
-  const [row] = await db!
-    .select({ id: botOrders.id })
-    .from(botOrders)
-    .where(
-      and(
-        eq(botOrders.runId, params.runId),
-        eq(botOrders.exchangeConnectionId, params.exchangeConnectionId),
-        eq(botOrders.correlationId, params.correlationId),
-      ),
-    )
-    .limit(1);
-  if (!row) return;
-  await recordBotExecutionLog({
-    botOrderId: row.id,
-    level: "info",
-    message: params.message,
-    rawPayload: params.payload,
-  });
+  try {
+    const [row] = await db!
+      .select({ id: botOrders.id })
+      .from(botOrders)
+      .where(
+        and(
+          eq(botOrders.runId, params.runId),
+          eq(botOrders.exchangeConnectionId, params.exchangeConnectionId),
+          eq(botOrders.correlationId, params.correlationId),
+        ),
+      )
+      .limit(1);
+    if (!row) return;
+    await recordBotExecutionLog({
+      botOrderId: row.id,
+      level: "info",
+      message: params.message,
+      rawPayload: params.payload,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tradingLog("warn", "tpl_execution_log_write_failed", {
+      runId: params.runId,
+      correlationId: params.correlationId,
+      error: msg.slice(0, 400),
+    });
+  }
 }
 
 async function resolveRunExchangeAdapter(exchangeConnectionId: string | null | undefined) {
@@ -219,6 +271,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
 
   for (const run of activeRuns) {
     if (!run.slug.toLowerCase().includes("trend-profit-lock-scalping")) continue;
+    try {
     const parsedRun = parseUserStrategyRunSettingsJson(run.runSettingsJson);
     const cfg = resolveTrendProfitLockConfigForUi({
       strategySettingsJson: run.strategySettingsJson,
@@ -248,6 +301,17 @@ export async function processTrendProfitLockTick(): Promise<void> {
       volume: c.volume,
     }));
     const ht = calculateHalfTrendSignal(candles, cfg.halftrendAmplitude);
+    const lastClosedBarTime = candles[candles.length - 1]!.time;
+    const htPriorClosed =
+      candles.length >= 2
+        ? calculateHalfTrendSignal(candles.slice(0, -1), cfg.halftrendAmplitude)
+        : null;
+    /** True only when the latest *closed* candle is where HalfTrend direction changed vs the prior bar. */
+    const halfTrendFreshFlipOnLatestClosed =
+      htPriorClosed != null &&
+      htPriorClosed.trend !== ht.trend &&
+      ht.flipCandleTime != null &&
+      ht.flipCandleTime === lastClosedBarTime;
     const mark = await resolveLiveMark(symbol, snapshot.lastPrice);
     if (mark == null) continue;
 
@@ -281,30 +345,38 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const d2Net = n(d2Pos?.netQty);
     const d2NetQtyAbs = Number.isFinite(d2Net) ? Math.abs(d2Net) : 0;
 
+    let clearedStaleD1RuntimeThisTick = false;
     if (!hasOpenD1 && runtime.d1) {
+      clearedStaleD1RuntimeThisTick = true;
       if (d2NetQtyAbs > 1e-8 && run.secondaryExchangeConnectionId) {
         const flattenCorrelationId = `tpl_d2_flatten_${run.runId}_${Date.now()}`;
         const flattenSide = d2Net > 0 ? "sell" : "buy";
         const flattenQty = Math.max(1, Math.floor(d2NetQtyAbs));
-        const flattenDispatch = await dispatchStrategyExecutionSignal({
-          strategyId: run.strategyId,
-          correlationId: flattenCorrelationId,
-          symbol,
-          side: flattenSide,
-          orderType: "market",
-          quantity: fmtQty(flattenQty),
-          actionType: "exit",
-          executionMode: "live_only",
-          targetRunIds: [run.runId],
-          exchangeVenue: "secondary",
-          metadata: {
-            source: "trend_profit_lock_poller",
-            leg: "d2_flatten_all",
-            reason: "d1_anchor_closed",
-            manual_emergency_close: true,
-            force_signal_quantity: true,
-          },
-        });
+        let flattenDispatch: StrategySignalIntakeResponse;
+        try {
+          flattenDispatch = await dispatchStrategyExecutionSignal({
+            strategyId: run.strategyId,
+            correlationId: flattenCorrelationId,
+            symbol,
+            side: flattenSide,
+            orderType: "market",
+            quantity: fmtQty(flattenQty),
+            actionType: "exit",
+            executionMode: "live_only",
+            targetRunIds: [run.runId],
+            exchangeVenue: "secondary",
+            metadata: {
+              source: "trend_profit_lock_poller",
+              leg: "d2_flatten_all",
+              reason: "d1_anchor_closed",
+              manual_emergency_close: true,
+              force_signal_quantity: true,
+            },
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          flattenDispatch = { ok: false, error: `dispatch_exception: ${msg.slice(0, 400)}` };
+        }
         tradingLog(flattenDispatch.ok ? "warn" : "error", "tpl_d1_closed_wipeout_d2_dispatched", {
           runId: run.runId,
           strategyId: run.strategyId,
@@ -324,11 +396,56 @@ export async function processTrendProfitLockTick(): Promise<void> {
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
+    const d1EntrySide = sideFromFlip(ht.trend);
+    const isDuplicateTick = lastClosedBarTime === runtime.lastFlipCandleTime;
+    const isSameDirectionBlock = d1EntrySide === runtime.lastCompletedD1FlipDirection;
+    const hasOpenD1Position = hasOpenD1;
+    const isPostWipeoutSameTickBlock = clearedStaleD1RuntimeThisTick;
+    const prospectiveD1TargetPx = targetPrice(mark, d1EntrySide, cfg.d1TargetPct);
+    const prospectiveD1TargetDistance = Math.abs(prospectiveD1TargetPx - mark);
+    const prospectiveD2JourneyUsable =
+      Number.isFinite(mark) &&
+      mark > 0 &&
+      Number.isFinite(prospectiveD1TargetPx) &&
+      prospectiveD1TargetDistance > Math.max(1e-8, 1e-12 * Math.abs(mark));
+
+    if (halfTrendFreshFlipOnLatestClosed) {
+      const entryMatrixPass =
+        !isPostWipeoutSameTickBlock &&
+        !isDuplicateTick &&
+        !isSameDirectionBlock &&
+        !hasOpenD1Position;
+      if (!entryMatrixPass) {
+        tradingLog("info", "tpl_entry_rejected_debug", {
+          event: "tpl_entry_rejected_debug",
+          rejectReason: "entry_guardrails",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          halfTrendFreshFlipOnLatestClosed: true,
+          isDuplicateTick,
+          isSameDirectionBlock,
+          hasOpenD1Position,
+          isPostWipeoutSameTickBlock,
+          lastClosedBarTime,
+          lastFlipCandleTime: runtime.lastFlipCandleTime ?? null,
+          d1EntrySide,
+          lastCompletedD1FlipDirection: runtime.lastCompletedD1FlipDirection ?? null,
+          halftrendTrend: ht.trend,
+          halftrendFlipCandleTime: ht.flipCandleTime,
+          prospectiveD1TargetPx,
+          prospectiveD1TargetDistance,
+          prospectiveD2JourneyUsable,
+        });
+      }
+    }
+
     if (
-      ht.flipTo != null &&
-      ht.flipCandleTime != null &&
-      ht.flipCandleTime !== runtime.lastFlipCandleTime &&
-      sideFromFlip(ht.flipTo) !== runtime.lastCompletedD1FlipDirection &&
+      halfTrendFreshFlipOnLatestClosed &&
+      !clearedStaleD1RuntimeThisTick &&
+      lastClosedBarTime !== runtime.lastFlipCandleTime &&
+      d1EntrySide !== runtime.lastCompletedD1FlipDirection &&
       !hasOpenD1
     ) {
       if (!run.primaryExchangeConnectionId) {
@@ -336,6 +453,21 @@ export async function processTrendProfitLockTick(): Promise<void> {
           runId: run.runId,
           strategyId: run.strategyId,
           userId: run.userId,
+        });
+        tradingLog("info", "tpl_entry_rejected_debug", {
+          event: "tpl_entry_rejected_debug",
+          rejectReason: "missing_primary_exchange",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          halfTrendFreshFlipOnLatestClosed: true,
+          isDuplicateTick,
+          isSameDirectionBlock,
+          hasOpenD1Position,
+          isPostWipeoutSameTickBlock,
+          prospectiveD1TargetDistance,
+          prospectiveD2JourneyUsable,
         });
       } else {
         const capitalUsd = resolveFinalAllocatedCapitalUsd({
@@ -348,29 +480,59 @@ export async function processTrendProfitLockTick(): Promise<void> {
         const allocUsd = Math.max(0, (capitalUsd ?? 0) * (cfg.d1CapitalAllocationPct / 100));
         const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
         const qty = Math.max(minContracts ?? 1, Math.floor(allocUsd / Math.max(contractValueUsd, 1e-9)));
-        if (qty > 0) {
-          const d1Side = sideFromFlip(ht.flipTo);
-          const correlationId = `tpl_d1_${run.runId}_${ht.flipCandleTime}_${d1Side.toLowerCase()}`;
-          const dispatch = await dispatchStrategyExecutionSignal({
+        if (qty <= 0) {
+          tradingLog("info", "tpl_entry_rejected_debug", {
+            event: "tpl_entry_rejected_debug",
+            rejectReason: "zero_or_non_positive_qty",
+            runId: run.runId,
             strategyId: run.strategyId,
-            correlationId,
+            userId: run.userId,
             symbol,
-            side: d1Side === "LONG" ? "buy" : "sell",
-            orderType: "market",
-            quantity: fmtQty(qty),
-            actionType: "entry",
-            executionMode: "live_only",
-            targetRunIds: [run.runId],
-            exchangeVenue: "primary",
-            metadata: {
-              source: "trend_profit_lock_poller",
-              leg: "d1_anchor",
-              force_signal_quantity: true,
-              mark_price: mark,
-              timeframe: resolution,
-              halftrend_flip_time: ht.flipCandleTime,
-            },
+            halfTrendFreshFlipOnLatestClosed: true,
+            isDuplicateTick,
+            isSameDirectionBlock,
+            hasOpenD1Position,
+            isPostWipeoutSameTickBlock,
+            qty,
+            allocUsd,
+            capitalUsd: capitalUsd ?? null,
+            d1CapitalAllocationPct: cfg.d1CapitalAllocationPct,
+            contractValueUsd,
+            minContracts: minContracts ?? null,
+            mark,
+            prospectiveD1TargetDistance,
+            prospectiveD2JourneyUsable,
           });
+        }
+        if (qty > 0) {
+          const d1Side = d1EntrySide;
+          const correlationId = `tpl_d1_${run.runId}_${lastClosedBarTime}_${d1Side.toLowerCase()}`;
+          let dispatch: StrategySignalIntakeResponse;
+          try {
+            dispatch = await dispatchStrategyExecutionSignal({
+              strategyId: run.strategyId,
+              correlationId,
+              symbol,
+              side: d1Side === "LONG" ? "buy" : "sell",
+              orderType: "market",
+              quantity: fmtQty(qty),
+              actionType: "entry",
+              executionMode: "live_only",
+              targetRunIds: [run.runId],
+              exchangeVenue: "primary",
+              metadata: {
+                source: "trend_profit_lock_poller",
+                leg: "d1_anchor",
+                force_signal_quantity: true,
+                mark_price: mark,
+                timeframe: resolution,
+                halftrend_flip_time: ht.flipCandleTime,
+              },
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            dispatch = { ok: false, error: `dispatch_exception: ${msg.slice(0, 400)}` };
+          }
           tradingLog(dispatch.ok ? "info" : "warn", "tpl_d1_entry_dispatch", {
             runId: run.runId,
             strategyId: run.strategyId,
@@ -392,7 +554,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           };
         }
       }
-      runtime.lastFlipCandleTime = ht.flipCandleTime;
+      runtime.lastFlipCandleTime = lastClosedBarTime;
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
@@ -410,13 +572,19 @@ export async function processTrendProfitLockTick(): Promise<void> {
       const stopSide = d1Side === "LONG" ? "sell" : "buy";
       if (adapterRes.ok && adapterRes.adapter.placeReduceOnlyStopLoss) {
         const stopClientId = generateInternalClientOrderId();
-        const stopPlace = await adapterRes.adapter.placeReduceOnlyStopLoss({
-          internalClientOrderId: stopClientId,
-          symbol,
-          side: stopSide,
-          quantity: fmtQty(Math.max(1, Math.floor(Math.abs(netQty)))),
-          stopPrice: String(d1StopPx),
-        });
+        let stopPlace: { ok: true; externalOrderId: string } | { ok: false; error: string };
+        try {
+          stopPlace = await adapterRes.adapter.placeReduceOnlyStopLoss({
+            internalClientOrderId: stopClientId,
+            symbol,
+            side: stopSide,
+            quantity: fmtQty(Math.max(1, Math.floor(Math.abs(netQty)))),
+            stopPrice: String(d1StopPx),
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          stopPlace = { ok: false, error: `placeReduceOnlyStopLoss_exception: ${msg.slice(0, 400)}` };
+        }
         if (stopPlace.ok) {
           runtime.d1 = {
             side: d1Side,
@@ -469,14 +637,20 @@ export async function processTrendProfitLockTick(): Promise<void> {
       let amendError: string | null = null;
       let amendedStopOrderId: string | null = null;
       if (amendAttempted) {
-        const amend = await adapterRes.adapter.amendStopLossOrder!({
-          existingExternalOrderId: existingStopId!,
-          replacementInternalClientOrderId: generateInternalClientOrderId(),
-          symbol,
-          side: d1Side === "LONG" ? "sell" : "buy",
-          quantity: fmtQty(Math.max(1, Math.floor(Math.abs(netQty)))),
-          newStopPrice: String(entryPx),
-        });
+        let amend: { ok: true; externalOrderId: string } | { ok: false; error: string };
+        try {
+          amend = await adapterRes.adapter.amendStopLossOrder!({
+            existingExternalOrderId: existingStopId!,
+            replacementInternalClientOrderId: generateInternalClientOrderId(),
+            symbol,
+            side: d1Side === "LONG" ? "sell" : "buy",
+            quantity: fmtQty(Math.max(1, Math.floor(Math.abs(netQty)))),
+            newStopPrice: String(entryPx),
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          amend = { ok: false, error: `amendStopLossOrder_exception: ${msg.slice(0, 400)}` };
+        }
         amendOk = amend.ok;
         amendError = amend.ok ? null : amend.error;
         amendedStopOrderId = amend.ok ? amend.externalOrderId : null;
@@ -559,42 +733,102 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     const triggered = new Set(runtime.d2TriggeredSteps ?? []);
+    const d1TargetDistance = Math.abs(d1TargetPx - entryPx);
+    const d2JourneyUsable =
+      Number.isFinite(entryPx) &&
+      Number.isFinite(d1TargetPx) &&
+      d1TargetDistance > Math.max(1e-8, 1e-12 * Math.abs(entryPx));
+    if (!d2JourneyUsable) {
+      tradingLog("warn", "tpl_d2_skipped_degenerate_target_journey", {
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        entryPx,
+        d1TargetPx,
+        d1TargetDistance,
+        d1TargetPct: cfg.d1TargetPct,
+      });
+    }
     for (const step of cfg.d2Steps) {
       const existingState = d2States[String(step.step)];
       if (triggered.has(step.step) || existingState?.status === "open") continue;
+      if (!d2JourneyUsable) continue;
       // D2 trigger is % of the D1 target journey, not a flat % move from entry.
-      const d1TargetDistance = Math.abs(d1TargetPx - entryPx);
       const stepJourneyDistance = d1TargetDistance * (step.stepTriggerPct / 100);
       const triggerPx = d1Side === "LONG" ? entryPx + stepJourneyDistance : entryPx - stepJourneyDistance;
       const reached = d1Side === "LONG" ? mark >= triggerPx : mark <= triggerPx;
       if (!reached) continue;
 
       const d1QtyInt = Math.max(0, Math.floor(Math.abs(netQty)));
-      const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
-      const d2Qty = Math.max(minContracts ?? 1, Math.floor(d1QtyInt * (step.stepQtyPctOfD1 / 100)));
-      const d2Side = oppositeSide(d1Side);
-      const correlationId = `tpl_d2_step_${step.step}_${run.runId}_${Date.now()}`;
-      const d2Dispatch = await dispatchStrategyExecutionSignal({
-        strategyId: run.strategyId,
-        correlationId,
-        symbol,
-        side: d2Side === "LONG" ? "buy" : "sell",
-        orderType: "market",
-        quantity: fmtQty(d2Qty),
-        actionType: "entry",
-        executionMode: "live_only",
-        targetRunIds: [run.runId],
-        exchangeVenue: "secondary",
-        metadata: {
-          source: "trend_profit_lock_poller",
-          leg: `d2_step_${step.step}`,
-          force_signal_quantity: true,
-          explicit_leg_quantity: true,
+      if (d1QtyInt < 1) {
+        tradingLog("warn", "tpl_d2_skipped_no_d1_contracts", {
+          runId: run.runId,
           step: step.step,
-          step_target_pct: step.stepTargetPct,
-          step_stoploss_pct: step.stepStoplossPct,
-        },
+          d1QtyInt,
+        });
+        continue;
+      }
+      const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
+      const floorPctQty = Math.floor(d1QtyInt * (step.stepQtyPctOfD1 / 100));
+      const d2Qty = Math.max(minContracts ?? 1, floorPctQty);
+      const d2Side = oppositeSide(d1Side);
+      const linkedTarget = resolveLinkedTargetPrice({
+        d1EntryPrice: entryPx,
+        markPrice: mark,
+        targetLinkType: step.targetLinkType,
+        d2States,
       });
+      if (!Number.isFinite(linkedTarget.price) || !(linkedTarget.price > 0)) {
+        tradingLog("warn", "tpl_d2_skipped_invalid_linked_target", {
+          runId: run.runId,
+          step: step.step,
+          targetLinkType: step.targetLinkType,
+          linkedStep: linkedTarget.linkedStep,
+          fallbackUsed: linkedTarget.fallbackUsed,
+        });
+        continue;
+      }
+      if (linkedTarget.fallbackUsed) {
+        tradingLog("warn", "tpl_d2_target_link_missing_fallback_to_d1_entry", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          targetLinkType: step.targetLinkType,
+          fallbackTargetPrice: linkedTarget.price,
+          linkedStep: linkedTarget.linkedStep,
+        });
+      }
+      const correlationId = `tpl_d2_step_${step.step}_${run.runId}_${Date.now()}`;
+      let d2Dispatch: StrategySignalIntakeResponse;
+      try {
+        d2Dispatch = await dispatchStrategyExecutionSignal({
+          strategyId: run.strategyId,
+          correlationId,
+          symbol,
+          side: d2Side === "LONG" ? "buy" : "sell",
+          orderType: "market",
+          quantity: fmtQty(d2Qty),
+          actionType: "entry",
+          executionMode: "live_only",
+          targetRunIds: [run.runId],
+          exchangeVenue: "secondary",
+          metadata: {
+            source: "trend_profit_lock_poller",
+            leg: `d2_step_${step.step}`,
+            force_signal_quantity: true,
+            explicit_leg_quantity: true,
+            step: step.step,
+            step_target_link_type: step.targetLinkType,
+            step_stoploss_pct: step.stepStoplossPct,
+          },
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        d2Dispatch = { ok: false, error: `dispatch_exception: ${msg.slice(0, 400)}` };
+      }
       tradingLog(d2Dispatch.ok ? "info" : "warn", "tpl_d2_trigger_reached", {
         event: "tpl_d2_trigger_reached",
         runId: run.runId,
@@ -608,6 +842,8 @@ export async function processTrendProfitLockTick(): Promise<void> {
         markPrice: mark,
         qty: d2Qty,
         side: d2Side,
+        targetLinkType: step.targetLinkType,
+        resolvedTargetPrice: linkedTarget.price,
         dispatchOk: d2Dispatch.ok,
         liveJobsEnqueued: d2Dispatch.ok ? d2Dispatch.liveJobsEnqueued : 0,
         dispatchError: d2Dispatch.ok ? null : d2Dispatch.error,
@@ -619,7 +855,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         entryMarkPrice: mark,
         side: d2Side,
         qty: d2Qty,
-        targetPrice: targetPrice(mark, d2Side, step.stepTargetPct),
+        targetPrice: linkedTarget.price,
         stoplossPrice: stoplossPrice(mark, d2Side, step.stepStoplossPct),
         executedAt: new Date().toISOString(),
         correlationId,
@@ -637,7 +873,8 @@ export async function processTrendProfitLockTick(): Promise<void> {
           step: step.step,
           qty: d2Qty,
           side: d2Side,
-          targetPct: step.stepTargetPct,
+          targetLinkType: step.targetLinkType,
+          resolvedTargetPrice: linkedTarget.price,
           stoplossPct: step.stepStoplossPct,
         },
       });
@@ -646,6 +883,15 @@ export async function processTrendProfitLockTick(): Promise<void> {
     runtime.d2TriggeredSteps = [...triggered].sort((a, b) => a - b);
     runtime.d2StepsState = d2States;
     await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      tradingLog("error", "tpl_poller_run_tick_failed", {
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        error: msg.slice(0, 800),
+      });
+    }
   }
   console.log(`${LOG} tick complete`);
 }

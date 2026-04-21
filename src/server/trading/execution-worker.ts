@@ -5,6 +5,7 @@ import { botOrders, exchangeConnections } from "@/server/db/schema";
 
 import type {
   ExchangeTradingAdapter,
+  OrderSyncResult,
   PlaceOrderResult,
 } from "./adapters/exchange-adapter-types";
 import { resolveExchangeTradingAdapter } from "./adapters/resolve-exchange-adapter";
@@ -70,6 +71,22 @@ function isNonRetryableDeltaExecutionError(errorText: string): boolean {
   );
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function safeSyncOrderStatus(
+  adapter: ExchangeTradingAdapter,
+  externalOrderId: string,
+): Promise<OrderSyncResult> {
+  try {
+    return await adapter.syncOrderStatus(externalOrderId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `syncOrderStatus_exception: ${msg.slice(0, 400)}` };
+  }
+}
+
 async function runPostSubmitSync(
   adapter: ExchangeTradingAdapter,
   botOrderId: string,
@@ -82,56 +99,84 @@ async function runPostSubmitSync(
     p.signalMetadata != null &&
     typeof p.signalMetadata === "object" &&
     (p.signalMetadata as Record<string, unknown>).manual_emergency_close === true;
-  const sync = await adapter.syncOrderStatus(externalOrderId);
-  if (sync.ok) {
-    const st = mapSyncStatus(sync.status);
-    await updateBotOrderFromSync({
-      botOrderId,
-      status: st,
-      rawSyncResponse: sync.raw,
-      venueOrderState: sync.venueOrderState ?? null,
-      fillPrice: sync.fillPrice ?? null,
-      filledQty: sync.filledQty ?? null,
-    });
-    if (sync.status === "filled") {
-      const signed = signedQtyFromFill({
-        side: p.side,
-        fallbackQty: p.quantity,
-        filledQty: sync.filledQty ?? null,
-      });
-      await bumpBotPositionNetQuantity({
-        userId: eligRow.userId,
-        subscriptionId: eligRow.subscriptionId,
-        strategyId: eligRow.strategyId,
-        exchangeConnectionId: eligRow.exchangeConnectionId,
-        symbol: p.symbol,
-        deltaQty: signed,
-      });
-    } else if (
-      manualEmergencyClose &&
-      (sync.status === "open" || sync.status === "unknown")
-    ) {
-      // Emergency close UX fallback: market exits can be filled after immediate sync.
-      // Flatten local position optimistically so strategy is not blocked by stale open qty.
-      const signed = signedQtyFromFill({
-        side: p.side,
-        fallbackQty: p.quantity,
-        filledQty: null,
-      });
-      await bumpBotPositionNetQuantity({
-        userId: eligRow.userId,
-        subscriptionId: eligRow.subscriptionId,
-        strategyId: eligRow.strategyId,
-        exchangeConnectionId: eligRow.exchangeConnectionId,
-        symbol: p.symbol,
-        deltaQty: signed,
-      });
-      tradingLog("warn", "manual_close_optimistic_position_flatten_applied", {
+
+  let sync = await safeSyncOrderStatus(adapter, externalOrderId);
+  if (manualEmergencyClose && sync.ok && (sync.status === "open" || sync.status === "unknown")) {
+    for (let i = 0; i < 28; i++) {
+      await sleepMs(200);
+      const next = await safeSyncOrderStatus(adapter, externalOrderId);
+      if (!next.ok) {
+        sync = next;
+        break;
+      }
+      sync = next;
+      if (
+        next.status === "filled" ||
+        next.status === "partial" ||
+        next.status === "cancelled" ||
+        next.status === "rejected"
+      ) {
+        break;
+      }
+    }
+    if (sync.ok && (sync.status === "open" || sync.status === "unknown")) {
+      tradingLog("warn", "manual_close_sync_timeout_fill_not_confirmed", {
         botOrderId,
         externalOrderId,
         statusAtSync: sync.status,
         runId: eligRow.runId,
         exchangeConnectionId: eligRow.exchangeConnectionId,
+      });
+    }
+  }
+
+  if (sync.ok) {
+    try {
+      const st = mapSyncStatus(sync.status);
+      await updateBotOrderFromSync({
+        botOrderId,
+        status: st,
+        rawSyncResponse: sync.raw,
+        venueOrderState: sync.venueOrderState ?? null,
+        fillPrice: sync.fillPrice ?? null,
+        filledQty: sync.filledQty ?? null,
+      });
+      if (sync.status === "filled") {
+        const signed = signedQtyFromFill({
+          side: p.side,
+          fallbackQty: p.quantity,
+          filledQty: sync.filledQty ?? null,
+        });
+        await bumpBotPositionNetQuantity({
+          userId: eligRow.userId,
+          subscriptionId: eligRow.subscriptionId,
+          strategyId: eligRow.strategyId,
+          exchangeConnectionId: eligRow.exchangeConnectionId,
+          symbol: p.symbol,
+          deltaQty: signed,
+        });
+      } else if (manualEmergencyClose && sync.status === "partial") {
+        const signed = signedQtyFromFill({
+          side: p.side,
+          fallbackQty: p.quantity,
+          filledQty: sync.filledQty ?? null,
+        });
+        await bumpBotPositionNetQuantity({
+          userId: eligRow.userId,
+          subscriptionId: eligRow.subscriptionId,
+          strategyId: eligRow.strategyId,
+          exchangeConnectionId: eligRow.exchangeConnectionId,
+          symbol: p.symbol,
+          deltaQty: signed,
+        });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      tradingLog("error", "post_submit_sync_persist_failed", {
+        botOrderId,
+        externalOrderId,
+        runId: eligRow.runId,
+        error: msg.slice(0, 500),
       });
     }
   } else {

@@ -6,7 +6,7 @@ export type TrendProfitLockStep = {
   step: number;
   stepTriggerPct: number;
   stepQtyPctOfD1: number;
-  stepTargetPct: number;
+  targetLinkType: "D1_ENTRY" | "STEP_1_ENTRY" | "STEP_2_ENTRY" | "STEP_3_ENTRY" | "STEP_4_ENTRY";
   stepStoplossPct: number;
 };
 

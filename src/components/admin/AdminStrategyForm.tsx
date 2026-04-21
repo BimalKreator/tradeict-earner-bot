@@ -635,7 +635,7 @@ export function AdminStrategyForm(props: Props) {
                     <th className="px-3 py-2">Step</th>
                     <th className="px-3 py-2">Trigger (% of D1 Target Dist.)</th>
                     <th className="px-3 py-2">Qty % of D1</th>
-                    <th className="px-3 py-2">Target %</th>
+                    <th className="px-3 py-2">Target Link</th>
                     <th className="px-3 py-2">Stoploss %</th>
                   </tr>
                 </thead>
@@ -645,7 +645,7 @@ export function AdminStrategyForm(props: Props) {
                       <td className="px-3 py-2 font-mono text-[var(--text-primary)]">{step.step}</td>
                       <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_trigger_pct`} defaultValue={step.stepTriggerPct} className="w-full rounded-md border border-[var(--border-glass)] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2" />{tplError(`tpl_d2_step_${step.step}_trigger_pct`) ? <p className="mt-1 text-[10px] text-[var(--danger)]">{tplError(`tpl_d2_step_${step.step}_trigger_pct`)}</p> : null}</td>
                       <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_qty_pct_of_d1`} defaultValue={step.stepQtyPctOfD1} className="w-full rounded-md border border-[var(--border-glass)] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2" />{tplError(`tpl_d2_step_${step.step}_qty_pct_of_d1`) ? <p className="mt-1 text-[10px] text-[var(--danger)]">{tplError(`tpl_d2_step_${step.step}_qty_pct_of_d1`)}</p> : null}</td>
-                      <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_target_pct`} defaultValue={step.stepTargetPct} className="w-full rounded-md border border-[var(--border-glass)] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2" />{tplError(`tpl_d2_step_${step.step}_target_pct`) ? <p className="mt-1 text-[10px] text-[var(--danger)]">{tplError(`tpl_d2_step_${step.step}_target_pct`)}</p> : null}</td>
+                      <td className="px-3 py-2"><select name={`tpl_d2_step_${step.step}_target_link_type`} defaultValue={step.targetLinkType} className="w-full rounded-md border border-[var(--border-glass)] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2"><option value="D1_ENTRY">Target: D1 Entry</option><option value="STEP_1_ENTRY">Target: Step 1 Entry</option><option value="STEP_2_ENTRY">Target: Step 2 Entry</option><option value="STEP_3_ENTRY">Target: Step 3 Entry</option><option value="STEP_4_ENTRY">Target: Step 4 Entry</option></select>{tplError(`tpl_d2_step_${step.step}_target_link_type`) ? <p className="mt-1 text-[10px] text-[var(--danger)]">{tplError(`tpl_d2_step_${step.step}_target_link_type`)}</p> : null}</td>
                       <td className="px-3 py-2"><input name={`tpl_d2_step_${step.step}_stoploss_pct`} defaultValue={step.stepStoplossPct} className="w-full rounded-md border border-[var(--border-glass)] bg-black/30 px-2 py-1 text-xs text-[var(--text-primary)] outline-none ring-[var(--accent)]/40 focus:ring-2" />{tplError(`tpl_d2_step_${step.step}_stoploss_pct`) ? <p className="mt-1 text-[10px] text-[var(--danger)]">{tplError(`tpl_d2_step_${step.step}_stoploss_pct`)}</p> : null}</td>
                     </tr>
                   ))}
