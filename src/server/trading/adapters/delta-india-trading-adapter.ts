@@ -17,6 +17,7 @@ import {
 import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-product";
 
 import type {
+  CancelOrdersByPriceMatchInput,
   AmendStopLossOrderInput,
   AmendStopLossOrderResult,
   CancelAllConditionalOrdersForSymbolResult,
@@ -475,43 +476,37 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
     };
   }
 
-  async cancelAllConditionalOrdersForSymbol(
-    symbol: string,
-  ): Promise<CancelAllConditionalOrdersForSymbolResult> {
-    const sym = symbol.trim().toUpperCase();
-    if (!sym) {
-      return { ok: false, error: "symbol is required" };
-    }
-    const product = await resolveDeltaIndiaProductId(sym);
-    if (!product.ok) {
-      return { ok: false, error: product.error };
-    }
-
+  private async listConditionalOrderRowsForProduct(
+    productId: number,
+  ): Promise<
+    { ok: true; rows: Record<string, unknown>[]; raw: Record<string, unknown> }
+    | { ok: false; error: string; raw?: Record<string, unknown> }
+  > {
     const listQueries: { path: string; queryString: string; source: string }[] = [
       {
         path: "/v2/orders",
         queryString:
-          `?product_id=${encodeURIComponent(String(product.productId))}` +
+          `?product_id=${encodeURIComponent(String(productId))}` +
           `&state=${encodeURIComponent("open,pending,untriggered")}`,
         source: "orders_open_pending_untriggered",
       },
       {
         path: "/v2/orders",
         queryString:
-          `?product_id=${encodeURIComponent(String(product.productId))}` +
+          `?product_id=${encodeURIComponent(String(productId))}` +
           `&state=${encodeURIComponent("untriggered")}`,
         source: "orders_untriggered",
       },
       {
         path: "/v2/orders/conditional",
         queryString:
-          `?product_id=${encodeURIComponent(String(product.productId))}` +
+          `?product_id=${encodeURIComponent(String(productId))}` +
           `&state=${encodeURIComponent("open,pending,untriggered")}`,
         source: "conditional_open_pending_untriggered",
       },
       {
         path: "/v2/orders/conditional",
-        queryString: `?product_id=${encodeURIComponent(String(product.productId))}`,
+        queryString: `?product_id=${encodeURIComponent(String(productId))}`,
         source: "conditional_all",
       },
     ];
@@ -545,7 +540,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       const first = listResponses[0];
       return {
         ok: false,
-        error: `Delta conditional list failed for symbol ${sym}.`,
+        error: "Delta conditional list failed",
         raw: {
           firstResponse: first
             ? {
@@ -582,7 +577,21 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
         });
       }
     }
+    return {
+      ok: true,
+      rows,
+      raw: {
+        listResponses: listResponses.map((x) => ({
+          source: x.source,
+          status: x.status,
+          ok: x.ok,
+          success: deltaJsonSuccess(x.json),
+        })),
+      },
+    };
+  }
 
+  private extractConditionalOrderIds(rows: Record<string, unknown>[]): string[] {
     const cancellableIdSet = new Set<string>();
     for (const o of rows) {
       const idRaw = o.id;
@@ -601,7 +610,30 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
         cancellableIdSet.add(id);
       }
     }
-    const cancellableIds = [...cancellableIdSet];
+    return [...cancellableIdSet];
+  }
+
+  async cancelAllConditionalOrdersForSymbol(
+    symbol: string,
+  ): Promise<CancelAllConditionalOrdersForSymbolResult> {
+    const sym = symbol.trim().toUpperCase();
+    if (!sym) {
+      return { ok: false, error: "symbol is required" };
+    }
+    const product = await resolveDeltaIndiaProductId(sym);
+    if (!product.ok) {
+      return { ok: false, error: product.error };
+    }
+
+    const listed = await this.listConditionalOrderRowsForProduct(product.productId);
+    if (!listed.ok) {
+      return {
+        ok: false,
+        error: `Delta conditional list failed for symbol ${sym}: ${listed.error}`,
+        raw: listed.raw,
+      };
+    }
+    const cancellableIds = this.extractConditionalOrderIds(listed.rows);
 
     let cancelledCount = 0;
     const failures: { id: string; error: string; raw?: Record<string, unknown> }[] = [];
@@ -634,12 +666,7 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
         ok: false,
         error: `Delta conditional cancel completed with failures (${failures.length}/${cancellableIds.length}).`,
         raw: {
-          listResponses: listResponses.map((x) => ({
-            source: x.source,
-            status: x.status,
-            ok: x.ok,
-            success: deltaJsonSuccess(x.json),
-          })),
+          listed: listed.raw,
           attemptedCount: cancellableIds.length,
           cancelledCount,
           failedCount: failures.length,
@@ -652,14 +679,110 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       cancelledCount,
       attemptedCount: cancellableIds.length,
       raw: {
-        listResponses: listResponses.map((x) => ({
-          source: x.source,
-          status: x.status,
-          ok: x.ok,
-          success: deltaJsonSuccess(x.json),
-        })),
+        listed: listed.raw,
         attemptedCount: cancellableIds.length,
         cancelledCount,
+      },
+    };
+  }
+
+  async cancelOrdersByPriceMatch(
+    input: CancelOrdersByPriceMatchInput,
+  ): Promise<CancelAllConditionalOrdersForSymbolResult> {
+    const sym = input.symbol.trim().toUpperCase();
+    if (!sym) return { ok: false, error: "symbol is required" };
+    const product = await resolveDeltaIndiaProductId(sym);
+    if (!product.ok) return { ok: false, error: product.error };
+    const listed = await this.listConditionalOrderRowsForProduct(product.productId);
+    if (!listed.ok) return { ok: false, error: listed.error, raw: listed.raw };
+
+    const allTargets = (input.targetPrices ?? []).filter((x) => Number.isFinite(x) && x > 0);
+    const allStops = (input.stopPrices ?? []).filter((x) => Number.isFinite(x) && x > 0);
+    const refs = [...allTargets, ...allStops];
+    if (refs.length === 0) {
+      return { ok: true, attemptedCount: 0, cancelledCount: 0, raw: { reason: "no_price_refs" } };
+    }
+    const bps = Number.isFinite(input.toleranceBps) ? Math.max(0, input.toleranceBps!) : 1;
+    const relTol = bps / 10_000;
+
+    const idCandidates = this.extractConditionalOrderIds(listed.rows);
+    const matchIds = new Set<string>();
+    for (const row of listed.rows) {
+      const idRaw = row.id;
+      if (idRaw == null) continue;
+      const id = String(idRaw).trim();
+      if (!id || !idCandidates.includes(id)) continue;
+      const priceCandidates: number[] = [];
+      for (const key of ["stop_price", "trigger_price", "limit_price"] as const) {
+        const v = row[key];
+        const n =
+          typeof v === "number" ? v : typeof v === "string" ? Number(v.trim()) : Number.NaN;
+        if (Number.isFinite(n) && n > 0) priceCandidates.push(n);
+      }
+      let isMatch = false;
+      for (const px of priceCandidates) {
+        for (const ref of refs) {
+          const tol = Math.max(ref * relTol, 1e-9);
+          if (Math.abs(px - ref) <= tol) {
+            isMatch = true;
+            break;
+          }
+        }
+        if (isMatch) break;
+      }
+      if (isMatch) matchIds.add(id);
+    }
+
+    let cancelledCount = 0;
+    const failures: { id: string; error: string; raw?: Record<string, unknown> }[] = [];
+    const cancelResults = await Promise.allSettled(
+      [...matchIds].map(async (id) => ({
+        id,
+        result: await this.cancelOrderByExternalId(id),
+      })),
+    );
+    for (const settled of cancelResults) {
+      if (settled.status === "rejected") {
+        failures.push({
+          id: "unknown",
+          error:
+            settled.reason instanceof Error
+              ? settled.reason.message
+              : String(settled.reason),
+        });
+        continue;
+      }
+      const { id, result } = settled.value;
+      if (!result.ok) {
+        failures.push({ id, error: result.error, raw: result.raw });
+        continue;
+      }
+      if (result.cancelled) cancelledCount += 1;
+    }
+
+    if (failures.length > 0) {
+      return {
+        ok: false,
+        error: `Delta price-match cancel completed with failures (${failures.length}/${matchIds.size}).`,
+        raw: {
+          attemptedCount: matchIds.size,
+          cancelledCount,
+          failedCount: failures.length,
+          failures,
+          toleranceBps: bps,
+          refPrices: refs,
+        },
+      };
+    }
+    return {
+      ok: true,
+      attemptedCount: matchIds.size,
+      cancelledCount,
+      raw: {
+        attemptedCount: matchIds.size,
+        cancelledCount,
+        toleranceBps: bps,
+        refPrices: refs,
       },
     };
   }

@@ -1,4 +1,5 @@
 import type {
+  CancelOrdersByPriceMatchInput,
   CancelAllConditionalOrdersForSymbolResult,
   CancelOrderByExternalIdResult,
   ExchangeOpenPositionsResult,
@@ -55,6 +56,12 @@ export class MockExchangeAdapter implements ExchangeTradingAdapter {
 
   async cancelAllConditionalOrdersForSymbol(
     _symbol: string,
+  ): Promise<CancelAllConditionalOrdersForSymbolResult> {
+    return { ok: true, cancelledCount: 0, attemptedCount: 0, raw: { mock: true } };
+  }
+
+  async cancelOrdersByPriceMatch(
+    _input: CancelOrdersByPriceMatchInput,
   ): Promise<CancelAllConditionalOrdersForSymbolResult> {
     return { ok: true, cancelledCount: 0, attemptedCount: 0, raw: { mock: true } };
   }

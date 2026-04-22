@@ -84,6 +84,14 @@ export type CancelAllConditionalOrdersForSymbolResult =
   | { ok: true; cancelledCount: number; attemptedCount: number; raw?: Record<string, unknown> }
   | { ok: false; error: string; raw?: Record<string, unknown> };
 
+export type CancelOrdersByPriceMatchInput = {
+  symbol: string;
+  targetPrices?: number[];
+  stopPrices?: number[];
+  /** Absolute relative tolerance in basis points (0.01% = 1 bps). */
+  toleranceBps?: number;
+};
+
 /**
  * Exchange-specific execution. Implementations must never log secrets.
  */
@@ -97,6 +105,11 @@ export interface ExchangeTradingAdapter {
 
   /** Optional — exchange-side failsafe to cancel all active conditional orders for a symbol. */
   cancelAllConditionalOrdersForSymbol?(symbol: string): Promise<CancelAllConditionalOrdersForSymbolResult>;
+
+  /** Optional — cancel only symbol conditionals whose price matches known TP/SL levels. */
+  cancelOrdersByPriceMatch?(
+    input: CancelOrdersByPriceMatchInput,
+  ): Promise<CancelAllConditionalOrdersForSymbolResult>;
 
   /** Optional — used to reconcile `bot_orders` with the venue. */
   syncOrderStatus(externalOrderId: string): Promise<OrderSyncResult>;

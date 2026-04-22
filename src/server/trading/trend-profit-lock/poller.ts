@@ -605,6 +605,26 @@ export async function processTrendProfitLockTick(): Promise<void> {
           source: "tpl_d1_flat_runtime_wipeout",
         },
       });
+      for (const venue of [
+        { name: "primary" as const, adapter: primaryAd.ok ? primaryAd.adapter : null },
+        { name: "secondary" as const, adapter: secondaryAd.ok ? secondaryAd.adapter : null },
+      ]) {
+        if (!venue.adapter?.cancelAllConditionalOrdersForSymbol) continue;
+        const nuke = await venue.adapter.cancelAllConditionalOrdersForSymbol(symbol);
+        tradingLog(nuke.ok ? "warn" : "error", "tpl_d1_nuke_symbol_conditionals", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          venue: venue.name,
+          source: "tpl_d1_flat_runtime_wipeout",
+          ok: nuke.ok,
+          cancelledCount: nuke.ok ? nuke.cancelledCount : 0,
+          attemptedCount: nuke.ok ? nuke.attemptedCount : 0,
+          error: nuke.ok ? null : nuke.error,
+          raw: nuke.raw ?? null,
+        });
+      }
       let flattenDispatchOk = false;
       if (d2NetQtyAbs > 1e-8 && run.secondaryExchangeConnectionId) {
         const flattenCorrelationId = `tpl_d2_flatten_${run.runId}_${Date.now()}`;
@@ -1116,6 +1136,9 @@ export async function processTrendProfitLockTick(): Promise<void> {
 
     const d2States = runtime.d2StepsState ?? {};
     const triggered = new Set(runtime.d2TriggeredSteps ?? []);
+    const secondaryAdapter = run.secondaryExchangeConnectionId
+      ? await resolveRunExchangeAdapter(run.secondaryExchangeConnectionId)
+      : { ok: false as const, error: "missing_secondary_exchange" };
     const d2OpenQtyTracked = Object.values(d2States)
       .filter((s) => s.status === "open")
       .reduce((sum, s) => sum + s.qty, 0);
@@ -1173,6 +1196,29 @@ export async function processTrendProfitLockTick(): Promise<void> {
           dispatchError: exitDispatch.ok ? null : exitDispatch.error,
         });
         if (exitDispatch.ok && exitLiveJobs > 0) {
+          if (secondaryAdapter.ok && secondaryAdapter.adapter.cancelOrdersByPriceMatch) {
+            const surgical = await secondaryAdapter.adapter.cancelOrdersByPriceMatch({
+              symbol,
+              targetPrices: [state.targetPrice],
+              stopPrices: [state.stoplossPrice],
+              toleranceBps: 1,
+            });
+            tradingLog(surgical.ok ? "info" : "warn", "tpl_d2_surgical_price_match_cancel", {
+              runId: run.runId,
+              strategyId: run.strategyId,
+              userId: run.userId,
+              symbol,
+              step: state.step,
+              targetPrice: state.targetPrice,
+              stoplossPrice: state.stoplossPrice,
+              toleranceBps: 1,
+              ok: surgical.ok,
+              cancelledCount: surgical.ok ? surgical.cancelledCount : 0,
+              attemptedCount: surgical.ok ? surgical.attemptedCount : 0,
+              error: surgical.ok ? null : surgical.error,
+              raw: surgical.raw ?? null,
+            });
+          }
           state.status = "closed";
           state.closeReason = hitTarget ? "target" : "stoploss";
           state.closedAt = new Date().toISOString();
@@ -1214,6 +1260,30 @@ export async function processTrendProfitLockTick(): Promise<void> {
       state.status = "closed";
       state.closeReason = hitTargetOnSync ? "target" : hitStopOnSync ? "stoploss" : "unknown";
       state.closedAt = new Date().toISOString();
+      if (secondaryAdapter.ok && secondaryAdapter.adapter.cancelOrdersByPriceMatch) {
+        const surgical = await secondaryAdapter.adapter.cancelOrdersByPriceMatch({
+          symbol,
+          targetPrices: [state.targetPrice],
+          stopPrices: [state.stoplossPrice],
+          toleranceBps: 1,
+        });
+        tradingLog(surgical.ok ? "info" : "warn", "tpl_d2_surgical_price_match_cancel", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: state.step,
+          targetPrice: state.targetPrice,
+          stoplossPrice: state.stoplossPrice,
+          toleranceBps: 1,
+          source: "exchange_sync_step_flat",
+          ok: surgical.ok,
+          cancelledCount: surgical.ok ? surgical.cancelledCount : 0,
+          attemptedCount: surgical.ok ? surgical.attemptedCount : 0,
+          error: surgical.ok ? null : surgical.error,
+          raw: surgical.raw ?? null,
+        });
+      }
       {
         const stepReason = hitTargetOnSync ? "d2_step_target_hit" : "d2_step_stoploss_hit";
         logTplTradeExited({
