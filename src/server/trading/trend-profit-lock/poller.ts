@@ -437,15 +437,18 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const htLatestClosedTrend = halfTrendTrendToUpDown(htLatestClosed.trend);
     let isFlip = halfTrendFreshFlipOnLatestClosed;
     let flipDirection: "UP" | "DOWN" = htLatestClosedTrend;
+    let isForcedMockFlip = false;
     if (runtime.mockNextFlipDirection) {
       isFlip = true;
       flipDirection = runtime.mockNextFlipDirection;
+      isForcedMockFlip = true;
       tradingLog("info", "tpl_mock_flip_triggered", {
         runId: run.runId,
         strategyId: run.strategyId,
         userId: run.userId,
         symbol,
         direction: flipDirection,
+        forceEntry: true,
       });
       runtime.mockNextFlipDirection = undefined;
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
@@ -453,7 +456,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     let manualCloseEntryBlock = runtime.isManualClosed === true;
     if (manualCloseEntryBlock) {
       const newDistinctFlip =
-        isFlip && latestClosedBarTime !== runtime.lastFlipCandleTime;
+        isFlip && (isForcedMockFlip || latestClosedBarTime !== runtime.lastFlipCandleTime);
       if (newDistinctFlip) {
         runtime.isManualClosed = undefined;
         await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
@@ -729,8 +732,10 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
     const d1EntrySide: "LONG" | "SHORT" =
       actualOpenPositionSide ?? (flipDirection === "UP" ? "LONG" : "SHORT");
-    const isDuplicateTick = latestClosedBarTime === runtime.lastFlipCandleTime;
-    const isSameDirectionBlock = d1EntrySide === runtime.lastCompletedD1FlipDirection;
+    const isDuplicateTick =
+      !isForcedMockFlip && latestClosedBarTime === runtime.lastFlipCandleTime;
+    const isSameDirectionBlock =
+      !isForcedMockFlip && d1EntrySide === runtime.lastCompletedD1FlipDirection;
     const hasOpenD1Position = hasOpenD1;
     const isPostWipeoutSameTickBlock = clearedStaleD1RuntimeThisTick;
     const prospectiveD1TargetPx = targetPrice(mark, d1EntrySide, cfg.d1TargetPct);
@@ -766,6 +771,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           lastCompletedD1FlipDirection: runtime.lastCompletedD1FlipDirection ?? null,
           halftrendTrendLatestClosed: htLatestClosed.trend,
           halftrendTrendPreviousClosed: htPreviousClosed?.trend ?? null,
+          isForcedMockFlip,
           prospectiveD1TargetPx,
           prospectiveD1TargetDistance,
           prospectiveD2JourneyUsable,
@@ -773,12 +779,16 @@ export async function processTrendProfitLockTick(): Promise<void> {
       }
     }
 
+    const passesFlipCandleGuard =
+      isForcedMockFlip || latestClosedBarTime !== runtime.lastFlipCandleTime;
+    const passesDirectionGuard =
+      isForcedMockFlip || d1EntrySide !== runtime.lastCompletedD1FlipDirection;
     if (
       isFlip &&
       !manualCloseEntryBlock &&
       !clearedStaleD1RuntimeThisTick &&
-      latestClosedBarTime !== runtime.lastFlipCandleTime &&
-      d1EntrySide !== runtime.lastCompletedD1FlipDirection &&
+      passesFlipCandleGuard &&
+      passesDirectionGuard &&
       !hasOpenD1
     ) {
       if (!run.primaryExchangeConnectionId) {
