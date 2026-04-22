@@ -183,6 +183,19 @@ function stoplossPrice(entry: number, side: "LONG" | "SHORT", stopPct: number): 
   return side === "LONG" ? entry * (1 - s) : entry * (1 + s);
 }
 
+function d2StoplossFromD1Distance(params: {
+  d2EntryPrice: number;
+  d2Side: "LONG" | "SHORT";
+  d1TargetDistance: number;
+  stepStoplossPct: number;
+}): number {
+  const distance = Math.max(0, params.d1TargetDistance);
+  const stepFrac = Math.max(0, params.stepStoplossPct) / 100;
+  const slOffset = distance * stepFrac;
+  if (params.d2Side === "LONG") return params.d2EntryPrice - slOffset;
+  return params.d2EntryPrice + slOffset;
+}
+
 function favorableDistancePct(entry: number, mark: number, side: "LONG" | "SHORT"): number {
   if (!(entry > 0) || !(mark > 0)) return 0;
   if (side === "LONG") return ((mark - entry) / entry) * 100;
@@ -675,8 +688,27 @@ export async function processTrendProfitLockTick(): Promise<void> {
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
+    const actualOpenPositionSide: "LONG" | "SHORT" | null = hasOpenD1
+      ? (netQty > 0 ? "LONG" : "SHORT")
+      : null;
+    if (
+      actualOpenPositionSide &&
+      runtime.lastCompletedD1FlipDirection !== actualOpenPositionSide
+    ) {
+      const prevDirection = runtime.lastCompletedD1FlipDirection ?? null;
+      runtime.lastCompletedD1FlipDirection = actualOpenPositionSide;
+      await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
+      tradingLog("warn", "tpl_trend_direction_force_synced_to_open_position", {
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        previousDirection: prevDirection,
+        syncedDirection: actualOpenPositionSide,
+      });
+    }
     const d1EntrySide: "LONG" | "SHORT" =
-      flipDirection === "UP" ? "LONG" : "SHORT";
+      actualOpenPositionSide ?? (flipDirection === "UP" ? "LONG" : "SHORT");
     const isDuplicateTick = latestClosedBarTime === runtime.lastFlipCandleTime;
     const isSameDirectionBlock = d1EntrySide === runtime.lastCompletedD1FlipDirection;
     const hasOpenD1Position = hasOpenD1;
@@ -1089,16 +1121,101 @@ export async function processTrendProfitLockTick(): Promise<void> {
       .reduce((sum, s) => sum + s.qty, 0);
     for (const state of Object.values(d2States)) {
       if (state.status !== "open") continue;
+      const hitTarget =
+        state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
+      const hitStop =
+        state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
+      if (hitTarget || hitStop) {
+        const exitSide = state.side === "LONG" ? "sell" : "buy";
+        const exitQty = Math.max(1, Math.floor(Math.abs(state.qty)));
+        const exitCorrelationId = `tpl_d2_exit_step_${state.step}_${run.runId}_${Date.now()}`;
+        let exitDispatch: StrategySignalIntakeResponse;
+        try {
+          exitDispatch = await dispatchStrategyExecutionSignal({
+            strategyId: run.strategyId,
+            correlationId: exitCorrelationId,
+            symbol,
+            side: exitSide,
+            orderType: "market",
+            quantity: fmtQty(exitQty),
+            actionType: "exit",
+            executionMode: "live_only",
+            targetRunIds: [run.runId],
+            exchangeVenue: "secondary",
+            metadata: {
+              source: "trend_profit_lock_poller",
+              leg: `d2_step_${state.step}`,
+              reason: hitTarget ? "target_hit" : "stoploss_hit",
+              force_signal_quantity: true,
+            },
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          exitDispatch = { ok: false, error: `dispatch_exception: ${msg.slice(0, 400)}` };
+        }
+        const exitLiveJobs = exitDispatch.ok ? (exitDispatch.liveJobsEnqueued ?? 0) : 0;
+        tradingLog(exitDispatch.ok ? "info" : "warn", "tpl_d2_exit_dispatch", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: state.step,
+          side: state.side,
+          markPrice: mark,
+          targetPrice: state.targetPrice,
+          stoplossPrice: state.stoplossPrice,
+          hitTarget,
+          hitStop,
+          exitQty,
+          correlationId: exitCorrelationId,
+          dispatchOk: exitDispatch.ok,
+          liveJobsEnqueued: exitLiveJobs,
+          dispatchError: exitDispatch.ok ? null : exitDispatch.error,
+        });
+        if (exitDispatch.ok && exitLiveJobs > 0) {
+          state.status = "closed";
+          state.closeReason = hitTarget ? "target" : "stoploss";
+          state.closedAt = new Date().toISOString();
+          const stepReason = hitTarget ? "d2_step_target_hit" : "d2_step_stoploss_hit";
+          logTplTradeExited({
+            reason: stepReason,
+            runId: run.runId,
+            userId: run.userId,
+            strategyId: run.strategyId,
+            symbol,
+            leg: `d2_step_${state.step}`,
+            extra: { step: state.step, closeReason: state.closeReason },
+          });
+          await persistTplTradeExitUiHint(run.runId, {
+            reason: stepReason,
+            at: state.closedAt,
+            leg: `d2_step_${state.step}`,
+          });
+          delete d2States[String(state.step)];
+          triggered.delete(state.step);
+          tradingLog("info", "tpl_d2_step_reentry_reset_ready", {
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            step: state.step,
+            closeReason: state.closeReason,
+          });
+          continue;
+        }
+      }
       const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTracked - state.qty);
       const stepLooksClosedOnExchange = d2NetQtyAbs <= expectedOpenWithoutStep + 1e-8;
       if (!stepLooksClosedOnExchange) continue;
-      const hitTarget = state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
-      const hitStop = state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
+      const hitTargetOnSync =
+        state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
+      const hitStopOnSync =
+        state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
       state.status = "closed";
-      state.closeReason = hitTarget ? "target" : hitStop ? "stoploss" : "unknown";
+      state.closeReason = hitTargetOnSync ? "target" : hitStopOnSync ? "stoploss" : "unknown";
       state.closedAt = new Date().toISOString();
       {
-        const stepReason = hitTarget ? "d2_step_target_hit" : "d2_step_stoploss_hit";
+        const stepReason = hitTargetOnSync ? "d2_step_target_hit" : "d2_step_stoploss_hit";
         logTplTradeExited({
           reason: stepReason,
           runId: run.runId,
@@ -1340,7 +1457,12 @@ export async function processTrendProfitLockTick(): Promise<void> {
         side: d2Side,
         qty: d2Qty,
         targetPrice: linkedTarget.price,
-        stoplossPrice: stoplossPrice(mark, d2Side, step.stepStoplossPct),
+        stoplossPrice: d2StoplossFromD1Distance({
+          d2EntryPrice: mark,
+          d2Side,
+          d1TargetDistance,
+          stepStoplossPct: step.stepStoplossPct,
+        }),
         executedAt: new Date().toISOString(),
         correlationId,
         status: "submitting",
@@ -1419,7 +1541,12 @@ export async function processTrendProfitLockTick(): Promise<void> {
         side: d2Side,
         qty: d2Qty,
         targetPrice: linkedTarget.price,
-        stoplossPrice: stoplossPrice(mark, d2Side, step.stepStoplossPct),
+        stoplossPrice: d2StoplossFromD1Distance({
+          d2EntryPrice: mark,
+          d2Side,
+          d1TargetDistance,
+          stepStoplossPct: step.stepStoplossPct,
+        }),
         executedAt: new Date().toISOString(),
         correlationId,
         status: "open",

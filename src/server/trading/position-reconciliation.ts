@@ -241,7 +241,7 @@ async function applyTplD2PartialSync(params: {
   const [row] = await db
     .select({
       runId: userStrategyRuns.id,
-      strategyId: userStrategyRuns.strategyId,
+      strategyId: botPositions.strategyId,
       strategySlug: strategies.slug,
       runSettingsJson: userStrategyRuns.runSettingsJson,
     })
@@ -250,10 +250,9 @@ async function applyTplD2PartialSync(params: {
       userStrategyRuns,
       and(
         eq(botPositions.subscriptionId, userStrategyRuns.subscriptionId),
-        eq(botPositions.strategyId, userStrategyRuns.strategyId),
       ),
     )
-    .innerJoin(strategies, eq(userStrategyRuns.strategyId, strategies.id))
+    .innerJoin(strategies, eq(botPositions.strategyId, strategies.id))
     .where(
       and(
         eq(botPositions.userId, params.userId),

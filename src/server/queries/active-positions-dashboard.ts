@@ -1233,6 +1233,7 @@ export async function getUserRealActivePositionGroups(
       strategyId: botPositions.strategyId,
       exchangeConnectionId: botPositions.exchangeConnectionId,
       symbol: botPositions.symbol,
+      netQty: botPositions.netQuantity,
       runId: userStrategyRuns.id,
       primaryEx: userStrategyRuns.primaryExchangeConnectionId,
       secondaryEx: userStrategyRuns.secondaryExchangeConnectionId,
