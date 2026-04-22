@@ -80,6 +80,10 @@ export type CancelOrderByExternalIdResult =
   | { ok: true; cancelled: boolean; raw?: Record<string, unknown> }
   | { ok: false; error: string; raw?: Record<string, unknown> };
 
+export type CancelAllConditionalOrdersForSymbolResult =
+  | { ok: true; cancelledCount: number; attemptedCount: number; raw?: Record<string, unknown> }
+  | { ok: false; error: string; raw?: Record<string, unknown> };
+
 /**
  * Exchange-specific execution. Implementations must never log secrets.
  */
@@ -90,6 +94,9 @@ export interface ExchangeTradingAdapter {
 
   /** Optional — cancel by venue order id (e.g. manual flatten / emergency cleanup). */
   cancelOrderByExternalId?(externalOrderId: string): Promise<CancelOrderByExternalIdResult>;
+
+  /** Optional — exchange-side failsafe to cancel all active conditional orders for a symbol. */
+  cancelAllConditionalOrdersForSymbol?(symbol: string): Promise<CancelAllConditionalOrdersForSymbolResult>;
 
   /** Optional — used to reconcile `bot_orders` with the venue. */
   syncOrderStatus(externalOrderId: string): Promise<OrderSyncResult>;

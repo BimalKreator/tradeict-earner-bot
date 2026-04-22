@@ -43,7 +43,6 @@ import { tradingLog } from "@/server/trading/trading-log";
 import {
   cancelAllTplLingeringOrders,
   extractTrendProfitLockRuntimeFromRunSettingsJson,
-  stripTrendProfitLockVenueOrderIdsFromRunSettingsJson,
 } from "@/server/trading/trend-profit-lock/cancel-tpl-lingering-orders";
 import { logTplTradeExited } from "@/server/trading/tpl-trade-exit";
 
@@ -65,6 +64,38 @@ function toWholeContractCloseQty(rawNetQty: number): number {
 
 function isTrendProfitLockSlug(slug: string | null | undefined): boolean {
   return (slug ?? "").toLowerCase().includes("trend-profit-lock");
+}
+
+function retainTrendProfitLockRuntimeMemoryFromRunSettingsJson(
+  raw: unknown,
+  lastTplTradeExitUi?: { reason: string; at: string; leg?: string },
+): Record<string, unknown> {
+  const base =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>) }
+      : {};
+  const runtimeRaw =
+    base.trendProfitLockRuntime &&
+    typeof base.trendProfitLockRuntime === "object" &&
+    !Array.isArray(base.trendProfitLockRuntime)
+      ? { ...(base.trendProfitLockRuntime as Record<string, unknown>) }
+      : {};
+  const retainedRuntime: Record<string, unknown> = {
+    d2StepsState: {},
+    d2TriggeredSteps: [],
+  };
+  if (runtimeRaw.lastFlipCandleTime != null) {
+    retainedRuntime.lastFlipCandleTime = runtimeRaw.lastFlipCandleTime;
+  }
+  if (runtimeRaw.lastCompletedD1FlipDirection != null) {
+    retainedRuntime.lastCompletedD1FlipDirection =
+      runtimeRaw.lastCompletedD1FlipDirection;
+  }
+  base.trendProfitLockRuntime = retainedRuntime;
+  if (lastTplTradeExitUi) {
+    base.lastTplTradeExitUi = lastTplTradeExitUi;
+  }
+  return base;
 }
 
 async function loadExchangeAdapterForConnection(exchangeConnectionId: string) {
@@ -761,6 +792,77 @@ async function closeRealRun(
       secondaryAdapter: sAd.ok ? sAd.adapter : null,
       log: { requestId, runId, source: "manual_close_tpl_precheck" },
     });
+
+    const symbolRows = await db
+      .select({ symbol: botOrders.symbol })
+      .from(botOrders)
+      .where(
+        and(
+          eq(botOrders.runId, run.runId),
+          inArray(botOrders.status, ["draft", "queued", "submitting", "open", "partial_fill"]),
+        ),
+      );
+    const symbolSet = new Set<string>(
+      symbolRows
+        .map((r) => r.symbol.trim().toUpperCase())
+        .filter((s) => s.length > 0),
+    );
+    for (const symbol of symbolSet) {
+      if (pAd.ok && pAd.adapter.cancelAllConditionalOrdersForSymbol) {
+        tradingLog("info", "tpl_force_cancel_all_orders_start", {
+          requestId,
+          runId,
+          symbol,
+          venue: "primary",
+        });
+        const out = await pAd.adapter.cancelAllConditionalOrdersForSymbol(symbol);
+        tradingLog("info", "tpl_force_cancel_all_orders_result", {
+          requestId,
+          runId,
+          symbol,
+          venue: "primary",
+          cancelResult: out,
+        });
+        tradingLog(out.ok ? "warn" : "error", "manual_close_tpl_cancel_all_symbol_conditionals", {
+          requestId,
+          runId,
+          symbol,
+          venue: "primary",
+          ok: out.ok,
+          cancelledCount: out.ok ? out.cancelledCount : 0,
+          attemptedCount: out.ok ? out.attemptedCount : 0,
+          error: out.ok ? null : out.error,
+          raw: out.raw ?? null,
+        });
+      }
+      if (sAd.ok && sAd.adapter.cancelAllConditionalOrdersForSymbol) {
+        tradingLog("info", "tpl_force_cancel_all_orders_start", {
+          requestId,
+          runId,
+          symbol,
+          venue: "secondary",
+        });
+        const out = await sAd.adapter.cancelAllConditionalOrdersForSymbol(symbol);
+        tradingLog("info", "tpl_force_cancel_all_orders_result", {
+          requestId,
+          runId,
+          symbol,
+          venue: "secondary",
+          cancelResult: out,
+        });
+        tradingLog(out.ok ? "warn" : "error", "manual_close_tpl_cancel_all_symbol_conditionals", {
+          requestId,
+          runId,
+          symbol,
+          venue: "secondary",
+          ok: out.ok,
+          cancelledCount: out.ok ? out.cancelledCount : 0,
+          attemptedCount: out.ok ? out.attemptedCount : 0,
+          error: out.ok ? null : out.error,
+          raw: out.raw ?? null,
+        });
+      }
+    }
   }
 
   const positions = await db
@@ -782,10 +884,17 @@ async function closeRealRun(
 
   if (positions.length === 0) {
     if (isTrendProfitLockSlug(run.strategySlug)) {
-      const stripped = stripTrendProfitLockVenueOrderIdsFromRunSettingsJson(run.runSettingsJson);
+      const atIso = new Date().toISOString();
       await db
         .update(userStrategyRuns)
-        .set({ runSettingsJson: stripped, updatedAt: new Date() })
+        .set({
+          runSettingsJson: retainTrendProfitLockRuntimeMemoryFromRunSettingsJson(run.runSettingsJson, {
+            reason: "manual_close",
+            at: atIso,
+            leg: "manual_close_api",
+          }),
+          updatedAt: new Date(),
+        })
         .where(eq(userStrategyRuns.id, runId));
     }
     tradingLog("info", "manual_close_real_already_flat", {
@@ -951,16 +1060,16 @@ async function closeRealRun(
   }
 
   if (isTrendProfitLockSlug(run.strategySlug)) {
-    const stripped = stripTrendProfitLockVenueOrderIdsFromRunSettingsJson(run.runSettingsJson);
     const exitReason = closed === 0 && ghostFlushed > 0 ? "venue_flat_manual_close" : "manual_close";
     const atIso = new Date().toISOString();
     await db
       .update(userStrategyRuns)
       .set({
-        runSettingsJson: {
-          ...stripped,
-          lastTplTradeExitUi: { reason: exitReason, at: atIso, leg: "manual_close_api" },
-        },
+        runSettingsJson: retainTrendProfitLockRuntimeMemoryFromRunSettingsJson(run.runSettingsJson, {
+          reason: exitReason,
+          at: atIso,
+          leg: "manual_close_api",
+        }),
         updatedAt: new Date(),
       })
       .where(eq(userStrategyRuns.id, run.runId));

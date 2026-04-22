@@ -95,6 +95,7 @@ type TplRuntimeState = {
   /** Latest closed bar `time` for which we already acted on a HalfTrend flip (avoids duplicate D1 on the same bar). */
   lastFlipCandleTime?: number;
   lastCompletedD1FlipDirection?: "LONG" | "SHORT";
+  mockNextFlipDirection?: "UP" | "DOWN";
   d1?: {
     side: "LONG" | "SHORT";
     entryPrice: number;
@@ -417,6 +418,22 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const latestClosedBarTime = closedCandles[closedCandles.length - 1]!.time;
     const halfTrendFreshFlipOnLatestClosed =
       htPreviousClosed != null && htLatestClosed.trend !== htPreviousClosed.trend;
+    const htLatestClosedTrend = halfTrendTrendToUpDown(htLatestClosed.trend);
+    let isFlip = halfTrendFreshFlipOnLatestClosed;
+    let flipDirection: "UP" | "DOWN" = htLatestClosedTrend;
+    if (runtime.mockNextFlipDirection) {
+      isFlip = true;
+      flipDirection = runtime.mockNextFlipDirection;
+      tradingLog("info", "tpl_mock_flip_triggered", {
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        direction: flipDirection,
+      });
+      runtime.mockNextFlipDirection = undefined;
+      await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
+    }
 
     if (htPreviousClosed != null) {
       const syncKey = tplHalftrendSyncKey(run.runId, symbol, resolution);
@@ -428,6 +445,24 @@ export async function processTrendProfitLockTick(): Promise<void> {
       const newClosedBucket = prev.lastLoggedClosedTime !== latestClosedBarTime;
       const minuteElapsed = nowMs - prev.lastLogWallMs >= TPL_HALFTREND_SYNC_MIN_INTERVAL_MS;
       if (newClosedBucket || minuteElapsed) {
+        if (newClosedBucket) {
+          tradingLog("info", "tpl_ht_calc_debug", {
+            event: "tpl_ht_calc_debug",
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            resolution,
+            latestClosedTime: latestClosedBarTime,
+            amplitude: amp,
+            atr: htLatestClosed.atr ?? null,
+            highPrice: htLatestClosed.highPrice ?? null,
+            lowPrice: htLatestClosed.lowPrice ?? null,
+            up: htLatestClosed.up ?? null,
+            down: htLatestClosed.down ?? null,
+            trend: htLatestClosed.trend,
+          });
+        }
         tradingLog("info", "tpl_halftrend_state_sync", {
           event: "tpl_halftrend_state_sync",
           runId: run.runId,
@@ -436,7 +471,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           symbol,
           resolution,
           latestClosedTime: latestClosedBarTime,
-          htLatestClosedTrend: halfTrendTrendToUpDown(htLatestClosed.trend),
+          htLatestClosedTrend,
           htPreviousClosedTrend: halfTrendTrendToUpDown(htPreviousClosed.trend),
           halfTrendFreshFlipOnLatestClosed,
           closedBarCount: closedCandles.length,
@@ -479,6 +514,26 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const hasOpenD1 = Number.isFinite(netQty) && Math.abs(netQty) > 1e-8;
     const d2Net = n(d2Pos?.netQty);
     const d2NetQtyAbs = Number.isFinite(d2Net) ? Math.abs(d2Net) : 0;
+
+    if (
+      !hasOpenD1 &&
+      !runtime.d1 &&
+      ((runtime.d2TriggeredSteps?.length ?? 0) > 0 ||
+        (runtime.d2StepsState != null && Object.keys(runtime.d2StepsState).length > 0))
+    ) {
+      tradingLog("warn", "tpl_runtime_stale_d2_state_wiped", {
+        event: "tpl_runtime_stale_d2_state_wiped",
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        staleTriggeredSteps: runtime.d2TriggeredSteps ?? [],
+        staleD2StateKeys: Object.keys(runtime.d2StepsState ?? {}),
+      });
+      runtime.d2TriggeredSteps = [];
+      runtime.d2StepsState = {};
+      await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
+    }
 
     let clearedStaleD1RuntimeThisTick = false;
     if (!hasOpenD1 && runtime.d1) {
@@ -587,7 +642,8 @@ export async function processTrendProfitLockTick(): Promise<void> {
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
-    const d1EntrySide = sideFromFlip(htLatestClosed.trend);
+    const d1EntrySide: "LONG" | "SHORT" =
+      flipDirection === "UP" ? "LONG" : "SHORT";
     const isDuplicateTick = latestClosedBarTime === runtime.lastFlipCandleTime;
     const isSameDirectionBlock = d1EntrySide === runtime.lastCompletedD1FlipDirection;
     const hasOpenD1Position = hasOpenD1;
@@ -600,7 +656,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
       Number.isFinite(prospectiveD1TargetPx) &&
       prospectiveD1TargetDistance > Math.max(1e-8, 1e-12 * Math.abs(mark));
 
-    if (halfTrendFreshFlipOnLatestClosed) {
+    if (isFlip) {
       const entryMatrixPass =
         !isPostWipeoutSameTickBlock &&
         !isDuplicateTick &&
@@ -633,7 +689,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     if (
-      halfTrendFreshFlipOnLatestClosed &&
+      isFlip &&
       !clearedStaleD1RuntimeThisTick &&
       latestClosedBarTime !== runtime.lastFlipCandleTime &&
       d1EntrySide !== runtime.lastCompletedD1FlipDirection &&

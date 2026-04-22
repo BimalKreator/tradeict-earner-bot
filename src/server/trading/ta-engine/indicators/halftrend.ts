@@ -28,6 +28,12 @@ export type HalfTrendResult = {
   maxLowPrice: number;
   /** Internal guard state for up-flip checks. */
   minHighPrice: number;
+  /** Debug snapshot for last evaluated bar (for TradingView parity checks). */
+  atr?: number;
+  highPrice?: number;
+  lowPrice?: number;
+  up?: number;
+  down?: number;
 };
 
 const ATR_PERIOD = 100;
@@ -144,6 +150,11 @@ export function calculateHalfTrend(
   let lastSell = false;
   let lastOpenTrend: 0 | 1 = 0;
   let lastCloseTrend: 0 | 1 = 0;
+  let lastAtr = Number.NaN;
+  let lastHighPrice = Number.NaN;
+  let lastLowPrice = Number.NaN;
+  let lastUp = Number.NaN;
+  let lastDown = Number.NaN;
   const treatLastCandleAsForming = Boolean(options?.treatLastCandleAsForming && n > 1);
   const loopEndExclusive = treatLastCandleAsForming ? n - 1 : n;
 
@@ -206,6 +217,11 @@ export function calculateHalfTrend(
 
     prevUp = up;
     prevDown = down;
+    lastAtr = Number.isFinite(atr2) ? atr2 * 2 : Number.NaN;
+    lastHighPrice = highPrice;
+    lastLowPrice = lowPrice;
+    lastUp = up;
+    lastDown = down;
 
     const ht = trend === 0 ? up : down;
     if (i === n - 2) {
@@ -293,5 +309,10 @@ export function calculateHalfTrend(
     prevHtValue: lastPrevHt,
     maxLowPrice,
     minHighPrice,
+    atr: Number.isFinite(lastAtr) ? lastAtr : undefined,
+    highPrice: Number.isFinite(lastHighPrice) ? lastHighPrice : undefined,
+    lowPrice: Number.isFinite(lastLowPrice) ? lastLowPrice : undefined,
+    up: Number.isFinite(lastUp) ? lastUp : undefined,
+    down: Number.isFinite(lastDown) ? lastDown : undefined,
   };
 }

@@ -19,6 +19,7 @@ import { resolveDeltaIndiaProductId } from "@/server/trading/delta-symbol-to-pro
 import type {
   AmendStopLossOrderInput,
   AmendStopLossOrderResult,
+  CancelAllConditionalOrdersForSymbolResult,
   CancelOrderByExternalIdResult,
   ExchangeOpenPositionsResult,
   ExchangeTradingAdapter,
@@ -471,6 +472,115 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       ok: false,
       error: `Delta cancel order failed HTTP ${r.status}: ${body}`,
       raw: r.json,
+    };
+  }
+
+  async cancelAllConditionalOrdersForSymbol(
+    symbol: string,
+  ): Promise<CancelAllConditionalOrdersForSymbolResult> {
+    const sym = symbol.trim().toUpperCase();
+    if (!sym) {
+      return { ok: false, error: "symbol is required" };
+    }
+    const product = await resolveDeltaIndiaProductId(sym);
+    if (!product.ok) {
+      return { ok: false, error: product.error };
+    }
+
+    const queryString =
+      `?product_id=${encodeURIComponent(String(product.productId))}` +
+      `&state=${encodeURIComponent("open,pending")}`;
+    const r = await this.signedFetch("GET", "/v2/orders", queryString, "");
+    if (!r.ok) {
+      return {
+        ok: false,
+        error: `Delta list orders HTTP ${r.status}: ${r.text.slice(0, 800)}`,
+        raw: r.json,
+      };
+    }
+    if (!deltaJsonSuccess(r.json)) {
+      return {
+        ok: false,
+        error: `Delta list orders rejected: ${r.text.slice(0, 800)}`,
+        raw: r.json,
+      };
+    }
+    const result = r.json.result;
+    const rows =
+      Array.isArray(result)
+        ? result.filter((x) => x && typeof x === "object" && !Array.isArray(x))
+        : result && typeof result === "object" && !Array.isArray(result)
+          ? [result]
+          : [];
+
+    const cancellableIds: string[] = [];
+    for (const row of rows) {
+      const o = row as Record<string, unknown>;
+      const idRaw = o.id;
+      if (idRaw == null) continue;
+      const id = String(idRaw).trim();
+      if (!id) continue;
+      const state = typeof o.state === "string" ? o.state.toLowerCase().trim() : "";
+      const stateOpen = state === "open" || state === "pending";
+      const isConditional =
+        o.stop_order_type != null ||
+        o.stop_price != null ||
+        o.stop_trigger_method != null ||
+        (typeof o.order_type === "string" &&
+          o.order_type.toLowerCase().includes("stop"));
+      if (stateOpen && isConditional) {
+        cancellableIds.push(id);
+      }
+    }
+
+    let cancelledCount = 0;
+    const failures: { id: string; error: string; raw?: Record<string, unknown> }[] = [];
+    const cancelResults = await Promise.allSettled(
+      cancellableIds.map(async (id) => ({
+        id,
+        result: await this.cancelOrderByExternalId(id),
+      })),
+    );
+    for (const settled of cancelResults) {
+      if (settled.status === "rejected") {
+        failures.push({
+          id: "unknown",
+          error:
+            settled.reason instanceof Error
+              ? settled.reason.message
+              : String(settled.reason),
+        });
+        continue;
+      }
+      const { id, result } = settled.value;
+      if (!result.ok) {
+        failures.push({ id, error: result.error, raw: result.raw });
+        continue;
+      }
+      if (result.cancelled) cancelledCount += 1;
+    }
+    if (failures.length > 0) {
+      return {
+        ok: false,
+        error: `Delta conditional cancel completed with failures (${failures.length}/${cancellableIds.length}).`,
+        raw: {
+          listResponse: r.json,
+          attemptedCount: cancellableIds.length,
+          cancelledCount,
+          failedCount: failures.length,
+          failures,
+        },
+      };
+    }
+    return {
+      ok: true,
+      cancelledCount,
+      attemptedCount: cancellableIds.length,
+      raw: {
+        listResponse: r.json,
+        attemptedCount: cancellableIds.length,
+        cancelledCount,
+      },
     };
   }
 

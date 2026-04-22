@@ -94,10 +94,29 @@ export async function cancelAllTplLingeringOrders(params: {
         cancelled: r.ok ? r.cancelled : undefined,
         error: r.ok ? null : r.error,
       });
+      if (!r.ok) {
+        tradingLog("error", "tpl_lingering_order_cancel_error", {
+          event: "tpl_lingering_order_cancel_error",
+          ...params.log,
+          externalOrderId,
+          venue,
+          label,
+          error: r.error,
+          raw: r.raw ?? null,
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       tradingLog("warn", "tpl_lingering_order_cancel_exception", {
         event: "tpl_lingering_order_cancel_exception",
+        ...params.log,
+        externalOrderId,
+        venue,
+        label,
+        error: msg.slice(0, 400),
+      });
+      tradingLog("error", "tpl_lingering_order_cancel_error", {
+        event: "tpl_lingering_order_cancel_error",
         ...params.log,
         externalOrderId,
         venue,

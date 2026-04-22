@@ -41,19 +41,20 @@ async function main(): Promise<void> {
         AND upper(trim(coalesce(payload->>'symbol', ''))) = 'BTCUSD'
     `;
 
-    await dbClient`
+    const runtimeWipeRows = await dbClient<{ id: string }[]>`
       UPDATE user_strategy_runs
       SET
         run_settings_json = run_settings_json - 'trendProfitLockRuntime',
         updated_at = now()
       WHERE run_settings_json ? 'trendProfitLockRuntime'
+      RETURNING id
     `;
 
     console.log("-> Flushed BTCUSD bot_execution_logs (via orders)");
     console.log("-> Flushed BTCUSD bot_orders");
     console.log("-> Flushed BTCUSD bot_positions");
     console.log("-> Flushed BTCUSD trading_execution_jobs");
-    console.log("-> Cleared trendProfitLockRuntime on user_strategy_runs");
+    console.log(`-> Cleared trendProfitLockRuntime on user_strategy_runs (${runtimeWipeRows.length} rows)`);
     console.log("Cleanup finished successfully.");
   } catch (e) {
     console.error("Cleanup failed:", e);

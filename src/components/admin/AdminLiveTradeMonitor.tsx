@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import { useCallback } from "react";
 
 import { isHedgeScalpingStrategySlug } from "@/lib/hedge-scalping-config";
+import { isTrendProfitLockScalpingStrategySlug } from "@/lib/trend-profit-lock-config";
 import { formatUsdAmount } from "@/lib/format-inr";
+import { showAppToast } from "@/components/ui/GlobalToastHost";
 import type {
   AdminLivePositionRow,
   AdminStrategyStatusRow,
@@ -88,6 +90,7 @@ export function AdminLiveTradeMonitor({
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closingKey, setClosingKey] = useState<string | null>(null);
+  const [mockingKey, setMockingKey] = useState<string | null>(null);
   const [closeToast, setCloseToast] = useState<{
     requestId: string;
     status: "pending" | "success" | "failed";
@@ -112,6 +115,24 @@ export function AdminLiveTradeMonitor({
       setError(null);
     } catch {
       setError("Network error.");
+    }
+  }
+
+  async function triggerMockFlip(params: {
+    runId: string;
+    direction: "UP" | "DOWN";
+  }): Promise<void> {
+    const res = await fetch("/api/trading/mock-tpl-flip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runId: params.runId,
+        direction: params.direction,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || `Could not trigger mock flip ${params.direction}.`);
     }
   }
 
@@ -262,46 +283,100 @@ export function AdminLiveTradeMonitor({
                     {row.participatingUsers}
                   </td>
                   <td className="px-3 py-2">
-                    {(row.mode === "virtual" && row.virtualRunId) || (row.mode === "real" && row.runId) ? (
-                      <button
-                        type="button"
-                        disabled={closingKey === row.key}
-                        onClick={() => {
-                          const runId = row.mode === "virtual" ? row.virtualRunId : row.runId;
-                          if (!runId) return;
-                          setClosingKey(row.key);
-                          void closeRunAndRefresh({
-                            runId,
-                            mode: row.mode,
-                            refresh: pull,
-                          })
-                            .then((result) => {
-                              if (!result.requestId) return;
-                              setCloseToast({
-                                requestId: result.requestId,
-                                status: row.mode === "real" ? "pending" : "success",
-                                message:
-                                  row.mode === "real"
-                                    ? "Close requested. Waiting for worker confirmation..."
-                                    : "Virtual close completed.",
-                              });
-                              if (row.mode === "real") {
-                                void pollManualCloseStatus(result.requestId);
-                              }
+                    <div className="flex flex-wrap items-center gap-2">
+                      {(row.mode === "virtual" && row.virtualRunId) || (row.mode === "real" && row.runId) ? (
+                        <button
+                          type="button"
+                          disabled={closingKey === row.key}
+                          onClick={() => {
+                            const runId = row.mode === "virtual" ? row.virtualRunId : row.runId;
+                            if (!runId) return;
+                            setClosingKey(row.key);
+                            void closeRunAndRefresh({
+                              runId,
+                              mode: row.mode,
+                              refresh: pull,
                             })
-                            .catch((e) => {
-                              const msg = e instanceof Error ? e.message : String(e);
-                              setError(msg);
-                            })
-                            .finally(() => setClosingKey(null));
-                        }}
-                        className="rounded-md border border-red-500/60 bg-red-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 hover:bg-red-500/25 disabled:opacity-60"
-                      >
-                        {closingKey === row.key ? "Closing..." : "Close Position"}
-                      </button>
-                    ) : (
-                      "—"
-                    )}
+                              .then((result) => {
+                                if (!result.requestId) return;
+                                setCloseToast({
+                                  requestId: result.requestId,
+                                  status: row.mode === "real" ? "pending" : "success",
+                                  message:
+                                    row.mode === "real"
+                                      ? "Close requested. Waiting for worker confirmation..."
+                                      : "Virtual close completed.",
+                                });
+                                if (row.mode === "real") {
+                                  void pollManualCloseStatus(result.requestId);
+                                }
+                              })
+                              .catch((e) => {
+                                const msg = e instanceof Error ? e.message : String(e);
+                                setError(msg);
+                              })
+                              .finally(() => setClosingKey(null));
+                          }}
+                          className="rounded-md border border-red-500/60 bg-red-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 hover:bg-red-500/25 disabled:opacity-60"
+                        >
+                          {closingKey === row.key ? "Closing..." : "Close Position"}
+                        </button>
+                      ) : null}
+                      {row.mode === "real" &&
+                      row.runId &&
+                      isTrendProfitLockScalpingStrategySlug(row.strategySlug) ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={mockingKey === `${row.key}:UP`}
+                            onClick={() => {
+                              if (!row.runId) return;
+                              const key = `${row.key}:UP`;
+                              setMockingKey(key);
+                              void triggerMockFlip({ runId: row.runId, direction: "UP" })
+                                .then(() => {
+                                  showAppToast("Mock Flip UP triggered!", "success");
+                                })
+                                .catch((e) => {
+                                  const msg = e instanceof Error ? e.message : String(e);
+                                  showAppToast(msg, "error");
+                                })
+                                .finally(() => setMockingKey(null));
+                            }}
+                            className="rounded-md border border-emerald-500/60 bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
+                          >
+                            {mockingKey === `${row.key}:UP` ? "Mocking..." : "Mock UP"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={mockingKey === `${row.key}:DOWN`}
+                            onClick={() => {
+                              if (!row.runId) return;
+                              const key = `${row.key}:DOWN`;
+                              setMockingKey(key);
+                              void triggerMockFlip({ runId: row.runId, direction: "DOWN" })
+                                .then(() => {
+                                  showAppToast("Mock Flip DOWN triggered!", "success");
+                                })
+                                .catch((e) => {
+                                  const msg = e instanceof Error ? e.message : String(e);
+                                  showAppToast(msg, "error");
+                                })
+                                .finally(() => setMockingKey(null));
+                            }}
+                            className="rounded-md border border-violet-500/60 bg-violet-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
+                          >
+                            {mockingKey === `${row.key}:DOWN` ? "Mocking..." : "Mock DOWN"}
+                          </button>
+                        </>
+                      ) : null}
+                      {!((row.mode === "virtual" && row.virtualRunId) || (row.mode === "real" && row.runId)) &&
+                      !(row.mode === "real" &&
+                        row.runId &&
+                        isTrendProfitLockScalpingStrategySlug(row.strategySlug))
+                        ? "—"
+                        : null}
+                    </div>
                   </td>
                 </tr>
               ))}
