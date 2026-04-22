@@ -34,6 +34,11 @@ import {
   type OhlcvCandle,
 } from "@/server/trading/ta-engine/rsi-scalper";
 import { tradingLog } from "@/server/trading/trading-log";
+import {
+  inferD1TplExitReasonFromMark,
+  logTplTradeExited,
+  persistTplTradeExitUiHint,
+} from "@/server/trading/tpl-trade-exit";
 
 const LOG = "[TPL-POLLER]";
 const DELTA_BASE_URL = process.env.HS_WORKER_DELTA_BASE_URL?.trim() || "https://api.india.delta.exchange";
@@ -416,6 +421,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     let clearedStaleD1RuntimeThisTick = false;
     if (!hasOpenD1 && runtime.d1) {
       clearedStaleD1RuntimeThisTick = true;
+      let flattenDispatchOk = false;
       if (d2NetQtyAbs > 1e-8 && run.secondaryExchangeConnectionId) {
         const flattenCorrelationId = `tpl_d2_flatten_${run.runId}_${Date.now()}`;
         const flattenSide = d2Net > 0 ? "sell" : "buy";
@@ -455,6 +461,39 @@ export async function processTrendProfitLockTick(): Promise<void> {
           ok: flattenDispatch.ok,
           liveJobsEnqueued: flattenDispatch.ok ? flattenDispatch.liveJobsEnqueued : 0,
           error: flattenDispatch.ok ? null : flattenDispatch.error,
+        });
+        if (flattenDispatch.ok) {
+          flattenDispatchOk = true;
+          logTplTradeExited({
+            reason: "wipeout_triggered",
+            runId: run.runId,
+            userId: run.userId,
+            strategyId: run.strategyId,
+            symbol,
+            leg: "d2_flatten",
+            extra: { flattenQty, correlationId: flattenCorrelationId },
+          });
+          await persistTplTradeExitUiHint(run.runId, {
+            reason: "wipeout_triggered",
+            at: new Date().toISOString(),
+            leg: "d2_flatten",
+          });
+        }
+      }
+      if (!(d2NetQtyAbs > 1e-8 && run.secondaryExchangeConnectionId && flattenDispatchOk)) {
+        const d1Reason = inferD1TplExitReasonFromMark(mark, runtime.d1);
+        logTplTradeExited({
+          reason: d1Reason,
+          runId: run.runId,
+          userId: run.userId,
+          strategyId: run.strategyId,
+          symbol,
+          leg: "d1",
+        });
+        await persistTplTradeExitUiHint(run.runId, {
+          reason: d1Reason,
+          at: new Date().toISOString(),
+          leg: "d1",
         });
       }
       runtime.lastCompletedD1FlipDirection = runtime.d1.side;
@@ -613,17 +652,37 @@ export async function processTrendProfitLockTick(): Promise<void> {
             jobsEnqueued: dispatch.ok ? dispatch.liveJobsEnqueued : 0,
             error: dispatch.ok ? null : dispatch.error,
           });
-          runtime.d1 = {
-            side: d1Side,
-            entryPrice: mark,
-            targetPrice: targetPrice(mark, d1Side, cfg.d1TargetPct),
-            stoplossPrice: stoplossPrice(mark, d1Side, cfg.d1StoplossPct),
-            breakevenTriggerPct: cfg.d1BreakevenTriggerPct,
-          };
+          const liveEnqueued = dispatch.ok ? (dispatch.liveJobsEnqueued ?? 0) : 0;
+          if (dispatch.ok && liveEnqueued > 0) {
+            runtime.d1 = {
+              side: d1Side,
+              entryPrice: mark,
+              targetPrice: targetPrice(mark, d1Side, cfg.d1TargetPct),
+              stoplossPrice: stoplossPrice(mark, d1Side, cfg.d1StoplossPct),
+              breakevenTriggerPct: cfg.d1BreakevenTriggerPct,
+            };
+            runtime.lastFlipCandleTime = latestClosedBarTime;
+            await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
+          } else {
+            tradingLog("warn", "tpl_d1_entry_runtime_not_committed", {
+              runId: run.runId,
+              strategyId: run.strategyId,
+              userId: run.userId,
+              symbol,
+              latestClosedBarTime,
+              dispatchOk: dispatch.ok,
+              liveJobsEnqueued: liveEnqueued,
+              error: dispatch.ok ? null : dispatch.error,
+              reason:
+                !dispatch.ok
+                  ? "dispatch_failed"
+                  : liveEnqueued <= 0
+                    ? "no_live_jobs_enqueued"
+                    : "unknown",
+            });
+          }
         }
       }
-      runtime.lastFlipCandleTime = latestClosedBarTime;
-      await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
 
     if (!hasOpenD1) continue;
@@ -788,6 +847,23 @@ export async function processTrendProfitLockTick(): Promise<void> {
       state.status = "closed";
       state.closeReason = hitTarget ? "target" : "stoploss";
       state.closedAt = new Date().toISOString();
+      {
+        const stepReason = hitTarget ? "d2_step_target_hit" : "d2_step_stoploss_hit";
+        logTplTradeExited({
+          reason: stepReason,
+          runId: run.runId,
+          userId: run.userId,
+          strategyId: run.strategyId,
+          symbol,
+          leg: `d2_step_${state.step}`,
+          extra: { step: state.step, closeReason: state.closeReason },
+        });
+        await persistTplTradeExitUiHint(run.runId, {
+          reason: stepReason,
+          at: state.closedAt,
+          leg: `d2_step_${state.step}`,
+        });
+      }
       if (hitTarget) {
         delete d2States[String(state.step)];
         tradingLog("info", "tpl_d2_step_reentry_reset_ready", {

@@ -17,6 +17,21 @@ const AUTO_FLATTEN_CONFIRMATIONS_REQUIRED = Math.max(
   Number(process.env.POSITION_RECONCILIATION_AUTO_FLATTEN_CONFIRMATIONS ?? "2") || 2,
 );
 
+/** Do not auto-flatten local rows opened/updated within this window (Delta list may lag). */
+const RECONCILIATION_OPEN_GRACE_MS = Math.max(
+  0,
+  Number(process.env.POSITION_RECONCILIATION_OPEN_GRACE_MS ?? "60000") || 60_000,
+);
+
+function positionWithinOpenGrace(
+  meta: { openedAt: Date | null; updatedAt: Date | null } | undefined,
+): boolean {
+  if (!meta || RECONCILIATION_OPEN_GRACE_MS <= 0) return false;
+  const ref = meta.openedAt ?? meta.updatedAt;
+  if (!ref) return false;
+  return Date.now() - ref.getTime() < RECONCILIATION_OPEN_GRACE_MS;
+}
+
 function num(raw: string | null | undefined): number {
   const n = Number(String(raw ?? "").trim());
   return Number.isFinite(n) ? n : 0;
@@ -201,6 +216,8 @@ async function reconcileOneConnection(
     .select({
       symbol: botPositions.symbol,
       netQtyRaw: botPositions.netQuantity,
+      openedAt: botPositions.openedAt,
+      updatedAt: botPositions.updatedAt,
     })
     .from(botPositions)
     .where(
@@ -210,8 +227,17 @@ async function reconcileOneConnection(
       ),
     );
   const localBySymbol = new Map<string, number>();
+  const localGraceBySymbol = new Map<
+    string,
+    { openedAt: Date | null; updatedAt: Date | null }
+  >();
   for (const row of localRows) {
-    localBySymbol.set(row.symbol.trim().toUpperCase(), num(row.netQtyRaw));
+    const sym = row.symbol.trim().toUpperCase();
+    localBySymbol.set(sym, num(row.netQtyRaw));
+    localGraceBySymbol.set(sym, {
+      openedAt: row.openedAt ?? null,
+      updatedAt: row.updatedAt ?? null,
+    });
   }
 
   const adapterRes = await resolveExchangeTradingAdapter({
@@ -304,13 +330,39 @@ async function reconcileOneConnection(
         ? prev.rawPayload.zero_exchange_confirmations
         : 0;
     const prevStreak = Number.isFinite(prevStreakRaw) ? Math.max(0, Math.floor(prevStreakRaw)) : 0;
-    const confirmsExchangeZeroNow = Math.abs(exchangeQty) <= QTY_EPS && Math.abs(localQty) > QTY_EPS;
+    const inOpenGrace = positionWithinOpenGrace(localGraceBySymbol.get(symbol));
+    const confirmsExchangeZeroNow =
+      !inOpenGrace &&
+      Math.abs(exchangeQty) <= QTY_EPS &&
+      Math.abs(localQty) > QTY_EPS;
     const zeroExchangeConfirmations = confirmsExchangeZeroNow ? prevStreak + 1 : 0;
 
     if (
       confirmsExchangeZeroNow &&
       zeroExchangeConfirmations >= AUTO_FLATTEN_CONFIRMATIONS_REQUIRED
     ) {
+      const rawRoot =
+        positionsRes.ok && positionsRes.raw && typeof positionsRes.raw === "object"
+          ? (positionsRes.raw as Record<string, unknown>)
+          : null;
+      const rawForSymbol = rawRoot ? rawRoot[symbol] : null;
+      const payloadStr =
+        rawForSymbol != null
+          ? JSON.stringify(rawForSymbol).slice(0, 12_000)
+          : rawRoot != null
+            ? JSON.stringify(rawRoot).slice(0, 12_000)
+            : null;
+      tradingLog("warn", "position_reconciliation_auto_flattening_local", {
+        event: "position_reconciliation_auto_flattening_local",
+        exchangeConnectionId: connection.id,
+        userId: connection.userId,
+        symbol,
+        localQty,
+        exchangeQtyParsedFromAdapter: exchangeQty,
+        zeroExchangeConfirmations,
+        confirmationsRequired: AUTO_FLATTEN_CONFIRMATIONS_REQUIRED,
+        deltaPositionsEndpointPayload: payloadStr,
+      });
       await autoFlattenLocalPosition({
         userId: connection.userId,
         exchangeConnectionId: connection.id,
@@ -338,6 +390,8 @@ async function reconcileOneConnection(
             zero_exchange_confirmations: zeroExchangeConfirmations,
             auto_flatten_confirmations_required:
               AUTO_FLATTEN_CONFIRMATIONS_REQUIRED,
+            open_grace_ms: RECONCILIATION_OPEN_GRACE_MS,
+            open_grace_skipped_zero_streak: inOpenGrace,
           }
         : null,
       reconciledAt,

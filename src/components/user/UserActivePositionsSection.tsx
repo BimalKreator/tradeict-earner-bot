@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatUsdAmount } from "@/lib/format-inr";
 import { GlassPanel } from "@/components/ui/GlassPanel";
@@ -115,6 +115,8 @@ export function UserActivePositionsSection({
     status: "pending" | "success" | "failed";
     message: string;
   } | null>(null);
+  const [exitToast, setExitToast] = useState<{ runId: string; message: string } | null>(null);
+  const prevRunIdsRef = useRef<Set<string>>(new Set());
   const pollEndpoint = endpoint ?? (mode === "real" ? "/api/user/live-active-positions" : "/api/user/active-positions");
 
   const HISTORY_PAGE_SIZE = 5;
@@ -130,13 +132,44 @@ export function UserActivePositionsSection({
         groups: UserActivePositionGroup[];
         updatedAt?: string;
       };
+      const nextIds = new Set(data.groups.map((g) => g.runId));
+      if (mode === "real") {
+        const prev = prevRunIdsRef.current;
+        if (prev.size > 0) {
+          for (const rid of prev) {
+            if (!nextIds.has(rid)) {
+              try {
+                const er = await fetch(
+                  `/api/user/trade-exit-summary?runId=${encodeURIComponent(rid)}`,
+                  { cache: "no-store" },
+                );
+                if (er.ok) {
+                  const ex = (await er.json()) as { reasonLabel?: string; reason?: string };
+                  const label =
+                    ex.reasonLabel && ex.reasonLabel.length > 0
+                      ? ex.reasonLabel
+                      : "Position closed";
+                  setExitToast({ runId: rid, message: label });
+                } else {
+                  setExitToast({ runId: rid, message: "Position closed" });
+                }
+              } catch {
+                setExitToast({ runId: rid, message: "Position closed" });
+              }
+            }
+          }
+        }
+        prevRunIdsRef.current = nextIds;
+      } else {
+        prevRunIdsRef.current = nextIds;
+      }
       setGroups(data.groups);
       setUpdatedAt(data.updatedAt ?? null);
       setError(null);
     } catch {
       setError("Network error while refreshing.");
     }
-  }, [pollEndpoint]);
+  }, [pollEndpoint, mode]);
 
   const pollManualCloseStatus = useCallback(async (requestId: string): Promise<void> => {
     for (let i = 0; i < 25; i++) {
@@ -537,6 +570,21 @@ export function UserActivePositionsSection({
               type="button"
               className="rounded border border-white/20 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-300 hover:bg-white/10"
               onClick={() => setCloseToast(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {exitToast ? (
+        <div className="fixed right-4 bottom-24 z-50 w-[min(92vw,460px)] rounded-xl border border-emerald-500/30 bg-black/85 px-4 py-3 text-xs shadow-2xl backdrop-blur">
+          <p className="font-semibold text-emerald-100">Trade exited: {exitToast.message}</p>
+          <p className="mt-1 font-mono text-[10px] text-slate-500">{exitToast.runId.slice(0, 8)}…</p>
+          <div className="mt-2 text-right">
+            <button
+              type="button"
+              className="rounded border border-white/20 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-300 hover:bg-white/10"
+              onClick={() => setExitToast(null)}
             >
               Dismiss
             </button>

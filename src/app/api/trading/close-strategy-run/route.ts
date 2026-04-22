@@ -40,6 +40,7 @@ import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signa
 import { assertVirtualRunStillEligibleForExecution } from "@/server/trading/virtual-eligibility";
 import { simulateVirtualOrder } from "@/server/trading/virtual-order-simulator";
 import { tradingLog } from "@/server/trading/trading-log";
+import { logTplTradeExited } from "@/server/trading/tpl-trade-exit";
 
 export const dynamic = "force-dynamic";
 
@@ -968,13 +969,27 @@ async function closeRealRun(
   }
 
   if (isTrendProfitLockSlug(run.strategySlug)) {
+    const cleared = clearTrendProfitLockD1StopMetadataFromRunSettings(run.runSettingsJson);
+    const exitReason = closed === 0 && ghostFlushed > 0 ? "venue_flat_manual_close" : "manual_close";
+    const atIso = new Date().toISOString();
     await db
       .update(userStrategyRuns)
       .set({
-        runSettingsJson: clearTrendProfitLockD1StopMetadataFromRunSettings(run.runSettingsJson),
+        runSettingsJson: {
+          ...cleared,
+          lastTplTradeExitUi: { reason: exitReason, at: atIso, leg: "manual_close_api" },
+        },
         updatedAt: new Date(),
       })
       .where(eq(userStrategyRuns.id, run.runId));
+    logTplTradeExited({
+      reason: exitReason,
+      runId,
+      userId: run.userId,
+      strategyId: run.strategyId,
+      leg: "manual_close_api",
+      extra: { requestId, closed, ghostFlushed },
+    });
   }
 
   tradingLog("info", "manual_close_real_done", {

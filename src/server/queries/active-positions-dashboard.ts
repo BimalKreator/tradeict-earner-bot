@@ -4,12 +4,14 @@ import {
   hedgeScalpingConfigSchema,
   isHedgeScalpingStrategySlug,
 } from "@/lib/hedge-scalping-config";
+import { isTrendProfitLockScalpingStrategySlug } from "@/lib/trend-profit-lock-config";
 import {
   deriveLedgerMetrics,
   isFilledOrder,
   num,
   type LedgerOrderRow,
 } from "@/lib/virtual-ledger-metrics";
+import { parseUserStrategyRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
 import { db } from "@/server/db";
 import {
   botOrders,
@@ -512,6 +514,85 @@ function computePctBasedExitPrices(params: {
 }
 
 /** Adds target/stop from saved hedge-scalping % (D1 anchor + per D2 scalp clip). */
+function extractCurrentOpenBotOrderWindowForTpl<T extends { status: string; side: string; quantity: string }>(
+  orders: T[],
+): T[] {
+  if (orders.length === 0) return [];
+  let runningNet = 0;
+  let lastFlatIdx = -1;
+  for (let i = 0; i < orders.length; i++) {
+    const o = orders[i]!;
+    if (!isFilledOrder(o.status)) continue;
+    const q = num(o.quantity);
+    if (!(q > 0)) continue;
+    runningNet += o.side === "buy" ? q : -q;
+    if (Math.abs(runningNet) <= QTY_EPS) {
+      runningNet = 0;
+      lastFlatIdx = i;
+    }
+  }
+  if (Math.abs(runningNet) <= QTY_EPS) return [];
+  return orders.slice(lastFlatIdx + 1);
+}
+
+function parseTplD2StepFromCorrelation(correlationId: string | null | undefined): number | null {
+  const m = /^tpl_d2_step_(\d+)_/i.exec(correlationId ?? "");
+  if (!m) return null;
+  const s = Number(m[1]);
+  return Number.isFinite(s) && s > 0 ? s : null;
+}
+
+/** Live TPL: show D1/D2 target & stop from `trendProfitLockRuntime` (and ladder step on D2 when known). */
+function augmentTrendProfitLockLiveLeg(
+  leg: ActivePositionLeg,
+  runSettingsJson: unknown,
+  tplBoRows: { status: string; side: string; quantity: string; correlationId: string | null }[],
+): ActivePositionLeg {
+  if (!isTrendProfitLockScalpingStrategySlug(leg.strategySlug)) return leg;
+  const parsed = parseUserStrategyRunSettingsJson(runSettingsJson);
+  const rt = parsed.trendProfitLockRuntime;
+  if (!rt) return leg;
+  if (leg.account === "D1" && rt.d1) {
+    return {
+      ...leg,
+      targetPrice: rt.d1.targetPrice,
+      stopLossPrice: rt.d1.stoplossPrice,
+    };
+  }
+  if (leg.account === "D2") {
+    const openRows = extractCurrentOpenBotOrderWindowForTpl(tplBoRows);
+    let stepFromOrders: number | null = null;
+    for (let i = openRows.length - 1; i >= 0; i--) {
+      const s = parseTplD2StepFromCorrelation(openRows[i]!.correlationId);
+      if (s != null) {
+        stepFromOrders = s;
+        break;
+      }
+    }
+    const states = rt.d2StepsState ?? {};
+    let chosen =
+      stepFromOrders != null ? states[String(stepFromOrders)] : undefined;
+    if (!chosen || chosen.status !== "open") {
+      let maxStep = -1;
+      for (const st of Object.values(states)) {
+        if (st.status === "open" && st.step > maxStep) {
+          maxStep = st.step;
+          chosen = st;
+        }
+      }
+    }
+    if (chosen && chosen.status === "open") {
+      return {
+        ...leg,
+        targetPrice: chosen.targetPrice,
+        stopLossPrice: chosen.stoplossPrice,
+        d2LadderStep: chosen.step,
+      };
+    }
+  }
+  return leg;
+}
+
 function augmentHedgeScalpingLegExitPrices(
   leg: ActivePositionLeg,
   settings: HedgeScalpingDisplaySettings | null,
@@ -1082,6 +1163,7 @@ export async function getUserRealActivePositionGroups(
       strategySlug: strategies.slug,
       strategySettingsJson: strategies.settingsJson,
       leverage: userStrategyRuns.leverage,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
       userEmail: users.email,
       userName: users.name,
     })
@@ -1125,6 +1207,7 @@ export async function getUserRealActivePositionGroups(
     secondaryEx: string | null;
     label: string;
     leverage: number;
+    runSettingsJson: unknown;
   };
 
   const contexts: RealCtx[] = realRows.map((row) => ({
@@ -1140,6 +1223,7 @@ export async function getUserRealActivePositionGroups(
     secondaryEx: row.secondaryEx,
     label: userDisplayName(row.userEmail, row.userName),
     leverage: Math.max(1, Number(row.leverage ?? "1")),
+    runSettingsJson: row.runSettingsJson,
   }));
 
   const markBySymbol = await fetchMarksForSymbols(contexts.map((c) => c.symbol));
@@ -1197,10 +1281,13 @@ export async function getUserRealActivePositionGroups(
       activeClipCount: null,
     });
     if (!leg) continue;
+    const tplAugmented = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
+      ? augmentTrendProfitLockLiveLeg(leg, r.runSettingsJson, boRows)
+      : leg;
     legs.push(
       isHs && r.hedgeSettings
-        ? augmentHedgeScalpingLegExitPrices(leg, r.hedgeSettings)
-        : leg,
+        ? augmentHedgeScalpingLegExitPrices(tplAugmented, r.hedgeSettings)
+        : tplAugmented,
     );
   }
 
@@ -1370,6 +1457,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       strategySlug: strategies.slug,
       strategySettingsJson: strategies.settingsJson,
       leverage: userStrategyRuns.leverage,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
       userEmail: users.email,
       userName: users.name,
     })
@@ -1402,6 +1490,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     secondaryEx: string | null;
     label: string;
     leverage: number;
+    runSettingsJson: unknown;
   };
   const rctx: RCtx[] = [];
 
@@ -1420,6 +1509,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       secondaryEx: row.secondaryEx,
       label: userDisplayName(row.userEmail, row.userName),
       leverage: Math.max(1, Number(row.leverage ?? "1")),
+      runSettingsJson: row.runSettingsJson,
     });
   }
 
@@ -1534,10 +1624,13 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       activeClipCount: null,
     });
     if (lr) {
+      const tplAugmented = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
+        ? augmentTrendProfitLockLiveLeg(lr, r.runSettingsJson, boRows)
+        : lr;
       legs.push(
         isHs && r.hedgeSettings
-          ? augmentHedgeScalpingLegExitPrices(lr, r.hedgeSettings)
-          : lr,
+          ? augmentHedgeScalpingLegExitPrices(tplAugmented, r.hedgeSettings)
+          : tplAugmented,
       );
     }
   }

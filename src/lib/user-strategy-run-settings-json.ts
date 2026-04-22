@@ -13,6 +13,13 @@ const executionPreferencesSchema = z.object({
   leverage: z.number().positive().optional(),
 });
 
+/** Last Trend Profit Lock exit hint for Live Trades UI toasts (merged into raw JSON; optional). */
+const lastTplTradeExitUiSchema = z.object({
+  reason: z.string(),
+  at: z.string(),
+  leg: z.string().optional(),
+});
+
 const trendProfitLockRuntimeSchema = z.object({
   lastFlipCandleTime: z.number().int().optional(),
   lastCompletedD1FlipDirection: z.enum(["LONG", "SHORT"]).optional(),
@@ -59,6 +66,7 @@ export const userStrategyRunSettingsJsonSchema = z.object({
   trendProfitLock: trendProfitLockConfigBaseSchema.partial().optional(),
   trendProfitLockRuntime: trendProfitLockRuntimeSchema.optional(),
   execution: executionPreferencesSchema.optional(),
+  lastTplTradeExitUi: lastTplTradeExitUiSchema.optional(),
 });
 
 export type UserStrategyRunSettingsJson = z.infer<typeof userStrategyRunSettingsJsonSchema>;

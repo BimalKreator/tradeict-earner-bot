@@ -29,6 +29,7 @@ import {
 } from "./execution-queue";
 import { isInsufficientBalanceOrMarginDeltaError } from "./delta-order-errors";
 import { bumpBotPositionNetQuantity } from "./position-service";
+import { maybeLogAndPersistTplExitFromFilledExitOrder } from "./tpl-trade-exit";
 import { pauseRunForInsufficientFunds } from "./run-risk-pause";
 import { tradingLog } from "./trading-log";
 
@@ -155,6 +156,15 @@ async function runPostSubmitSync(
           symbol: p.symbol,
           deltaQty: signed,
         });
+        if (p.signalAction === "exit") {
+          await maybeLogAndPersistTplExitFromFilledExitOrder({
+            strategyId: eligRow.strategyId,
+            runId: eligRow.runId,
+            userId: eligRow.userId,
+            symbol: p.symbol,
+            payload: p,
+          });
+        }
       } else if (manualEmergencyClose && sync.status === "partial") {
         const signed = signedQtyFromFill({
           side: p.side,
@@ -169,6 +179,15 @@ async function runPostSubmitSync(
           symbol: p.symbol,
           deltaQty: signed,
         });
+        if (p.signalAction === "exit") {
+          await maybeLogAndPersistTplExitFromFilledExitOrder({
+            strategyId: eligRow.strategyId,
+            runId: eligRow.runId,
+            userId: eligRow.userId,
+            symbol: p.symbol,
+            payload: p,
+          });
+        }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

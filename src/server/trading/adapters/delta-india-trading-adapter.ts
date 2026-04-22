@@ -233,13 +233,33 @@ function isAlreadyClosedOrCancelledDeltaOrderError(text: string): boolean {
   return s.includes("already cancelled") || s.includes("already closed") || s.includes("not found");
 }
 
+/**
+ * Signed net contracts: long +, short −.
+ * Delta may return a **positive** `size` with `side`, or a **signed** `size` (negative = short).
+ * The previous `if (!(size > 0)) return 0` incorrectly treated all shorts as flat.
+ */
 function parseDeltaPositionNetQty(row: Record<string, unknown>): number {
-  const size = coerceNum(row.size) ?? 0;
-  if (!(size > 0)) return 0;
-  const sideRaw = typeof row.side === "string" ? row.side.toLowerCase() : "";
+  const netDirect =
+    coerceNum(row.net_qty) ??
+    coerceNum((row as { netQty?: unknown }).netQty) ??
+    coerceNum(row.position_net_qty);
+  if (netDirect != null && Math.abs(netDirect) > 1e-12) {
+    return netDirect;
+  }
+
+  const size =
+    coerceNum(row.size) ??
+    coerceNum(row.open_size) ??
+    coerceNum(row.contract_size) ??
+    0;
+  if (!Number.isFinite(size) || Math.abs(size) <= 1e-12) return 0;
+
+  const sideRaw = typeof row.side === "string" ? row.side.toLowerCase().trim() : "";
   if (sideRaw === "sell" || sideRaw === "short") return -Math.abs(size);
   if (sideRaw === "buy" || sideRaw === "long") return Math.abs(size);
-  return Number.isFinite(size) ? size : 0;
+
+  /* Signed size only (no side): positive = long, negative = short — matches public ticker helper. */
+  return size;
 }
 
 function mergeBySymbolNetQty(
@@ -680,21 +700,31 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
           };
         }
         const result = r.json.result;
-        if (!result || typeof result !== "object") continue;
-        const row = result as Record<string, unknown>;
-        const net = parseDeltaPositionNetQty(row);
-        if (Math.abs(net) <= 1e-8) continue;
-        const mark = coerceNum(row.mark_price);
-        const entry = coerceNum(row.entry_price) ?? coerceNum(row.average_entry_price);
-        const symbolRaw = row.product_symbol ?? row.symbol ?? symbol;
-        const normalizedSymbol =
-          typeof symbolRaw === "string" ? symbolRaw.trim().toUpperCase() : symbol;
-        allRows.push({
-          symbol: normalizedSymbol,
-          netQty: String(net),
-          markPrice: mark != null && mark > 0 ? String(mark) : null,
-          entryPrice: entry != null && entry > 0 ? String(entry) : null,
-        });
+        const rowsToParse: Record<string, unknown>[] = [];
+        if (Array.isArray(result)) {
+          for (const item of result) {
+            if (item && typeof item === "object" && !Array.isArray(item)) {
+              rowsToParse.push(item as Record<string, unknown>);
+            }
+          }
+        } else if (result && typeof result === "object") {
+          rowsToParse.push(result as Record<string, unknown>);
+        }
+        for (const row of rowsToParse) {
+          const net = parseDeltaPositionNetQty(row);
+          if (Math.abs(net) <= 1e-8) continue;
+          const mark = coerceNum(row.mark_price);
+          const entry = coerceNum(row.entry_price) ?? coerceNum(row.average_entry_price);
+          const symbolRaw = row.product_symbol ?? row.symbol ?? symbol;
+          const normalizedSymbol =
+            typeof symbolRaw === "string" ? symbolRaw.trim().toUpperCase() : symbol;
+          allRows.push({
+            symbol: normalizedSymbol,
+            netQty: String(net),
+            markPrice: mark != null && mark > 0 ? String(mark) : null,
+            entryPrice: entry != null && entry > 0 ? String(entry) : null,
+          });
+        }
       }
 
       const positions = mergeBySymbolNetQty(allRows);
