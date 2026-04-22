@@ -76,6 +76,20 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function tplD2FailureContext(
+  p: TradingExecutionJobPayload,
+): { isTplD2: boolean; step: number | null } {
+  if (p.signalAction !== "entry") return { isTplD2: false, step: null };
+  const meta = p.signalMetadata;
+  if (!meta || typeof meta !== "object") return { isTplD2: false, step: null };
+  const m = meta as Record<string, unknown>;
+  if (m.source !== "trend_profit_lock_poller") return { isTplD2: false, step: null };
+  const leg = typeof m.leg === "string" ? m.leg : "";
+  const match = /^d2_step_(\d+)$/i.exec(leg);
+  if (!match) return { isTplD2: false, step: null };
+  return { isTplD2: true, step: Number(match[1]) || null };
+}
+
 async function safeSyncOrderStatus(
   adapter: ExchangeTradingAdapter,
   externalOrderId: string,
@@ -280,6 +294,7 @@ export async function processOneTradingJob(
   }
   const payloadForExecution =
     effectiveQuantity === p.quantity ? p : { ...p, quantity: effectiveQuantity };
+  const tplD2 = tplD2FailureContext(p);
 
   if (manualCloseRequestId) {
     tradingLog("info", "manual_close_worker_job_claimed", {
@@ -377,6 +392,17 @@ export async function processOneTradingJob(
   }
 
   if (!p.subscriptionId || !p.runId) {
+    if (tplD2.isTplD2) {
+      tradingLog("error", "tpl_d2_execution_failed", {
+        event: "tpl_d2_execution_failed",
+        reason: "live_payload_missing_subscription_or_run",
+        step: tplD2.step,
+        correlationId: p.correlationId,
+        symbol: p.symbol,
+        quantity: p.quantity,
+        runId: p.runId ?? null,
+      });
+    }
     await failTradingJobRetryOrDead(
       job.id,
       job.attempts,
@@ -395,6 +421,17 @@ export async function processOneTradingJob(
     allowEmergencyExit: emergencyExitBypass,
   });
   if (!elig.ok) {
+    if (tplD2.isTplD2) {
+      tradingLog("error", "tpl_d2_execution_failed", {
+        event: "tpl_d2_execution_failed",
+        reason: `ineligible:${elig.reason}`,
+        step: tplD2.step,
+        correlationId: p.correlationId,
+        symbol: p.symbol,
+        quantity: p.quantity,
+        runId: p.runId,
+      });
+    }
     if (manualCloseRequestId) {
       tradingLog("warn", "manual_close_worker_live_ineligible", {
         manualCloseRequestId,
@@ -437,6 +474,17 @@ export async function processOneTradingJob(
     .limit(1);
 
   if (!ec) {
+    if (tplD2.isTplD2) {
+      tradingLog("error", "tpl_d2_execution_failed", {
+        event: "tpl_d2_execution_failed",
+        reason: "exchange_connection_missing",
+        step: tplD2.step,
+        correlationId: p.correlationId,
+        symbol: p.symbol,
+        quantity: p.quantity,
+        runId: p.runId,
+      });
+    }
     await failTradingJobRetryOrDead(
       job.id,
       job.attempts,
@@ -453,6 +501,18 @@ export async function processOneTradingJob(
   });
 
   if (!adapterRes.ok) {
+    if (tplD2.isTplD2) {
+      tradingLog("error", "tpl_d2_execution_failed", {
+        event: "tpl_d2_execution_failed",
+        reason: "adapter_resolve_failed",
+        error: adapterRes.error,
+        step: tplD2.step,
+        correlationId: p.correlationId,
+        symbol: p.symbol,
+        quantity: p.quantity,
+        runId: p.runId,
+      });
+    }
     if (manualCloseRequestId) {
       tradingLog("error", "manual_close_worker_adapter_resolve_failed", {
         manualCloseRequestId,
@@ -510,6 +570,19 @@ export async function processOneTradingJob(
     }
 
     if (ex && (ex.status === "failed" || ex.status === "rejected")) {
+      if (tplD2.isTplD2) {
+        tradingLog("error", "tpl_d2_execution_failed", {
+          event: "tpl_d2_execution_failed",
+          reason: "existing_order_terminal_failed_or_rejected",
+          step: tplD2.step,
+          correlationId: p.correlationId,
+          symbol: p.symbol,
+          quantity: p.quantity,
+          runId: p.runId,
+          botOrderId: ex.id,
+          botOrderStatus: ex.status,
+        });
+      }
       await completeTradingJob(job.id);
       return { processed: true };
     }
@@ -536,6 +609,17 @@ export async function processOneTradingJob(
     });
 
     if (!draft) {
+      if (tplD2.isTplD2) {
+        tradingLog("error", "tpl_d2_execution_failed", {
+          event: "tpl_d2_execution_failed",
+          reason: "bot_order_insert_failed",
+          step: tplD2.step,
+          correlationId: p.correlationId,
+          symbol: p.symbol,
+          quantity: p.quantity,
+          runId: p.runId,
+        });
+      }
       await failTradingJobRetryOrDead(
         job.id,
         job.attempts,
@@ -599,6 +683,19 @@ export async function processOneTradingJob(
   }
 
   if (!place.ok) {
+    if (tplD2.isTplD2) {
+      tradingLog("error", "tpl_d2_execution_failed", {
+        event: "tpl_d2_execution_failed",
+        reason: "place_order_failed",
+        error: place.error,
+        step: tplD2.step,
+        correlationId: p.correlationId,
+        symbol: payloadForExecution.symbol,
+        quantity: payloadForExecution.quantity,
+        runId: p.runId,
+        exchangeConnectionId: row.exchangeConnectionId,
+      });
+    }
     await recordBotExecutionLog({
       botOrderId,
       level: "error",

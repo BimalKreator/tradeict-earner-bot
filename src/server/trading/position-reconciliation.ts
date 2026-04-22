@@ -1,10 +1,12 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
 import {
+  botOrders,
   botPositions,
   exchangeConnections,
   livePositionReconciliations,
+  strategies,
   userStrategyRuns,
 } from "@/server/db/schema";
 
@@ -400,6 +402,138 @@ async function reconcileOneConnection(
   return { ok: true, symbols: symbols.size };
 }
 
+async function sweepTplOrphanProtectiveOrders(
+  reconciledAt: Date,
+): Promise<{ checked: number; cancelled: number; failed: number }> {
+  if (!db) return { checked: 0, cancelled: 0, failed: 0 };
+
+  const candidates = await db
+    .select({
+      botOrderId: botOrders.id,
+      runId: botOrders.runId,
+      subscriptionId: botOrders.subscriptionId,
+      strategyId: botOrders.strategyId,
+      symbol: botOrders.symbol,
+      exchangeConnectionId: botOrders.exchangeConnectionId,
+      externalOrderId: botOrders.externalOrderId,
+      status: botOrders.status,
+      userId: botOrders.userId,
+      strategySlug: strategies.slug,
+      provider: exchangeConnections.provider,
+      apiKeyCiphertext: exchangeConnections.apiKeyCiphertext,
+      apiSecretCiphertext: exchangeConnections.apiSecretCiphertext,
+    })
+    .from(botOrders)
+    .innerJoin(strategies, eq(botOrders.strategyId, strategies.id))
+    .innerJoin(exchangeConnections, eq(botOrders.exchangeConnectionId, exchangeConnections.id))
+    .where(
+      and(
+        sql`lower(${strategies.slug}) like '%trend-profit-lock%'`,
+        inArray(botOrders.status, ["draft", "queued", "submitting", "open", "partial_fill"]),
+        sql`${botOrders.externalOrderId} is not null and length(trim(${botOrders.externalOrderId})) > 0`,
+      ),
+    )
+    .orderBy(desc(botOrders.updatedAt))
+    .limit(250);
+
+  let checked = 0;
+  let cancelled = 0;
+  let failed = 0;
+
+  for (const row of candidates) {
+    checked += 1;
+    const [openPos] = await db
+      .select({ id: botPositions.id })
+      .from(botPositions)
+      .where(
+        and(
+          eq(botPositions.subscriptionId, row.subscriptionId),
+          eq(botPositions.strategyId, row.strategyId),
+          eq(botPositions.exchangeConnectionId, row.exchangeConnectionId),
+          eq(botPositions.symbol, row.symbol),
+          sql`abs(cast(${botPositions.netQuantity} as numeric)) > ${QTY_EPS}`,
+        ),
+      )
+      .limit(1);
+    if (openPos) continue;
+
+    const adapterRes = await resolveExchangeTradingAdapter({
+      provider: row.provider,
+      apiKeyCiphertext: row.apiKeyCiphertext,
+      apiSecretCiphertext: row.apiSecretCiphertext,
+    });
+    if (!adapterRes.ok || !adapterRes.adapter.cancelOrderByExternalId) {
+      failed += 1;
+      tradingLog("warn", "position_reconciliation_tpl_orphan_cancel_skipped_adapter", {
+        reconciledAt: reconciledAt.toISOString(),
+        botOrderId: row.botOrderId,
+        runId: row.runId,
+        strategyId: row.strategyId,
+        strategySlug: row.strategySlug,
+        symbol: row.symbol,
+        exchangeConnectionId: row.exchangeConnectionId,
+        error: adapterRes.ok ? "cancelOrderByExternalId_not_supported" : adapterRes.error,
+      });
+      continue;
+    }
+
+    try {
+      const out = await adapterRes.adapter.cancelOrderByExternalId(String(row.externalOrderId));
+      if (out.ok) {
+        cancelled += out.cancelled ? 1 : 0;
+        await db
+          .update(botOrders)
+          .set({
+            status: "cancelled",
+            updatedAt: new Date(),
+            venueOrderState: out.cancelled ? "cancelled" : row.status,
+          })
+          .where(eq(botOrders.id, row.botOrderId));
+        tradingLog("warn", "position_reconciliation_tpl_orphan_cancelled", {
+          reconciledAt: reconciledAt.toISOString(),
+          botOrderId: row.botOrderId,
+          runId: row.runId,
+          strategyId: row.strategyId,
+          strategySlug: row.strategySlug,
+          symbol: row.symbol,
+          exchangeConnectionId: row.exchangeConnectionId,
+          externalOrderId: row.externalOrderId,
+          cancelled: out.cancelled,
+        });
+      } else {
+        failed += 1;
+        tradingLog("warn", "position_reconciliation_tpl_orphan_cancel_failed", {
+          reconciledAt: reconciledAt.toISOString(),
+          botOrderId: row.botOrderId,
+          runId: row.runId,
+          strategyId: row.strategyId,
+          strategySlug: row.strategySlug,
+          symbol: row.symbol,
+          exchangeConnectionId: row.exchangeConnectionId,
+          externalOrderId: row.externalOrderId,
+          error: out.error,
+        });
+      }
+    } catch (e) {
+      failed += 1;
+      const msg = e instanceof Error ? e.message : String(e);
+      tradingLog("warn", "position_reconciliation_tpl_orphan_cancel_exception", {
+        reconciledAt: reconciledAt.toISOString(),
+        botOrderId: row.botOrderId,
+        runId: row.runId,
+        strategyId: row.strategyId,
+        strategySlug: row.strategySlug,
+        symbol: row.symbol,
+        exchangeConnectionId: row.exchangeConnectionId,
+        externalOrderId: row.externalOrderId,
+        error: msg.slice(0, 400),
+      });
+    }
+  }
+
+  return { checked, cancelled, failed };
+}
+
 export async function runLivePositionReconciliationOnce(): Promise<{
   ok: true;
   checkedConnections: number;
@@ -450,10 +584,15 @@ export async function runLivePositionReconciliationOnce(): Promise<{
     }
   }
 
+  const orphanSweep = await sweepTplOrphanProtectiveOrders(reconciledAt);
+
   tradingLog("info", "position_reconciliation_completed", {
     checkedConnections: connections.length,
     failedConnections,
     snapshotsWritten,
+    orphanTplOrdersChecked: orphanSweep.checked,
+    orphanTplOrdersCancelled: orphanSweep.cancelled,
+    orphanTplOrdersFailed: orphanSweep.failed,
     reconciledAt: reconciledAt.toISOString(),
   });
 

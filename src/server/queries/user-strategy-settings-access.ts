@@ -78,13 +78,18 @@ function deriveCapitalAndLeverageForSettingsUi(row: {
       ? String(row.capitalToUseInr).trim()
       : null;
 
-  if (
-    capital == null &&
-    typeof ex?.allocatedCapitalUsd === "number" &&
-    Number.isFinite(ex.allocatedCapitalUsd) &&
-    ex.allocatedCapitalUsd > 0
-  ) {
-    capital = String(ex.allocatedCapitalUsd);
+  if (capital == null && ex != null) {
+    const usd =
+      typeof ex.allocatedCapitalUsd === "number" &&
+      Number.isFinite(ex.allocatedCapitalUsd) &&
+      ex.allocatedCapitalUsd > 0
+        ? ex.allocatedCapitalUsd
+        : typeof ex.allocatedCapitalUsd === "string"
+          ? Number(String(ex.allocatedCapitalUsd).replace(/,/g, "").trim())
+          : NaN;
+    if (Number.isFinite(usd) && usd > 0) {
+      capital = String(usd);
+    }
   }
 
   if (
@@ -109,13 +114,16 @@ function deriveCapitalAndLeverageForSettingsUi(row: {
       ? String(row.leverage).trim()
       : null;
 
-  if (
-    leverage == null &&
-    typeof ex?.leverage === "number" &&
-    Number.isFinite(ex.leverage) &&
-    ex.leverage > 0
-  ) {
-    leverage = String(ex.leverage);
+  if (leverage == null && ex != null) {
+    const lj =
+      typeof ex.leverage === "number" && Number.isFinite(ex.leverage) && ex.leverage > 0
+        ? ex.leverage
+        : typeof ex.leverage === "string"
+          ? Number(String(ex.leverage).replace(/,/g, "").replace(/x$/i, "").trim())
+          : NaN;
+    if (Number.isFinite(lj) && lj > 0) {
+      leverage = String(lj);
+    }
   }
 
   return { capitalToUseInr: capital, leverage };

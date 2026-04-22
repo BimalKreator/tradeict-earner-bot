@@ -1,7 +1,10 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 import { resolveTrendProfitLockConfigForUi } from "@/lib/trend-profit-lock-form";
-import { parseUserStrategyRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
+import {
+  parseUserStrategyRunSettingsJson,
+  userStrategyRunSettingsJsonSchema,
+} from "@/lib/user-strategy-run-settings-json";
 import { fetchDeltaIndiaTickerMarkPrice } from "@/server/exchange/delta-india-positions";
 import {
   fetchDeltaIndiaProductContractValue,
@@ -18,7 +21,10 @@ import {
 } from "@/server/db/schema";
 import { generateInternalClientOrderId } from "@/server/trading/ids";
 import { recordBotExecutionLog } from "@/server/trading/bot-order-service";
-import { resolveFinalAllocatedCapitalUsd } from "@/server/trading/execution-preferences";
+import {
+  resolveFinalAllocatedCapitalUsd,
+  resolveRawLeverageStringForExecution,
+} from "@/server/trading/execution-preferences";
 import { calculateHalfTrendSignal, type HalfTrendCandle } from "@/server/trading/indicators/halftrend";
 import { resolveExchangeTradingAdapter } from "@/server/trading/adapters/resolve-exchange-adapter";
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
@@ -34,6 +40,7 @@ import {
   type OhlcvCandle,
 } from "@/server/trading/ta-engine/rsi-scalper";
 import { tradingLog } from "@/server/trading/trading-log";
+import { cancelAllTplLingeringOrders } from "@/server/trading/trend-profit-lock/cancel-tpl-lingering-orders";
 import {
   inferD1TplExitReasonFromMark,
   logTplTradeExited,
@@ -100,6 +107,9 @@ type TplRuntimeState = {
     stopLossOrderExternalId?: string;
     stopLossOrderClientId?: string;
     stopLossPlacedAt?: string;
+    takeProfitOrderExternalId?: string;
+    takeProfitOrderClientId?: string;
+    takeProfitPlacedAt?: string;
   };
   d2TriggeredSteps?: number[];
   d2StepsState?: Record<
@@ -117,6 +127,12 @@ type TplRuntimeState = {
       status: "open" | "closed";
       closeReason?: "target" | "stoploss" | "unknown";
       closedAt?: string;
+      takeProfitOrderExternalId?: string;
+      takeProfitOrderClientId?: string;
+      takeProfitPlacedAt?: string;
+      stopLossOrderExternalId?: string;
+      stopLossOrderClientId?: string;
+      stopLossPlacedAt?: string;
     }
   >;
 };
@@ -130,6 +146,10 @@ function fmtQty(v: number): string {
   return Math.floor(v).toString();
 }
 
+/**
+ * Delta `contract_value` is usually **base asset per contract** (e.g. 0.001 BTC); then USD/lot ≈ mark × size.
+ * If the API already returns USD per lot (large number), use it as-is.
+ */
 function normalizeUsdContractValue(raw: number | null, mark: number): number {
   if (raw != null && Number.isFinite(raw) && raw > 0) {
     if (raw >= 0.5) return raw;
@@ -230,6 +250,47 @@ async function persistRuntime(
   }
 }
 
+/**
+ * Crash-safe persistence for protective venue order ids.
+ * This updates only the specific JSON path on DB side so IDs survive
+ * even if the rest of the tick fails before full runtime persist.
+ */
+async function updateRuntimeOrderId(
+  runId: string,
+  type: "d1_stop_loss_external_id",
+  orderId: string,
+): Promise<void> {
+  const trimmed = String(orderId ?? "").trim();
+  if (!trimmed) return;
+  const path =
+    type === "d1_stop_loss_external_id"
+      ? "{trendProfitLockRuntime,d1,stopLossOrderExternalId}"
+      : null;
+  if (!path) return;
+  try {
+    await db!.execute(sql`
+      UPDATE user_strategy_runs
+      SET
+        run_settings_json = jsonb_set(
+          COALESCE(run_settings_json, '{}'::jsonb),
+          ${path}::text[],
+          to_jsonb(${trimmed}::text),
+          true
+        ),
+        updated_at = NOW()
+      WHERE id = ${runId}::uuid
+    `);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    tradingLog("warn", "tpl_runtime_atomic_order_id_persist_failed", {
+      runId,
+      type,
+      orderId: trimmed,
+      error: msg.slice(0, 400),
+    });
+  }
+}
+
 async function tryRecordExecutionLogByCorrelation(params: {
   correlationId: string;
   runId: string;
@@ -301,6 +362,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
       capitalToUseInr: userStrategyRuns.capitalToUseInr,
       leverage: userStrategyRuns.leverage,
       recommendedCapitalInr: strategies.recommendedCapitalInr,
+      strategyMaxLeverage: strategies.maxLeverage,
       slug: strategies.slug,
     })
     .from(userStrategyRuns)
@@ -421,6 +483,28 @@ export async function processTrendProfitLockTick(): Promise<void> {
     let clearedStaleD1RuntimeThisTick = false;
     if (!hasOpenD1 && runtime.d1) {
       clearedStaleD1RuntimeThisTick = true;
+      const runtimeSlice: Record<string, unknown> = {
+        d1: runtime.d1,
+        d2StepsState: runtime.d2StepsState ?? {},
+      };
+      const primaryAd = run.primaryExchangeConnectionId
+        ? await resolveRunExchangeAdapter(run.primaryExchangeConnectionId)
+        : { ok: false as const, error: "missing_primary" };
+      const secondaryAd = run.secondaryExchangeConnectionId
+        ? await resolveRunExchangeAdapter(run.secondaryExchangeConnectionId)
+        : { ok: false as const, error: "missing_secondary" };
+      await cancelAllTplLingeringOrders({
+        runtime: runtimeSlice,
+        primaryAdapter: primaryAd.ok ? primaryAd.adapter : null,
+        secondaryAdapter: secondaryAd.ok ? secondaryAd.adapter : null,
+        log: {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          source: "tpl_d1_flat_runtime_wipeout",
+        },
+      });
       let flattenDispatchOk = false;
       if (d2NetQtyAbs > 1e-8 && run.secondaryExchangeConnectionId) {
         const flattenCorrelationId = `tpl_d2_flatten_${run.runId}_${Date.now()}`;
@@ -582,11 +666,73 @@ export async function processTrendProfitLockTick(): Promise<void> {
           columnCapital: run.capitalToUseInr,
           recommendedCapitalInr: run.recommendedCapitalInr,
         });
-        const rawCv = await fetchDeltaIndiaProductContractValue(symbol);
-        const contractValueUsd = normalizeUsdContractValue(rawCv, mark);
-        const allocUsd = Math.max(0, (capitalUsd ?? 0) * (cfg.d1CapitalAllocationPct / 100));
+        const levStr = resolveRawLeverageStringForExecution({
+          runSettingsJson: run.runSettingsJson,
+          columnLeverage: run.leverage != null ? String(run.leverage) : null,
+          strategyMaxLeverage: run.strategyMaxLeverage != null ? String(run.strategyMaxLeverage) : null,
+        });
+        const leverageEff = Math.max(1, n(levStr) || 1);
+        const rawContractValue = await fetchDeltaIndiaProductContractValue(symbol);
+        const contractValueUsd = normalizeUsdContractValue(rawContractValue, mark);
+        const collateralUsd = Math.max(0, (capitalUsd ?? 0) * (cfg.d1CapitalAllocationPct / 100));
+        const targetNotionalUsd = collateralUsd * leverageEff;
         const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
-        const qty = Math.max(minContracts ?? 1, Math.floor(allocUsd / Math.max(contractValueUsd, 1e-9)));
+        const qty = Math.max(
+          minContracts ?? 1,
+          Math.floor(targetNotionalUsd / Math.max(contractValueUsd, 1e-9)),
+        );
+        tradingLog("info", "tpl_qty_calc_debug", {
+          event: "tpl_qty_calc_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          allocatedCapitalUsd: capitalUsd ?? null,
+          leverageEff,
+          rawContractValue,
+          contractValueUsd,
+          minContracts: minContracts ?? null,
+          targetNotionalUsd,
+          finalQty: qty,
+        });
+        const runSettingsProbe = userStrategyRunSettingsJsonSchema.safeParse(
+          run.runSettingsJson ?? {},
+        );
+        const parsedRs = parseUserStrategyRunSettingsJson(run.runSettingsJson);
+        const rawRoot =
+          run.runSettingsJson && typeof run.runSettingsJson === "object"
+            ? (run.runSettingsJson as Record<string, unknown>)
+            : null;
+        const rawEx = rawRoot?.execution;
+        const rawExecutionSnippet =
+          rawEx && typeof rawEx === "object"
+            ? {
+                allocatedCapitalUsd: (rawEx as Record<string, unknown>).allocatedCapitalUsd,
+                leverage: (rawEx as Record<string, unknown>).leverage,
+              }
+            : null;
+        tradingLog("info", "tpl_d1_sizing_inputs", {
+          event: "tpl_d1_sizing_inputs",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          runSettingsJsonZodOk: runSettingsProbe.success,
+          parsedExecutionAllocated: parsedRs.execution?.allocatedCapitalUsd ?? null,
+          parsedExecutionLeverage: parsedRs.execution?.leverage ?? null,
+          rawExecutionSnippet,
+          columnCapital: run.capitalToUseInr,
+          columnLeverage: run.leverage,
+          capitalUsdResolved: capitalUsd,
+          levStr,
+          leverageEff,
+          d1CapitalAllocationPct: cfg.d1CapitalAllocationPct,
+          collateralUsd,
+          targetNotionalUsd,
+          contractValueUsd,
+          qty,
+          minContracts: minContracts ?? null,
+        });
         if (qty <= 0) {
           tradingLog("info", "tpl_entry_rejected_debug", {
             event: "tpl_entry_rejected_debug",
@@ -601,9 +747,12 @@ export async function processTrendProfitLockTick(): Promise<void> {
             hasOpenD1Position,
             isPostWipeoutSameTickBlock,
             qty,
-            allocUsd,
+            collateralUsd,
+            targetNotionalUsd,
+            leverageEff,
             capitalUsd: capitalUsd ?? null,
             d1CapitalAllocationPct: cfg.d1CapitalAllocationPct,
+            contractValueRaw: rawContractValue,
             contractValueUsd,
             minContracts: minContracts ?? null,
             mark,
@@ -648,6 +797,11 @@ export async function processTrendProfitLockTick(): Promise<void> {
             qty,
             side: d1Side,
             mark,
+            collateralUsd,
+            targetNotionalUsd,
+            leverageEff,
+            contractValueRaw: rawContractValue,
+            contractValueUsd,
             ok: dispatch.ok,
             jobsEnqueued: dispatch.ok ? dispatch.liveJobsEnqueued : 0,
             error: dispatch.ok ? null : dispatch.error,
@@ -713,6 +867,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           stopPlace = { ok: false, error: `placeReduceOnlyStopLoss_exception: ${msg.slice(0, 400)}` };
         }
         if (stopPlace.ok) {
+          await updateRuntimeOrderId(run.runId, "d1_stop_loss_external_id", stopPlace.externalOrderId);
           runtime.d1 = {
             side: d1Side,
             entryPrice: entryPx,
@@ -818,6 +973,9 @@ export async function processTrendProfitLockTick(): Promise<void> {
         stopLossOrderClientId: runtime.d1?.stopLossOrderClientId,
         stopLossPlacedAt: runtime.d1?.stopLossPlacedAt,
       };
+      if (amendOk && amendedStopOrderId) {
+        await updateRuntimeOrderId(run.runId, "d1_stop_loss_external_id", amendedStopOrderId);
+      }
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
       if (amendOk) {
         tradingLog("info", "tpl_d1_breakeven_stop_amended", {
@@ -896,13 +1054,55 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
     for (const step of cfg.d2Steps) {
       const existingState = d2States[String(step.step)];
-      if (triggered.has(step.step) || existingState?.status === "open") continue;
-      if (!d2JourneyUsable) continue;
+      if (triggered.has(step.step) || existingState?.status === "open") {
+        tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "already_triggered_or_open",
+          isTriggered: triggered.has(step.step),
+          existingStateStatus: existingState?.status ?? null,
+        });
+        continue;
+      }
+      if (!d2JourneyUsable) {
+        tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "d2_journey_not_usable",
+          entryPrice: entryPx,
+          d1TargetPrice: d1TargetPx,
+          d1TargetDistance,
+        });
+        continue;
+      }
       // D2 trigger is % of the D1 target journey, not a flat % move from entry.
       const stepJourneyDistance = d1TargetDistance * (step.stepTriggerPct / 100);
       const triggerPx = d1Side === "LONG" ? entryPx + stepJourneyDistance : entryPx - stepJourneyDistance;
       const reached = d1Side === "LONG" ? mark >= triggerPx : mark <= triggerPx;
-      if (!reached) continue;
+      if (!reached) {
+        tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "trigger_not_reached",
+          stepTriggerPct: step.stepTriggerPct,
+          triggerPrice: triggerPx,
+          markPrice: mark,
+          d1Side,
+        });
+        continue;
+      }
 
       const d1QtyInt = Math.max(0, Math.floor(Math.abs(netQty)));
       if (d1QtyInt < 1) {
@@ -911,11 +1111,50 @@ export async function processTrendProfitLockTick(): Promise<void> {
           step: step.step,
           d1QtyInt,
         });
+        tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "no_d1_contracts",
+          d1QtyInt,
+        });
         continue;
       }
       const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
       const floorPctQty = Math.floor(d1QtyInt * (step.stepQtyPctOfD1 / 100));
       const d2Qty = Math.max(minContracts ?? 1, floorPctQty);
+      tradingLog("info", "tpl_d2_qty_calc_debug", {
+        event: "tpl_d2_qty_calc_debug",
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        step: step.step,
+        d1QtyInt,
+        stepQtyPctOfD1: step.stepQtyPctOfD1,
+        floorPctQty,
+        minContracts: minContracts ?? null,
+        finalD2Qty: d2Qty,
+      });
+      if (!(d2Qty > 0)) {
+        tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "non_positive_d2_qty",
+          d1QtyInt,
+          floorPctQty,
+          minContracts: minContracts ?? null,
+          finalD2Qty: d2Qty,
+        });
+        continue;
+      }
       const d2Side = oppositeSide(d1Side);
       const linkedTarget = resolveLinkedTargetPrice({
         d1EntryPrice: entryPx,
@@ -930,6 +1169,19 @@ export async function processTrendProfitLockTick(): Promise<void> {
           targetLinkType: step.targetLinkType,
           linkedStep: linkedTarget.linkedStep,
           fallbackUsed: linkedTarget.fallbackUsed,
+        });
+        tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "invalid_or_missing_linked_target",
+          targetLinkType: step.targetLinkType,
+          linkedStep: linkedTarget.linkedStep,
+          fallbackUsed: linkedTarget.fallbackUsed,
+          resolvedTargetPrice: linkedTarget.price,
         });
         continue;
       }
@@ -992,7 +1244,24 @@ export async function processTrendProfitLockTick(): Promise<void> {
         liveJobsEnqueued: d2Dispatch.ok ? d2Dispatch.liveJobsEnqueued : 0,
         dispatchError: d2Dispatch.ok ? null : d2Dispatch.error,
       });
-      if (!d2Dispatch.ok) continue;
+      const d2LiveJobs = d2Dispatch.ok ? (d2Dispatch.liveJobsEnqueued ?? 0) : 0;
+      if (!d2Dispatch.ok || d2LiveJobs <= 0) {
+        tradingLog("error", "tpl_d2_execution_failed", {
+          event: "tpl_d2_execution_failed",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          correlationId,
+          qty: d2Qty,
+          dispatchOk: d2Dispatch.ok,
+          liveJobsEnqueued: d2LiveJobs,
+          reason: !d2Dispatch.ok ? "dispatch_failed" : "no_live_jobs_enqueued",
+          error: d2Dispatch.ok ? null : d2Dispatch.error,
+        });
+        continue;
+      }
       d2States[String(step.step)] = {
         step: step.step,
         triggerPrice: triggerPx,

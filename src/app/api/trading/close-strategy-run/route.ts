@@ -40,6 +40,11 @@ import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signa
 import { assertVirtualRunStillEligibleForExecution } from "@/server/trading/virtual-eligibility";
 import { simulateVirtualOrder } from "@/server/trading/virtual-order-simulator";
 import { tradingLog } from "@/server/trading/trading-log";
+import {
+  cancelAllTplLingeringOrders,
+  extractTrendProfitLockRuntimeFromRunSettingsJson,
+  stripTrendProfitLockVenueOrderIdsFromRunSettingsJson,
+} from "@/server/trading/trend-profit-lock/cancel-tpl-lingering-orders";
 import { logTplTradeExited } from "@/server/trading/tpl-trade-exit";
 
 export const dynamic = "force-dynamic";
@@ -60,27 +65,6 @@ function toWholeContractCloseQty(rawNetQty: number): number {
 
 function isTrendProfitLockSlug(slug: string | null | undefined): boolean {
   return (slug ?? "").toLowerCase().includes("trend-profit-lock");
-}
-
-function clearTrendProfitLockD1StopMetadataFromRunSettings(raw: unknown): Record<string, unknown> {
-  const base =
-    raw && typeof raw === "object" && !Array.isArray(raw)
-      ? { ...(raw as Record<string, unknown>) }
-      : {};
-  const rt = base.trendProfitLockRuntime;
-  if (rt && typeof rt === "object" && !Array.isArray(rt)) {
-    const rto = { ...(rt as Record<string, unknown>) };
-    const d1 = rto.d1;
-    if (d1 && typeof d1 === "object" && !Array.isArray(d1)) {
-      const d1o = { ...(d1 as Record<string, unknown>) };
-      delete d1o.stopLossOrderExternalId;
-      delete d1o.stopLossOrderClientId;
-      delete d1o.stopLossPlacedAt;
-      rto.d1 = d1o;
-    }
-    base.trendProfitLockRuntime = rto;
-  }
-  return base;
 }
 
 async function loadExchangeAdapterForConnection(exchangeConnectionId: string) {
@@ -763,29 +747,20 @@ async function closeRealRun(
     return { ok: false as const, error: "forbidden" };
   }
 
-  if (isTrendProfitLockSlug(run.strategySlug) && run.primaryEx) {
+  if (isTrendProfitLockSlug(run.strategySlug)) {
     const parsed = parseUserStrategyRunSettingsJson(run.runSettingsJson);
-    const stopId = parsed.trendProfitLockRuntime?.d1?.stopLossOrderExternalId?.trim();
-    if (stopId) {
-      const adap = await loadExchangeAdapterForConnection(run.primaryEx);
-      if (adap.ok && adap.adapter.cancelOrderByExternalId) {
-        const c = await adap.adapter.cancelOrderByExternalId(stopId);
-        tradingLog(c.ok ? "info" : "warn", "manual_close_tpl_protective_stop_cancel", {
-          requestId,
-          runId,
-          stopOrderId: stopId,
-          ok: c.ok,
-          cancelled: c.ok ? c.cancelled : undefined,
-          error: c.ok ? null : c.error,
-        });
-      } else if (!adap.ok) {
-        tradingLog("warn", "manual_close_tpl_stop_cancel_adapter_unavailable", {
-          requestId,
-          runId,
-          error: adap.error,
-        });
-      }
-    }
+    const rt =
+      extractTrendProfitLockRuntimeFromRunSettingsJson(run.runSettingsJson) ??
+      (parsed.trendProfitLockRuntime as Record<string, unknown> | undefined) ??
+      null;
+    const pAd = run.primaryEx ? await loadExchangeAdapterForConnection(run.primaryEx) : { ok: false as const, error: "no_primary" };
+    const sAd = run.secondaryEx ? await loadExchangeAdapterForConnection(run.secondaryEx) : { ok: false as const, error: "no_secondary" };
+    await cancelAllTplLingeringOrders({
+      runtime: rt,
+      primaryAdapter: pAd.ok ? pAd.adapter : null,
+      secondaryAdapter: sAd.ok ? sAd.adapter : null,
+      log: { requestId, runId, source: "manual_close_tpl_precheck" },
+    });
   }
 
   const positions = await db
@@ -806,6 +781,13 @@ async function closeRealRun(
     );
 
   if (positions.length === 0) {
+    if (isTrendProfitLockSlug(run.strategySlug)) {
+      const stripped = stripTrendProfitLockVenueOrderIdsFromRunSettingsJson(run.runSettingsJson);
+      await db
+        .update(userStrategyRuns)
+        .set({ runSettingsJson: stripped, updatedAt: new Date() })
+        .where(eq(userStrategyRuns.id, runId));
+    }
     tradingLog("info", "manual_close_real_already_flat", {
       requestId,
       runId,
@@ -969,14 +951,14 @@ async function closeRealRun(
   }
 
   if (isTrendProfitLockSlug(run.strategySlug)) {
-    const cleared = clearTrendProfitLockD1StopMetadataFromRunSettings(run.runSettingsJson);
+    const stripped = stripTrendProfitLockVenueOrderIdsFromRunSettingsJson(run.runSettingsJson);
     const exitReason = closed === 0 && ghostFlushed > 0 ? "venue_flat_manual_close" : "manual_close";
     const atIso = new Date().toISOString();
     await db
       .update(userStrategyRuns)
       .set({
         runSettingsJson: {
-          ...cleared,
+          ...stripped,
           lastTplTradeExitUi: { reason: exitReason, at: atIso, leg: "manual_close_api" },
         },
         updatedAt: new Date(),
