@@ -127,7 +127,7 @@ type TplRuntimeState = {
       stoplossPrice: number;
       executedAt: string;
       correlationId: string;
-      status: "open" | "closed";
+      status: "drafting" | "submitting" | "open" | "closed";
       closeReason?: "target" | "stoploss" | "unknown";
       closedAt?: string;
       takeProfitOrderExternalId?: string;
@@ -1080,18 +1080,19 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     const d2States = runtime.d2StepsState ?? {};
+    const triggered = new Set(runtime.d2TriggeredSteps ?? []);
     const d2OpenQtyTracked = Object.values(d2States)
       .filter((s) => s.status === "open")
       .reduce((sum, s) => sum + s.qty, 0);
     for (const state of Object.values(d2States)) {
       if (state.status !== "open") continue;
+      const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTracked - state.qty);
+      const stepLooksClosedOnExchange = d2NetQtyAbs <= expectedOpenWithoutStep + 1e-8;
+      if (!stepLooksClosedOnExchange) continue;
       const hitTarget = state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
       const hitStop = state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
-      if (!hitTarget && !hitStop) continue;
-      const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTracked - state.qty);
-      if (d2NetQtyAbs > expectedOpenWithoutStep + 1e-8) continue;
       state.status = "closed";
-      state.closeReason = hitTarget ? "target" : "stoploss";
+      state.closeReason = hitTarget ? "target" : hitStop ? "stoploss" : "unknown";
       state.closedAt = new Date().toISOString();
       {
         const stepReason = hitTarget ? "d2_step_target_hit" : "d2_step_stoploss_hit";
@@ -1110,19 +1111,32 @@ export async function processTrendProfitLockTick(): Promise<void> {
           leg: `d2_step_${state.step}`,
         });
       }
-      if (hitTarget) {
-        delete d2States[String(state.step)];
-        tradingLog("info", "tpl_d2_step_reentry_reset_ready", {
-          runId: run.runId,
-          strategyId: run.strategyId,
-          userId: run.userId,
-          symbol,
-          step: state.step,
-        });
-      }
+      delete d2States[String(state.step)];
+      triggered.delete(state.step);
+      tradingLog("info", "tpl_d2_step_reentry_reset_ready", {
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        step: state.step,
+        closeReason: state.closeReason,
+      });
+    }
+    for (const [stepKey, state] of Object.entries(d2States)) {
+      if (state.status !== "closed") continue;
+      // Defensive scrub: closed historical state must not lock future triggers.
+      delete d2States[stepKey];
+      triggered.delete(state.step);
+      tradingLog("info", "tpl_d2_closed_state_scrubbed_for_reload", {
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        step: state.step,
+        closeReason: state.closeReason ?? null,
+      });
     }
 
-    const triggered = new Set(runtime.d2TriggeredSteps ?? []);
     const d1TargetDistance = Math.abs(d1TargetPx - entryPx);
     const d2JourneyUsable =
       Number.isFinite(entryPx) &&
@@ -1142,7 +1156,11 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
     for (const step of cfg.d2Steps) {
       const existingState = d2States[String(step.step)];
-      if (triggered.has(step.step) || existingState?.status === "open") {
+      if (
+        existingState?.status === "open" ||
+        existingState?.status === "drafting" ||
+        existingState?.status === "submitting"
+      ) {
         tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
           event: "tpl_d2_dispatch_blocked_debug",
           runId: run.runId,
@@ -1150,8 +1168,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           userId: run.userId,
           symbol,
           step: step.step,
-          blockedReason: "already_triggered_or_open",
-          isTriggered: triggered.has(step.step),
+          blockedReason: "in_flight_or_open",
           existingStateStatus: existingState?.status ?? null,
         });
         continue;
@@ -1286,6 +1303,19 @@ export async function processTrendProfitLockTick(): Promise<void> {
         });
       }
       const correlationId = `tpl_d2_step_${step.step}_${run.runId}_${Date.now()}`;
+      d2States[String(step.step)] = {
+        step: step.step,
+        triggerPrice: triggerPx,
+        entryMarkPrice: mark,
+        side: d2Side,
+        qty: d2Qty,
+        targetPrice: linkedTarget.price,
+        stoplossPrice: stoplossPrice(mark, d2Side, step.stepStoplossPct),
+        executedAt: new Date().toISOString(),
+        correlationId,
+        status: "submitting",
+      };
+      triggered.add(step.step);
       let d2Dispatch: StrategySignalIntakeResponse;
       try {
         d2Dispatch = await dispatchStrategyExecutionSignal({
@@ -1334,6 +1364,8 @@ export async function processTrendProfitLockTick(): Promise<void> {
       });
       const d2LiveJobs = d2Dispatch.ok ? (d2Dispatch.liveJobsEnqueued ?? 0) : 0;
       if (!d2Dispatch.ok || d2LiveJobs <= 0) {
+        delete d2States[String(step.step)];
+        triggered.delete(step.step);
         tradingLog("error", "tpl_d2_execution_failed", {
           event: "tpl_d2_execution_failed",
           runId: run.runId,
@@ -1362,7 +1394,6 @@ export async function processTrendProfitLockTick(): Promise<void> {
         correlationId,
         status: "open",
       };
-      triggered.add(step.step);
       await tryRecordExecutionLogByCorrelation({
         correlationId,
         runId: run.runId,
