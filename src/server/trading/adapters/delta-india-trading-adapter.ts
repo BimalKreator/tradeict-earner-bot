@@ -698,19 +698,26 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
                 `[DeltaIndiaTradingAdapter] leverage fallback applied symbol=${input.symbol} requested=${lev} fallback=${fallbackLev}`,
               );
               levRes = { ok: true };
+            } else if (isDeltaUnsupportedLeverageError(fallbackRes.error)) {
+              // Some accounts/products reject leverage mutations entirely.
+              // Proceed with order placement using current account/default leverage.
+              console.warn(
+                `[DeltaIndiaTradingAdapter] leverage override unsupported symbol=${input.symbol} requested=${lev} fallback=${fallbackLev}; placing order without leverage mutation`,
+              );
+              levRes = { ok: true };
             } else {
               return {
                 ok: false,
                 error:
-                  `Delta leverage unsupported for requested=${lev}; fallback=${fallbackLev} failed: ${fallbackRes.error}`,
+                  `Delta leverage fallback set failed for requested=${lev}, fallback=${fallbackLev}: ${fallbackRes.error}`,
               };
             }
           } else {
-            return {
-              ok: false,
-              error:
-                `Delta leverage unsupported for requested=${lev}; no supported fallback leverage found for ${input.symbol}`,
-            };
+            // No supported fallback could be discovered; do not block order placement.
+            console.warn(
+              `[DeltaIndiaTradingAdapter] leverage unsupported symbol=${input.symbol} requested=${lev}; placing order without leverage mutation`,
+            );
+            levRes = { ok: true };
           }
         }
         if (!levRes.ok) {

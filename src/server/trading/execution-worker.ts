@@ -664,7 +664,8 @@ export async function processOneTradingJob(
         quantity: payloadForExecution.quantity,
         limitPrice: payloadForExecution.limitPrice ?? null,
         reduceOnly: signalAction === "exit",
-        leverage: payloadForExecution.leverage ?? row.leverage,
+        // D2 legs run on secondary account where Delta decides effective leverage.
+        leverage: tplD2.isTplD2 ? undefined : (payloadForExecution.leverage ?? row.leverage),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
