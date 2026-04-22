@@ -83,6 +83,7 @@ function retainTrendProfitLockRuntimeMemoryFromRunSettingsJson(
   const retainedRuntime: Record<string, unknown> = {
     d2StepsState: {},
     d2TriggeredSteps: [],
+    isManualClosed: true,
   };
   if (runtimeRaw.lastFlipCandleTime != null) {
     retainedRuntime.lastFlipCandleTime = runtimeRaw.lastFlipCandleTime;

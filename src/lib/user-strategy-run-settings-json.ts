@@ -56,6 +56,7 @@ const lastTplTradeExitUiSchema = z.object({
 const trendProfitLockRuntimeSchema = z.object({
   lastFlipCandleTime: z.number().int().optional(),
   lastCompletedD1FlipDirection: z.enum(["LONG", "SHORT"]).optional(),
+  isManualClosed: z.boolean().optional(),
   mockNextFlipDirection: z.enum(["UP", "DOWN"]).optional(),
   d1: z
     .object({

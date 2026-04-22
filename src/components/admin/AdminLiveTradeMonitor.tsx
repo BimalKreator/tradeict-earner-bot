@@ -90,7 +90,8 @@ export function AdminLiveTradeMonitor({
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closingKey, setClosingKey] = useState<string | null>(null);
-  const [mockingKey, setMockingKey] = useState<string | null>(null);
+  const [selectedMockRunId, setSelectedMockRunId] = useState<string>("");
+  const [mockDirectionPending, setMockDirectionPending] = useState<"UP" | "DOWN" | null>(null);
   const [closeToast, setCloseToast] = useState<{
     requestId: string;
     status: "pending" | "success" | "failed";
@@ -203,6 +204,29 @@ export function AdminLiveTradeMonitor({
     };
   }, []);
 
+  const tplLiveRuns = rows
+    .filter(
+      (row) =>
+        row.mode === "real" &&
+        !!row.runId &&
+        isTrendProfitLockScalpingStrategySlug(row.strategySlug),
+    )
+    .map((row) => ({ runId: row.runId as string, strategyName: row.strategyName }))
+    .filter(
+      (row, idx, arr) => arr.findIndex((x) => x.runId === row.runId) === idx,
+    );
+
+  useEffect(() => {
+    if (tplLiveRuns.length === 0) {
+      if (selectedMockRunId !== "") setSelectedMockRunId("");
+      return;
+    }
+    const stillPresent = tplLiveRuns.some((r) => r.runId === selectedMockRunId);
+    if (!stillPresent) {
+      setSelectedMockRunId(tplLiveRuns[0]!.runId);
+    }
+  }, [tplLiveRuns, selectedMockRunId]);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-2">
@@ -215,10 +239,69 @@ export function AdminLiveTradeMonitor({
             active subscription runs. Marks from Delta India public tickers; refresh ~every 8s.
           </p>
         </div>
-        <p className="text-[10px] uppercase tracking-wide text-slate-500">
-          {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Live"}
-          {error ? <span className="ml-2 text-amber-400/90">· {error}</span> : null}
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {tplLiveRuns.length > 0 ? (
+            <>
+              <select
+                value={selectedMockRunId}
+                onChange={(e) => setSelectedMockRunId(e.target.value)}
+                className="rounded-md border border-white/15 bg-black/50 px-2 py-1 text-[10px] text-slate-200"
+              >
+                {tplLiveRuns.map((r) => (
+                  <option key={r.runId} value={r.runId}>
+                    {r.strategyName} · {r.runId.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!selectedMockRunId || mockDirectionPending !== null}
+                onClick={() => {
+                  if (!selectedMockRunId) return;
+                  setMockDirectionPending("UP");
+                  void triggerMockFlip({
+                    runId: selectedMockRunId,
+                    direction: "UP",
+                  })
+                    .then(() => showAppToast("Mock Flip UP triggered!", "success"))
+                    .catch((e) => {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      showAppToast(msg, "error");
+                    })
+                    .finally(() => setMockDirectionPending(null));
+                }}
+                className="rounded-md border border-emerald-500/60 bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
+              >
+                {mockDirectionPending === "UP" ? "Mocking..." : "Mock UP"}
+              </button>
+              <button
+                type="button"
+                disabled={!selectedMockRunId || mockDirectionPending !== null}
+                onClick={() => {
+                  if (!selectedMockRunId) return;
+                  setMockDirectionPending("DOWN");
+                  void triggerMockFlip({
+                    runId: selectedMockRunId,
+                    direction: "DOWN",
+                  })
+                    .then(() => showAppToast("Mock Flip DOWN triggered!", "success"))
+                    .catch((e) => {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      showAppToast(msg, "error");
+                    })
+                    .finally(() => setMockDirectionPending(null));
+                }}
+                className="rounded-md border border-violet-500/60 bg-violet-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
+              >
+                {mockDirectionPending === "DOWN" ? "Mocking..." : "Mock DOWN"}
+              </button>
+            </>
+          ) : null}
+          <p className="text-[10px] uppercase tracking-wide text-slate-500">
+            {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Live"}
+            {error ? <span className="ml-2 text-amber-400/90">· {error}</span> : null}
+          </p>
+        </div>
       </div>
 
       {rows.length > 0 ? (
@@ -322,58 +405,7 @@ export function AdminLiveTradeMonitor({
                           {closingKey === row.key ? "Closing..." : "Close Position"}
                         </button>
                       ) : null}
-                      {row.mode === "real" &&
-                      row.runId &&
-                      isTrendProfitLockScalpingStrategySlug(row.strategySlug) ? (
-                        <>
-                          <button
-                            type="button"
-                            disabled={mockingKey === `${row.key}:UP`}
-                            onClick={() => {
-                              if (!row.runId) return;
-                              const key = `${row.key}:UP`;
-                              setMockingKey(key);
-                              void triggerMockFlip({ runId: row.runId, direction: "UP" })
-                                .then(() => {
-                                  showAppToast("Mock Flip UP triggered!", "success");
-                                })
-                                .catch((e) => {
-                                  const msg = e instanceof Error ? e.message : String(e);
-                                  showAppToast(msg, "error");
-                                })
-                                .finally(() => setMockingKey(null));
-                            }}
-                            className="rounded-md border border-emerald-500/60 bg-emerald-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-60"
-                          >
-                            {mockingKey === `${row.key}:UP` ? "Mocking..." : "Mock UP"}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={mockingKey === `${row.key}:DOWN`}
-                            onClick={() => {
-                              if (!row.runId) return;
-                              const key = `${row.key}:DOWN`;
-                              setMockingKey(key);
-                              void triggerMockFlip({ runId: row.runId, direction: "DOWN" })
-                                .then(() => {
-                                  showAppToast("Mock Flip DOWN triggered!", "success");
-                                })
-                                .catch((e) => {
-                                  const msg = e instanceof Error ? e.message : String(e);
-                                  showAppToast(msg, "error");
-                                })
-                                .finally(() => setMockingKey(null));
-                            }}
-                            className="rounded-md border border-violet-500/60 bg-violet-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-200 hover:bg-violet-500/25 disabled:opacity-60"
-                          >
-                            {mockingKey === `${row.key}:DOWN` ? "Mocking..." : "Mock DOWN"}
-                          </button>
-                        </>
-                      ) : null}
-                      {!((row.mode === "virtual" && row.virtualRunId) || (row.mode === "real" && row.runId)) &&
-                      !(row.mode === "real" &&
-                        row.runId &&
-                        isTrendProfitLockScalpingStrategySlug(row.strategySlug))
+                      {!((row.mode === "virtual" && row.virtualRunId) || (row.mode === "real" && row.runId))
                         ? "—"
                         : null}
                     </div>

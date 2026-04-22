@@ -95,6 +95,8 @@ type TplRuntimeState = {
   /** Latest closed bar `time` for which we already acted on a HalfTrend flip (avoids duplicate D1 on the same bar). */
   lastFlipCandleTime?: number;
   lastCompletedD1FlipDirection?: "LONG" | "SHORT";
+  /** Set by manual close API to block immediate same-trend re-entry until a truly new HT flip appears. */
+  isManualClosed?: boolean;
   mockNextFlipDirection?: "UP" | "DOWN";
   d1?: {
     side: "LONG" | "SHORT";
@@ -434,6 +436,35 @@ export async function processTrendProfitLockTick(): Promise<void> {
       runtime.mockNextFlipDirection = undefined;
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
+    let manualCloseEntryBlock = runtime.isManualClosed === true;
+    if (manualCloseEntryBlock) {
+      const newDistinctFlip =
+        isFlip && latestClosedBarTime !== runtime.lastFlipCandleTime;
+      if (newDistinctFlip) {
+        runtime.isManualClosed = undefined;
+        await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
+        manualCloseEntryBlock = false;
+        tradingLog("info", "tpl_manual_close_guard_cleared_on_new_flip", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          latestClosedBarTime,
+          flipDirection,
+        });
+      } else {
+        tradingLog("info", "tpl_manual_close_entry_block_active", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          latestClosedBarTime,
+          lastFlipCandleTime: runtime.lastFlipCandleTime ?? null,
+          isFlip,
+          flipDirection,
+        });
+      }
+    }
 
     if (htPreviousClosed != null) {
       const syncKey = tplHalftrendSyncKey(run.runId, symbol, resolution);
@@ -690,6 +721,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
 
     if (
       isFlip &&
+      !manualCloseEntryBlock &&
       !clearedStaleD1RuntimeThisTick &&
       latestClosedBarTime !== runtime.lastFlipCandleTime &&
       d1EntrySide !== runtime.lastCompletedD1FlipDirection &&
