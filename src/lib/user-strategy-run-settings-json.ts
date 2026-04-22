@@ -58,6 +58,7 @@ const trendProfitLockRuntimeSchema = z.object({
   lastCompletedD1FlipDirection: z.enum(["LONG", "SHORT"]).optional(),
   isManualClosed: z.boolean().optional(),
   mockNextFlipDirection: z.enum(["UP", "DOWN"]).optional(),
+  d1BaseQtyInt: z.number().int().positive().optional(),
   d1: z
     .object({
       side: z.enum(["LONG", "SHORT"]),
@@ -90,7 +91,7 @@ const trendProfitLockRuntimeSchema = z.object({
         stoplossPrice: z.number().finite(),
         executedAt: z.string(),
         correlationId: z.string(),
-        status: z.enum(["open", "closed"]),
+        status: z.enum(["drafting", "submitting", "open", "closed"]),
         closeReason: z.enum(["target", "stoploss", "unknown"]).optional(),
         closedAt: z.string().optional(),
         takeProfitOrderExternalId: z.string().optional(),

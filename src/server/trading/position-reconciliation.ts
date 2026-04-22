@@ -322,6 +322,30 @@ async function reconcileOneConnection(
     const localQty = localBySymbol.get(symbol) ?? 0;
     const exchangeQty = exchangeBySymbol.get(symbol) ?? 0;
     const mismatch = Math.abs(localQty - exchangeQty) > QTY_EPS;
+    if (mismatch && localBySymbol.has(symbol)) {
+      await db
+        .update(botPositions)
+        .set({
+          netQuantity: toFixedQty(exchangeQty),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(botPositions.userId, connection.userId),
+            eq(botPositions.exchangeConnectionId, connection.id),
+            eq(botPositions.symbol, symbol),
+          ),
+        );
+      tradingLog("warn", "position_reconciliation_force_synced_local_qty", {
+        event: "position_reconciliation_force_synced_local_qty",
+        exchangeConnectionId: connection.id,
+        userId: connection.userId,
+        symbol,
+        localQtyBefore: localQty,
+        exchangeQty,
+      });
+      localBySymbol.set(symbol, exchangeQty);
+    }
     const prev = await getPreviousReconciliationSnapshot({
       exchangeConnectionId: connection.id,
       symbol,

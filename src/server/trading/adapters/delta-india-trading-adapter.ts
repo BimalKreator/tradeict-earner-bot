@@ -487,51 +487,121 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       return { ok: false, error: product.error };
     }
 
-    const queryString =
-      `?product_id=${encodeURIComponent(String(product.productId))}` +
-      `&state=${encodeURIComponent("open,pending")}`;
-    const r = await this.signedFetch("GET", "/v2/orders", queryString, "");
-    if (!r.ok) {
-      return {
-        ok: false,
-        error: `Delta list orders HTTP ${r.status}: ${r.text.slice(0, 800)}`,
-        raw: r.json,
-      };
-    }
-    if (!deltaJsonSuccess(r.json)) {
-      return {
-        ok: false,
-        error: `Delta list orders rejected: ${r.text.slice(0, 800)}`,
-        raw: r.json,
-      };
-    }
-    const result = r.json.result;
-    const rows =
-      Array.isArray(result)
-        ? result.filter((x) => x && typeof x === "object" && !Array.isArray(x))
-        : result && typeof result === "object" && !Array.isArray(result)
-          ? [result]
-          : [];
+    const listQueries: { path: string; queryString: string; source: string }[] = [
+      {
+        path: "/v2/orders",
+        queryString:
+          `?product_id=${encodeURIComponent(String(product.productId))}` +
+          `&state=${encodeURIComponent("open,pending,untriggered")}`,
+        source: "orders_open_pending_untriggered",
+      },
+      {
+        path: "/v2/orders",
+        queryString:
+          `?product_id=${encodeURIComponent(String(product.productId))}` +
+          `&state=${encodeURIComponent("untriggered")}`,
+        source: "orders_untriggered",
+      },
+      {
+        path: "/v2/orders/conditional",
+        queryString:
+          `?product_id=${encodeURIComponent(String(product.productId))}` +
+          `&state=${encodeURIComponent("open,pending,untriggered")}`,
+        source: "conditional_open_pending_untriggered",
+      },
+      {
+        path: "/v2/orders/conditional",
+        queryString: `?product_id=${encodeURIComponent(String(product.productId))}`,
+        source: "conditional_all",
+      },
+    ];
 
-    const cancellableIds: string[] = [];
-    for (const row of rows) {
-      const o = row as Record<string, unknown>;
+    const listResponses: {
+      source: string;
+      path: string;
+      queryString: string;
+      ok: boolean;
+      status: number;
+      json: Record<string, unknown>;
+      text: string;
+    }[] = [];
+    for (const q of listQueries) {
+      const res = await this.signedFetch("GET", q.path, q.queryString, "");
+      listResponses.push({
+        source: q.source,
+        path: q.path,
+        queryString: q.queryString,
+        ok: res.ok,
+        status: res.status,
+        json: res.json,
+        text: res.text,
+      });
+    }
+
+    const successfulLists = listResponses.filter(
+      (x) => x.ok && deltaJsonSuccess(x.json),
+    );
+    if (successfulLists.length === 0) {
+      const first = listResponses[0];
+      return {
+        ok: false,
+        error: `Delta conditional list failed for symbol ${sym}.`,
+        raw: {
+          firstResponse: first
+            ? {
+                source: first.source,
+                status: first.status,
+                text: first.text.slice(0, 800),
+                json: first.json,
+              }
+            : null,
+          allResponses: listResponses.map((x) => ({
+            source: x.source,
+            status: x.status,
+            ok: x.ok,
+            success: deltaJsonSuccess(x.json),
+            text: x.text.slice(0, 400),
+          })),
+        },
+      };
+    }
+
+    const rows: Record<string, unknown>[] = [];
+    for (const l of successfulLists) {
+      const result = l.json.result;
+      const parsedRows =
+        Array.isArray(result)
+          ? result.filter((x) => x && typeof x === "object" && !Array.isArray(x))
+          : result && typeof result === "object" && !Array.isArray(result)
+            ? [result]
+            : [];
+      for (const row of parsedRows) {
+        rows.push({
+          ...(row as Record<string, unknown>),
+          _list_source: l.source,
+        });
+      }
+    }
+
+    const cancellableIdSet = new Set<string>();
+    for (const o of rows) {
       const idRaw = o.id;
       if (idRaw == null) continue;
       const id = String(idRaw).trim();
       if (!id) continue;
-      const state = typeof o.state === "string" ? o.state.toLowerCase().trim() : "";
-      const stateOpen = state === "open" || state === "pending";
       const isConditional =
         o.stop_order_type != null ||
         o.stop_price != null ||
         o.stop_trigger_method != null ||
         (typeof o.order_type === "string" &&
-          o.order_type.toLowerCase().includes("stop"));
-      if (stateOpen && isConditional) {
-        cancellableIds.push(id);
+          o.order_type.toLowerCase().includes("stop")) ||
+        (typeof o._list_source === "string" &&
+          o._list_source.toLowerCase().includes("conditional"));
+      if (isConditional) {
+        cancellableIdSet.add(id);
       }
     }
+    const cancellableIds = [...cancellableIdSet];
 
     let cancelledCount = 0;
     const failures: { id: string; error: string; raw?: Record<string, unknown> }[] = [];
@@ -564,7 +634,12 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
         ok: false,
         error: `Delta conditional cancel completed with failures (${failures.length}/${cancellableIds.length}).`,
         raw: {
-          listResponse: r.json,
+          listResponses: listResponses.map((x) => ({
+            source: x.source,
+            status: x.status,
+            ok: x.ok,
+            success: deltaJsonSuccess(x.json),
+          })),
           attemptedCount: cancellableIds.length,
           cancelledCount,
           failedCount: failures.length,
@@ -577,7 +652,12 @@ export class DeltaIndiaTradingAdapter implements ExchangeTradingAdapter {
       cancelledCount,
       attemptedCount: cancellableIds.length,
       raw: {
-        listResponse: r.json,
+        listResponses: listResponses.map((x) => ({
+          source: x.source,
+          status: x.status,
+          ok: x.ok,
+          success: deltaJsonSuccess(x.json),
+        })),
         attemptedCount: cancellableIds.length,
         cancelledCount,
       },

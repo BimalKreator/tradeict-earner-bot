@@ -98,6 +98,7 @@ type TplRuntimeState = {
   /** Set by manual close API to block immediate same-trend re-entry until a truly new HT flip appears. */
   isManualClosed?: boolean;
   mockNextFlipDirection?: "UP" | "DOWN";
+  d1BaseQtyInt?: number;
   d1?: {
     side: "LONG" | "SHORT";
     entryPrice: number;
@@ -668,6 +669,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
       }
       runtime.lastCompletedD1FlipDirection = runtime.d1.side;
       runtime.d1 = undefined;
+      runtime.d1BaseQtyInt = undefined;
       runtime.d2TriggeredSteps = [];
       runtime.d2StepsState = {};
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
@@ -903,6 +905,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
               stoplossPrice: stoplossPrice(mark, d1Side, cfg.d1StoplossPct),
               breakevenTriggerPct: cfg.d1BreakevenTriggerPct,
             };
+            runtime.d1BaseQtyInt = Math.max(1, Math.floor(Math.abs(qty)));
             runtime.lastFlipCandleTime = latestClosedBarTime;
             await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
           } else {
@@ -1209,12 +1212,18 @@ export async function processTrendProfitLockTick(): Promise<void> {
         continue;
       }
 
-      const d1QtyInt = Math.max(0, Math.floor(Math.abs(netQty)));
-      if (d1QtyInt < 1) {
+      const d1QtyIntFallback = Math.max(0, Math.floor(Math.abs(netQty)));
+      const baseD1QtyForMath = Math.max(
+        0,
+        Math.floor(Number(runtime.d1BaseQtyInt ?? d1QtyIntFallback)),
+      );
+      if (baseD1QtyForMath < 1) {
         tradingLog("warn", "tpl_d2_skipped_no_d1_contracts", {
           runId: run.runId,
           step: step.step,
-          d1QtyInt,
+          d1QtyIntFallback,
+          d1BaseQtyInt: runtime.d1BaseQtyInt ?? null,
+          baseD1QtyForMath,
         });
         tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
           event: "tpl_d2_dispatch_blocked_debug",
@@ -1224,13 +1233,30 @@ export async function processTrendProfitLockTick(): Promise<void> {
           symbol,
           step: step.step,
           blockedReason: "no_d1_contracts",
-          d1QtyInt,
+          d1QtyIntFallback,
+          d1BaseQtyInt: runtime.d1BaseQtyInt ?? null,
+          baseD1QtyForMath,
         });
         continue;
       }
       const minContracts = await fetchDeltaIndiaProductMinOrderContracts(symbol);
-      const floorPctQty = Math.floor(d1QtyInt * (step.stepQtyPctOfD1 / 100));
+      const floorPctQty = Math.floor(baseD1QtyForMath * (step.stepQtyPctOfD1 / 100));
       const d2Qty = Math.max(minContracts ?? 1, floorPctQty);
+      tradingLog("info", "tpl_d2_sizing_audit", {
+        event: "tpl_d2_sizing_audit",
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        step: step.step,
+        d1BaseQtyForMath: baseD1QtyForMath,
+        d1BaseQtyIntRuntime: runtime.d1BaseQtyInt ?? null,
+        d1QtyIntFallback,
+        stepPct: step.stepQtyPctOfD1,
+        floorPctQty,
+        minContracts: minContracts ?? null,
+        d2Qty,
+      });
       tradingLog("info", "tpl_d2_qty_calc_debug", {
         event: "tpl_d2_qty_calc_debug",
         runId: run.runId,
@@ -1238,7 +1264,9 @@ export async function processTrendProfitLockTick(): Promise<void> {
         userId: run.userId,
         symbol,
         step: step.step,
-        d1QtyInt,
+        d1QtyInt: baseD1QtyForMath,
+        d1QtyIntFallback,
+        d1BaseQtyIntRuntime: runtime.d1BaseQtyInt ?? null,
         stepQtyPctOfD1: step.stepQtyPctOfD1,
         floorPctQty,
         minContracts: minContracts ?? null,
@@ -1253,7 +1281,9 @@ export async function processTrendProfitLockTick(): Promise<void> {
           symbol,
           step: step.step,
           blockedReason: "non_positive_d2_qty",
-          d1QtyInt,
+          d1QtyInt: baseD1QtyForMath,
+          d1QtyIntFallback,
+          d1BaseQtyIntRuntime: runtime.d1BaseQtyInt ?? null,
           floorPctQty,
           minContracts: minContracts ?? null,
           finalD2Qty: d2Qty,
