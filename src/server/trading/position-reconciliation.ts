@@ -1,4 +1,6 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { isTrendProfitLockScalpingStrategySlug } from "@/lib/trend-profit-lock-config";
+import { parseUserStrategyRunSettingsJson } from "@/lib/user-strategy-run-settings-json";
 
 import { db } from "@/server/db";
 import {
@@ -208,6 +210,127 @@ async function autoFlattenLocalPosition(params: {
   });
 }
 
+function distributeTplD2OpenStepQty(params: {
+  openStates: { step: number; qty: number }[];
+  exchangeAbsQty: number;
+}): Map<number, number> {
+  const out = new Map<number, number>();
+  const states = [...params.openStates].sort((a, b) => a.step - b.step);
+  const localSum = states.reduce((sum, s) => sum + s.qty, 0);
+  if (params.exchangeAbsQty >= localSum - QTY_EPS) {
+    for (const s of states) out.set(s.step, s.qty);
+    return out;
+  }
+  let remaining = Math.max(0, params.exchangeAbsQty);
+  for (const s of states) {
+    const keep = Math.max(0, Math.min(s.qty, remaining));
+    out.set(s.step, keep);
+    remaining -= keep;
+    if (remaining <= QTY_EPS) remaining = 0;
+  }
+  return out;
+}
+
+async function applyTplD2PartialSync(params: {
+  userId: string;
+  exchangeConnectionId: string;
+  symbol: string;
+  exchangeQty: number;
+}): Promise<void> {
+  if (!db) return;
+  const [row] = await db
+    .select({
+      runId: userStrategyRuns.id,
+      strategyId: userStrategyRuns.strategyId,
+      strategySlug: strategies.slug,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
+    })
+    .from(botPositions)
+    .innerJoin(
+      userStrategyRuns,
+      and(
+        eq(botPositions.subscriptionId, userStrategyRuns.subscriptionId),
+        eq(botPositions.strategyId, userStrategyRuns.strategyId),
+      ),
+    )
+    .innerJoin(strategies, eq(userStrategyRuns.strategyId, strategies.id))
+    .where(
+      and(
+        eq(botPositions.userId, params.userId),
+        eq(botPositions.exchangeConnectionId, params.exchangeConnectionId),
+        eq(botPositions.symbol, params.symbol),
+        eq(userStrategyRuns.secondaryExchangeConnectionId, params.exchangeConnectionId),
+        eq(userStrategyRuns.status, "active"),
+      ),
+    )
+    .orderBy(desc(userStrategyRuns.updatedAt))
+    .limit(1);
+  if (!row || !isTrendProfitLockScalpingStrategySlug(row.strategySlug)) return;
+
+  const parsed = parseUserStrategyRunSettingsJson(row.runSettingsJson);
+  const runtime = parsed.trendProfitLockRuntime;
+  if (!runtime?.d2StepsState) return;
+  const openStates = Object.values(runtime.d2StepsState)
+    .filter((s) => s.status === "open" && Number.isFinite(s.qty) && s.qty > 0)
+    .map((s) => ({ step: s.step, qty: s.qty }));
+  if (openStates.length === 0) return;
+  const localSum = openStates.reduce((sum, s) => sum + s.qty, 0);
+  const exchangeAbs = Math.abs(params.exchangeQty);
+  if (!(exchangeAbs + QTY_EPS < localSum)) return;
+
+  const allocation = distributeTplD2OpenStepQty({
+    openStates,
+    exchangeAbsQty: exchangeAbs,
+  });
+  const nextD2StepsState = { ...runtime.d2StepsState };
+  const before = openStates.map((s) => ({ step: s.step, qty: s.qty }));
+  const after: { step: number; qty: number }[] = [];
+  const nextTriggered = new Set(runtime.d2TriggeredSteps ?? []);
+  for (const s of openStates) {
+    const keepQty = allocation.get(s.step) ?? 0;
+    if (keepQty > QTY_EPS) {
+      nextD2StepsState[String(s.step)] = {
+        ...nextD2StepsState[String(s.step)]!,
+        qty: keepQty,
+      };
+      after.push({ step: s.step, qty: keepQty });
+      continue;
+    }
+    delete nextD2StepsState[String(s.step)];
+    nextTriggered.delete(s.step);
+    after.push({ step: s.step, qty: 0 });
+  }
+  const nextRunSettingsJson = {
+    ...(row.runSettingsJson as Record<string, unknown>),
+    trendProfitLockRuntime: {
+      ...runtime,
+      d2StepsState: nextD2StepsState,
+      d2TriggeredSteps: [...nextTriggered].sort((a, b) => a - b),
+    },
+  };
+  await db
+    .update(userStrategyRuns)
+    .set({
+      runSettingsJson: nextRunSettingsJson,
+      updatedAt: new Date(),
+    })
+    .where(eq(userStrategyRuns.id, row.runId));
+
+  tradingLog("warn", "tpl_d2_partial_sync_applied", {
+    event: "tpl_d2_partial_sync_applied",
+    runId: row.runId,
+    strategyId: row.strategyId,
+    userId: params.userId,
+    exchangeConnectionId: params.exchangeConnectionId,
+    symbol: params.symbol,
+    exchangeAbsQty: exchangeAbs,
+    localD2QtyBefore: localSum,
+    localD2QtyAfter: after.reduce((sum, s) => sum + s.qty, 0),
+    before,
+    after,
+  });
+}
+
 async function reconcileOneConnection(
   connection: ReconcileTargetConnection,
   reconciledAt: Date,
@@ -345,6 +468,12 @@ async function reconcileOneConnection(
         exchangeQty,
       });
       localBySymbol.set(symbol, exchangeQty);
+      await applyTplD2PartialSync({
+        userId: connection.userId,
+        exchangeConnectionId: connection.id,
+        symbol,
+        exchangeQty,
+      });
     }
     const prev = await getPreviousReconciliationSnapshot({
       exchangeConnectionId: connection.id,

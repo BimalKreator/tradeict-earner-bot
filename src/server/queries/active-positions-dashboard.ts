@@ -333,6 +333,9 @@ function buildLegReal(params: {
   markBySymbol: Map<string, number>;
   contractValueBySymbol: Map<string, number>;
   symbolHint: string;
+  /** Prefer exchange-synced position qty/entry over ledger-derived values when provided. */
+  overrideOpenNetQty?: number;
+  overrideAvgEntryPrice?: number | null;
   qtyPctOfCapital?: number | null;
   activeClipCount?: number | null;
   leverage?: number | null;
@@ -342,18 +345,20 @@ function buildLegReal(params: {
   const contractValueUsd = params.contractValueBySymbol.get(params.symbolHint.toUpperCase()) ?? 1;
   const dOpen = deriveLedgerMetrics(openWindowOrders, mark);
   const dAll = deriveLedgerMetrics(params.orders, mark);
-  if (Math.abs(dOpen.openNetQty) <= QTY_EPS) return null;
+  const openNetQty = params.overrideOpenNetQty ?? dOpen.openNetQty;
+  const avgEntryPrice = params.overrideAvgEntryPrice ?? dOpen.avgEntryPrice;
+  if (Math.abs(openNetQty) <= QTY_EPS) return null;
   const openedAt = openedAtFromOpenWindow(openWindowOrders);
   const unrealizedPnlUsd =
-    dOpen.openNetQty !== 0 &&
-    dOpen.avgEntryPrice != null &&
+    openNetQty !== 0 &&
+    avgEntryPrice != null &&
     mark != null &&
-    dOpen.avgEntryPrice > 0
-      ? dOpen.openNetQty * ((mark - dOpen.avgEntryPrice) / dOpen.avgEntryPrice) * contractValueUsd
+    avgEntryPrice > 0
+      ? openNetQty * ((mark - avgEntryPrice) / avgEntryPrice) * contractValueUsd
       : dOpen.unrealizedPnlUsd;
   const usedMarginUsd =
-    Math.abs(dOpen.openNetQty) > QTY_EPS
-      ? (Math.abs(dOpen.openNetQty) * contractValueUsd) / Math.max(1, params.leverage ?? 1)
+    Math.abs(openNetQty) > QTY_EPS
+      ? (Math.abs(openNetQty) * contractValueUsd) / Math.max(1, params.leverage ?? 1)
       : null;
   return {
     key: `r:${params.runId}:${params.account}:${params.symbolHint}`,
@@ -366,11 +371,11 @@ function buildLegReal(params: {
     strategySlug: params.strategySlug,
     account: params.account,
     symbol: dOpen.openSymbol ?? params.symbolHint,
-    side: legSide(dOpen.openNetQty),
-    netQty: dOpen.openNetQty,
-    avgEntryPrice: dOpen.avgEntryPrice,
-    displayNetQty: dOpen.openNetQty,
-    displayAvgEntryPrice: dOpen.avgEntryPrice,
+    side: legSide(openNetQty),
+    netQty: openNetQty,
+    avgEntryPrice,
+    displayNetQty: openNetQty,
+    displayAvgEntryPrice: avgEntryPrice,
     realizedPnlUsd: dAll.realizedPnlUsd,
     unrealizedPnlUsd,
     usedMarginUsd,
@@ -379,6 +384,78 @@ function buildLegReal(params: {
     activeClipCount: params.activeClipCount ?? null,
     openedAt,
   };
+}
+
+function distributeTplD2OpenStepQtyForDisplay(
+  states: {
+    step: number;
+    qty: number;
+    targetPrice: number;
+    stoplossPrice: number;
+    status: string;
+  }[],
+  exchangeAbsQty: number,
+): Map<number, number> {
+  const open = states
+    .filter((s) => s.status === "open" && Number.isFinite(s.qty) && s.qty > 0)
+    .sort((a, b) => a.step - b.step);
+  const out = new Map<number, number>();
+  const localSum = open.reduce((sum, s) => sum + s.qty, 0);
+  if (!(exchangeAbsQty >= 0) || open.length === 0) return out;
+  if (exchangeAbsQty >= localSum - QTY_EPS) {
+    for (const s of open) out.set(s.step, s.qty);
+    return out;
+  }
+  // Preserve lower steps first; higher steps absorb manual partial closes first.
+  let remaining = exchangeAbsQty;
+  for (const s of open) {
+    const alloc = Math.max(0, Math.min(s.qty, remaining));
+    out.set(s.step, alloc);
+    remaining -= alloc;
+    if (remaining <= QTY_EPS) remaining = 0;
+  }
+  return out;
+}
+
+function expandTrendProfitLockLiveD2Legs(
+  leg: ActivePositionLeg,
+  runSettingsJson: unknown,
+): ActivePositionLeg[] {
+  if (leg.account !== "D2" || !isTrendProfitLockScalpingStrategySlug(leg.strategySlug)) {
+    return [leg];
+  }
+  const parsed = parseUserStrategyRunSettingsJson(runSettingsJson);
+  const rt = parsed.trendProfitLockRuntime;
+  const statesRaw = rt?.d2StepsState ?? {};
+  const states = Object.values(statesRaw)
+    .filter((s) => s && typeof s === "object" && (s as { status?: string }).status === "open")
+    .map((s) => s as {
+      step: number;
+      qty: number;
+      targetPrice: number;
+      stoplossPrice: number;
+      status: string;
+    })
+    .sort((a, b) => a.step - b.step);
+  if (states.length === 0) return [leg];
+
+  const alloc = distributeTplD2OpenStepQtyForDisplay(states, Math.abs(leg.netQty));
+  const sign = leg.side === "short" ? -1 : 1;
+  const expanded: ActivePositionLeg[] = [];
+  for (const st of states) {
+    const q = alloc.get(st.step) ?? 0;
+    if (!(q > QTY_EPS)) continue;
+    expanded.push({
+      ...leg,
+      key: `${leg.key}:d2step:${st.step}`,
+      d2LadderStep: st.step,
+      netQty: sign * q,
+      displayNetQty: q,
+      targetPrice: st.targetPrice,
+      stopLossPrice: st.stoplossPrice,
+    });
+  }
+  return expanded.length > 0 ? expanded : [leg];
 }
 
 type HedgeScalpingDisplaySettings = {
@@ -1208,6 +1285,7 @@ export async function getUserRealActivePositionGroups(
     label: string;
     leverage: number;
     runSettingsJson: unknown;
+    positionNetQty: number;
   };
 
   const contexts: RealCtx[] = realRows.map((row) => ({
@@ -1224,6 +1302,7 @@ export async function getUserRealActivePositionGroups(
     label: userDisplayName(row.userEmail, row.userName),
     leverage: Math.max(1, Number(row.leverage ?? "1")),
     runSettingsJson: row.runSettingsJson,
+    positionNetQty: Number(row.netQty ?? "0"),
   }));
 
   const markBySymbol = await fetchMarksForSymbols(contexts.map((c) => c.symbol));
@@ -1272,6 +1351,7 @@ export async function getUserRealActivePositionGroups(
       contractValueBySymbol,
       leverage: r.leverage,
       symbolHint: r.symbol,
+      overrideOpenNetQty: r.positionNetQty,
       qtyPctOfCapital:
         isHs && r.hedgeSettings
           ? account === "D2"
@@ -1284,11 +1364,16 @@ export async function getUserRealActivePositionGroups(
     const tplAugmented = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
       ? augmentTrendProfitLockLiveLeg(leg, r.runSettingsJson, boRows)
       : leg;
-    legs.push(
-      isHs && r.hedgeSettings
-        ? augmentHedgeScalpingLegExitPrices(tplAugmented, r.hedgeSettings)
-        : tplAugmented,
-    );
+    const expandedTplLegs = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
+      ? expandTrendProfitLockLiveD2Legs(tplAugmented, r.runSettingsJson)
+      : [tplAugmented];
+    for (const legItem of expandedTplLegs) {
+      legs.push(
+        isHs && r.hedgeSettings
+          ? augmentHedgeScalpingLegExitPrices(legItem, r.hedgeSettings)
+          : legItem,
+      );
+    }
   }
 
   const grouped = new Map<string, UserActivePositionGroup>();
@@ -1491,6 +1576,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     label: string;
     leverage: number;
     runSettingsJson: unknown;
+    positionNetQty: number;
   };
   const rctx: RCtx[] = [];
 
@@ -1510,6 +1596,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       label: userDisplayName(row.userEmail, row.userName),
       leverage: Math.max(1, Number(row.leverage ?? "1")),
       runSettingsJson: row.runSettingsJson,
+      positionNetQty: Number(row.netQty ?? "0"),
     });
   }
 
@@ -1615,6 +1702,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       contractValueBySymbol,
       leverage: r.leverage,
       symbolHint: r.symbol,
+      overrideOpenNetQty: r.positionNetQty,
       qtyPctOfCapital:
         isHs && r.hedgeSettings
           ? account === "D2"
@@ -1623,14 +1711,18 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
           : null,
       activeClipCount: null,
     });
-    if (lr) {
-      const tplAugmented = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
-        ? augmentTrendProfitLockLiveLeg(lr, r.runSettingsJson, boRows)
-        : lr;
+    if (!lr) continue;
+    const tplAugmented = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
+      ? augmentTrendProfitLockLiveLeg(lr, r.runSettingsJson, boRows)
+      : lr;
+    const expandedTplLegs = isTrendProfitLockScalpingStrategySlug(r.strategySlug)
+      ? expandTrendProfitLockLiveD2Legs(tplAugmented, r.runSettingsJson)
+      : [tplAugmented];
+    for (const legItem of expandedTplLegs) {
       legs.push(
         isHs && r.hedgeSettings
-          ? augmentHedgeScalpingLegExitPrices(tplAugmented, r.hedgeSettings)
-          : tplAugmented,
+          ? augmentHedgeScalpingLegExitPrices(legItem, r.hedgeSettings)
+          : legItem,
       );
     }
   }
