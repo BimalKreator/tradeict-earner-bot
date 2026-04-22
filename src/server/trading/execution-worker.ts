@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 
 import { db } from "@/server/db";
-import { botOrders, exchangeConnections } from "@/server/db/schema";
+import { botOrders, exchangeConnections, userStrategyRuns } from "@/server/db/schema";
 
 import type {
   ExchangeTradingAdapter,
@@ -88,6 +88,74 @@ function tplD2FailureContext(
   const match = /^d2_step_(\d+)$/i.exec(leg);
   if (!match) return { isTplD2: false, step: null };
   return { isTplD2: true, step: Number(match[1]) || null };
+}
+
+async function autoRearmTplD2StepOnFailure(params: {
+  runId: string;
+  step: number;
+  correlationId: string;
+  reason: string;
+  error: string;
+}): Promise<void> {
+  if (!db) return;
+  const [run] = await db
+    .select({ runSettingsJson: userStrategyRuns.runSettingsJson })
+    .from(userStrategyRuns)
+    .where(eq(userStrategyRuns.id, params.runId))
+    .limit(1);
+  if (!run) return;
+
+  const root =
+    run.runSettingsJson && typeof run.runSettingsJson === "object"
+      ? ({ ...(run.runSettingsJson as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  const runtimeRaw = root.trendProfitLockRuntime;
+  if (!runtimeRaw || typeof runtimeRaw !== "object" || Array.isArray(runtimeRaw)) return;
+  const runtime = { ...(runtimeRaw as Record<string, unknown>) };
+
+  const d2StatesRaw = runtime.d2StepsState;
+  const d2States =
+    d2StatesRaw && typeof d2StatesRaw === "object" && !Array.isArray(d2StatesRaw)
+      ? ({ ...(d2StatesRaw as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  const stepKey = String(params.step);
+  const hadState = Object.prototype.hasOwnProperty.call(d2States, stepKey);
+  if (hadState) {
+    delete d2States[stepKey];
+  }
+
+  const d2TriggeredRaw = runtime.d2TriggeredSteps;
+  const d2Triggered = Array.isArray(d2TriggeredRaw)
+    ? d2TriggeredRaw
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x))
+    : [];
+  const hadTriggered = d2Triggered.includes(params.step);
+  const nextTriggered = d2Triggered.filter((x) => x !== params.step);
+
+  if (!hadState && !hadTriggered) return;
+
+  runtime.d2StepsState = d2States;
+  runtime.d2TriggeredSteps = nextTriggered;
+  root.trendProfitLockRuntime = runtime;
+
+  await db
+    .update(userStrategyRuns)
+    .set({
+      runSettingsJson: root,
+      updatedAt: new Date(),
+    })
+    .where(eq(userStrategyRuns.id, params.runId));
+
+  tradingLog("warn", "tpl_d2_step_auto_rearmed_on_failure", {
+    runId: params.runId,
+    step: params.step,
+    correlationId: params.correlationId,
+    reason: params.reason,
+    error: params.error,
+    removedState: hadState,
+    removedTriggered: hadTriggered,
+  });
 }
 
 async function safeSyncOrderStatus(
@@ -582,6 +650,15 @@ export async function processOneTradingJob(
           botOrderId: ex.id,
           botOrderStatus: ex.status,
         });
+        if (tplD2.step != null && p.runId) {
+          await autoRearmTplD2StepOnFailure({
+            runId: p.runId,
+            step: tplD2.step,
+            correlationId: p.correlationId,
+            reason: "existing_order_terminal_failed_or_rejected",
+            error: `existing bot order in ${ex.status}`,
+          });
+        }
       }
       await completeTradingJob(job.id);
       return { processed: true };
@@ -762,6 +839,16 @@ export async function processOneTradingJob(
         jobId: job.id,
         botOrderId,
         runId: row.runId,
+        error: place.error,
+      });
+    }
+    const willBeDead = nonRetryable || job.attempts + 1 >= job.maxAttempts;
+    if (tplD2.isTplD2 && tplD2.step != null && p.runId && willBeDead) {
+      await autoRearmTplD2StepOnFailure({
+        runId: p.runId,
+        step: tplD2.step,
+        correlationId: p.correlationId,
+        reason: nonRetryable ? "terminal_non_retryable_rejection" : "max_attempts_exhausted",
         error: place.error,
       });
     }
