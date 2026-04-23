@@ -162,6 +162,7 @@ export type AdminUpcomingEventRow = {
   entryStatus: "completed" | "waiting" | "submitting";
   targetStatus: "completed" | "waiting";
   stopLossStatus: "completed" | "waiting";
+  blockReason: string | null;
 };
 
 function userDisplayName(email: string, name: string | null): string {
@@ -1906,6 +1907,7 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
       entryStatus: "completed",
       targetStatus: "waiting",
       stopLossStatus: "waiting",
+      blockReason: "watch_active",
     });
     const d1TargetDistance = Math.abs(d1Target - entry);
     const d2States = runtime?.d2StepsState ?? {};
@@ -1950,6 +1952,18 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
         state?.status === "open" ? "waiting" : "waiting";
       const stopLossStatus: AdminUpcomingEventRow["stopLossStatus"] =
         state?.status === "open" ? "waiting" : "waiting";
+      const blockReason =
+        state?.status === "open"
+          ? "in_flight_or_open"
+          : state?.status === "submitting" || state?.status === "drafting"
+            ? "in_flight_or_open"
+            : state?.status === "closed" && state?.slHitLock
+              ? "sl_lock_active"
+              : state?.status === "closed"
+                ? "rearmed_waiting"
+                : !targetPrice
+                  ? "missing_linked_step_entry"
+                  : "trigger_not_reached";
       out.push({
         key: `upcoming:${r.runId}:d2:${stepCfg.step}`,
         runId: r.runId,
@@ -1969,6 +1983,7 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
         entryStatus,
         targetStatus,
         stopLossStatus,
+        blockReason,
       });
     }
   }

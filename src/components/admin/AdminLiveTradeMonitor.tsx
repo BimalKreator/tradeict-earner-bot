@@ -585,6 +585,7 @@ export function AdminLiveTradeMonitor({
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Stop loss</th>
                   <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Block Reason</th>
                 </tr>
               </thead>
               <tbody>
@@ -610,6 +611,9 @@ export function AdminLiveTradeMonitor({
                     <td className="px-3 py-2 tabular-nums">{formatExitPx(e.stopLossPrice)}</td>
                     <td className={`px-3 py-2 ${eventStatusBadge(e.stopLossStatus)}`}>
                       {e.stopLossStatus === "completed" ? "Completed" : "Waiting"}
+                    </td>
+                    <td className="px-3 py-2 text-[11px] text-slate-400">
+                      {e.blockReason ?? "—"}
                     </td>
                   </tr>
                 ))}
