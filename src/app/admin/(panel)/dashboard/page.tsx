@@ -109,6 +109,7 @@ export default async function AdminDashboardPage() {
         <AdminLiveTradeMonitor
           initialRows={liveTradeData.rows}
           initialStatusRows={liveTradeData.statusRows}
+          initialUpcomingEvents={liveTradeData.upcomingEvents}
         />
       </GlassPanel>
 

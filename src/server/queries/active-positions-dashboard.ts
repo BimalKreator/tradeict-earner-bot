@@ -5,6 +5,7 @@ import {
   isHedgeScalpingStrategySlug,
 } from "@/lib/hedge-scalping-config";
 import { isTrendProfitLockScalpingStrategySlug } from "@/lib/trend-profit-lock-config";
+import { resolveTrendProfitLockConfigForUi } from "@/lib/trend-profit-lock-form";
 import {
   deriveLedgerMetrics,
   isFilledOrder,
@@ -139,6 +140,24 @@ export type AdminStrategyStatusRow = {
 export type AdminLiveTradeMonitorData = {
   rows: AdminLivePositionRow[];
   statusRows: AdminStrategyStatusRow[];
+  upcomingEvents: AdminUpcomingEventRow[];
+};
+
+export type AdminUpcomingEventRow = {
+  key: string;
+  runId: string;
+  strategyName: string;
+  userLabel: string;
+  symbol: string;
+  eventType: "D1_EXIT" | "D2_STEP";
+  step: number | null;
+  side: "LONG" | "SHORT";
+  quantity: number;
+  entryPrice: number | null;
+  triggerPrice: number | null;
+  targetPrice: number | null;
+  stopLossPrice: number | null;
+  status: "completed" | "waiting_entry" | "entry_submitting" | "waiting_exit";
 };
 
 function userDisplayName(email: string, name: string | null): string {
@@ -160,6 +179,29 @@ function participationShortLabel(name: string | null, email: string): string {
 
 function legSide(netQty: number): "long" | "short" {
   return netQty > 0 ? "long" : "short";
+}
+
+function tplTargetPrice(entry: number, side: "LONG" | "SHORT", targetPct: number): number {
+  const t = Math.max(0, targetPct) / 100;
+  return side === "LONG" ? entry * (1 + t) : entry * (1 - t);
+}
+
+function tplStoplossPrice(entry: number, side: "LONG" | "SHORT", stopPct: number): number {
+  const s = Math.max(0, stopPct) / 100;
+  return side === "LONG" ? entry * (1 - s) : entry * (1 + s);
+}
+
+function tplD2StoplossFromD1Distance(params: {
+  d2EntryPrice: number;
+  d2Side: "LONG" | "SHORT";
+  d1TargetDistance: number;
+  stepStoplossPct: number;
+}): number {
+  const distance = Math.max(0, params.d1TargetDistance);
+  const rawPct = Math.max(0, params.stepStoplossPct);
+  const pct = rawPct > 0 && rawPct < 1 ? rawPct * 100 : rawPct;
+  const slOffset = distance * (pct / 100);
+  return params.d2Side === "LONG" ? params.d2EntryPrice - slOffset : params.d2EntryPrice + slOffset;
 }
 
 function ordersToLedgerRows(
@@ -672,6 +714,23 @@ function augmentTrendProfitLockLiveLeg(
         targetPrice: chosen.targetPrice,
         stopLossPrice: chosen.stoplossPrice,
         d2LadderStep: chosen.step,
+      };
+    }
+    const stepAnyState = stepFromOrders != null ? states[String(stepFromOrders)] : undefined;
+    if (stepAnyState) {
+      return {
+        ...leg,
+        targetPrice: stepAnyState.targetPrice,
+        stopLossPrice: stepAnyState.stoplossPrice,
+        d2LadderStep: stepAnyState.step,
+      };
+    }
+    if (stepFromOrders != null) {
+      // Runtime can briefly lag while bot_positions already shows an open D2 leg.
+      // Keep step badge visible from order correlations to avoid "D2 (no step)" UI drift.
+      return {
+        ...leg,
+        d2LadderStep: stepFromOrders,
       };
     }
   }
@@ -1758,8 +1817,148 @@ async function getAdminStrategyStatusRows(
   return [];
 }
 
+async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
+  if (!db) return [];
+  const runs = await db
+    .select({
+      runId: userStrategyRuns.id,
+      subscriptionId: userStrategyRuns.subscriptionId,
+      strategyId: strategies.id,
+      strategyName: strategies.name,
+      strategySlug: strategies.slug,
+      strategySettingsJson: strategies.settingsJson,
+      runSettingsJson: userStrategyRuns.runSettingsJson,
+      primaryExchangeConnectionId: userStrategyRuns.primaryExchangeConnectionId,
+      userEmail: users.email,
+      userName: users.name,
+    })
+    .from(userStrategyRuns)
+    .innerJoin(userStrategySubscriptions, eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id))
+    .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
+    .innerJoin(users, eq(userStrategySubscriptions.userId, users.id))
+    .where(
+      and(
+        eq(userStrategyRuns.status, "active"),
+        eq(userStrategySubscriptions.status, "active"),
+        isNull(userStrategySubscriptions.deletedAt),
+        isNull(strategies.deletedAt),
+        isNull(users.deletedAt),
+      ),
+    );
+
+  const out: AdminUpcomingEventRow[] = [];
+  for (const r of runs) {
+    if (!isTrendProfitLockScalpingStrategySlug(r.strategySlug)) continue;
+    const parsed = parseUserStrategyRunSettingsJson(r.runSettingsJson);
+    const runtime = parsed.trendProfitLockRuntime;
+    if (!runtime?.d1 || !r.primaryExchangeConnectionId) continue;
+    const cfg = resolveTrendProfitLockConfigForUi({
+      strategySettingsJson: r.strategySettingsJson,
+      runSettingsTrendProfitLock: parsed.trendProfitLock ?? null,
+    });
+    const symbol = cfg.symbol.trim().toUpperCase();
+    const [d1Pos] = await db
+      .select({
+        netQty: botPositions.netQuantity,
+        avgEntry: botPositions.averageEntryPrice,
+      })
+      .from(botPositions)
+      .where(
+        and(
+          eq(botPositions.subscriptionId, r.subscriptionId),
+          eq(botPositions.strategyId, r.strategyId),
+          eq(botPositions.exchangeConnectionId, r.primaryExchangeConnectionId),
+          eq(botPositions.symbol, symbol),
+        ),
+      )
+      .limit(1);
+    const d1Net = Number(d1Pos?.netQty ?? "0");
+    if (!(Math.abs(d1Net) > QTY_EPS)) continue;
+    const side: "LONG" | "SHORT" = d1Net > 0 ? "LONG" : "SHORT";
+    const entry =
+      Number(d1Pos?.avgEntry ?? "0") > 0
+        ? Number(d1Pos?.avgEntry ?? "0")
+        : runtime.d1.entryPrice;
+    if (!(entry > 0)) continue;
+    const d1Target = runtime.d1.targetPrice ?? tplTargetPrice(entry, side, cfg.d1TargetPct);
+    const d1Stop = runtime.d1.stoplossPrice ?? tplStoplossPrice(entry, side, cfg.d1StoplossPct);
+    const baseQty = Math.max(1, Math.floor(Math.abs(Number(runtime.d1BaseQtyInt ?? d1Net))));
+    out.push({
+      key: `upcoming:${r.runId}:d1_exit`,
+      runId: r.runId,
+      strategyName: r.strategyName,
+      userLabel: userDisplayName(r.userEmail, r.userName),
+      symbol,
+      eventType: "D1_EXIT",
+      step: null,
+      side,
+      quantity: baseQty,
+      entryPrice: entry,
+      triggerPrice: null,
+      targetPrice: d1Target,
+      stopLossPrice: d1Stop,
+      status: "waiting_exit",
+    });
+    const d1TargetDistance = Math.abs(d1Target - entry);
+    const d2States = runtime.d2StepsState ?? {};
+    const lastEntries = runtime.d2StepLastEntries ?? {};
+    for (const stepCfg of cfg.d2Steps) {
+      const triggerDist = d1TargetDistance * (Math.max(0, stepCfg.stepTriggerPct) / 100);
+      const triggerPrice = side === "LONG" ? entry + triggerDist : entry - triggerDist;
+      const d2Side: "LONG" | "SHORT" = side === "LONG" ? "SHORT" : "LONG";
+      const qty = Math.max(1, Math.floor(baseQty * (Math.max(0, stepCfg.stepQtyPctOfD1) / 100)));
+      const state = d2States[String(stepCfg.step)];
+      const linkStep =
+        stepCfg.targetLinkType === "D1_ENTRY"
+          ? null
+          : Number(stepCfg.targetLinkType.replace("STEP_", "").replace("_ENTRY", ""));
+      const linkedEntry =
+        linkStep == null
+          ? entry
+          : Number.isFinite(lastEntries[String(linkStep)])
+            ? Number(lastEntries[String(linkStep)])
+            : null;
+      const targetPrice = state?.targetPrice ?? (linkedEntry && linkedEntry > 0 ? linkedEntry : null);
+      const stopLossPrice =
+        state?.stoplossPrice ??
+        tplD2StoplossFromD1Distance({
+          d2EntryPrice: triggerPrice,
+          d2Side,
+          d1TargetDistance,
+          stepStoplossPct: stepCfg.stepStoplossPct,
+        });
+      const status: AdminUpcomingEventRow["status"] =
+        state?.status === "open"
+          ? "waiting_exit"
+          : state?.status === "submitting" || state?.status === "drafting"
+            ? "entry_submitting"
+            : state?.status === "closed"
+              ? "completed"
+              : "waiting_entry";
+      out.push({
+        key: `upcoming:${r.runId}:d2:${stepCfg.step}`,
+        runId: r.runId,
+        strategyName: r.strategyName,
+        userLabel: userDisplayName(r.userEmail, r.userName),
+        symbol,
+        eventType: "D2_STEP",
+        step: stepCfg.step,
+        side: d2Side,
+        quantity: qty,
+        entryPrice: state?.entryMarkPrice ?? null,
+        triggerPrice,
+        targetPrice,
+        stopLossPrice,
+        status,
+      });
+    }
+  }
+  return out;
+}
+
 export async function getAdminLiveTradeMonitorData(): Promise<AdminLiveTradeMonitorData> {
   const rows = await getAdminLiveTradeMonitorRows();
   const statusRows = await getAdminStrategyStatusRows(rows);
-  return { rows, statusRows };
+  const upcomingEvents = await getAdminTplUpcomingEvents();
+  return { rows, statusRows, upcomingEvents };
 }

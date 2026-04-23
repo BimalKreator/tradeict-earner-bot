@@ -9,6 +9,7 @@ import { formatUsdAmount } from "@/lib/format-inr";
 import { showAppToast } from "@/components/ui/GlobalToastHost";
 import type {
   AdminLivePositionRow,
+  AdminUpcomingEventRow,
   AdminStrategyStatusRow,
 } from "@/server/queries/active-positions-dashboard";
 
@@ -81,12 +82,15 @@ async function closeRunAndRefresh(params: {
 export function AdminLiveTradeMonitor({
   initialRows,
   initialStatusRows,
+  initialUpcomingEvents,
 }: {
   initialRows: AdminLivePositionRow[];
   initialStatusRows: AdminStrategyStatusRow[];
+  initialUpcomingEvents: AdminUpcomingEventRow[];
 }) {
   const [rows, setRows] = useState<AdminLivePositionRow[]>(initialRows);
   const [statusRows, setStatusRows] = useState<AdminStrategyStatusRow[]>(initialStatusRows);
+  const [upcomingEvents, setUpcomingEvents] = useState<AdminUpcomingEventRow[]>(initialUpcomingEvents);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closingKey, setClosingKey] = useState<string | null>(null);
@@ -108,10 +112,12 @@ export function AdminLiveTradeMonitor({
       const data = (await res.json()) as {
         rows: AdminLivePositionRow[];
         statusRows?: AdminStrategyStatusRow[];
+        upcomingEvents?: AdminUpcomingEventRow[];
         updatedAt?: string;
       };
       setRows(data.rows);
       setStatusRows(data.statusRows ?? []);
+      setUpcomingEvents(data.upcomingEvents ?? []);
       setUpdatedAt(data.updatedAt ?? null);
       setError(null);
     } catch {
@@ -555,6 +561,48 @@ export function AdminLiveTradeMonitor({
           No open legs or active strategy subscriptions right now.
         </p>
       )}
+
+      {upcomingEvents.length > 0 ? (
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Upcoming events</h3>
+          <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+            <table className="min-w-[1180px] w-full text-left text-xs text-slate-200">
+              <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Strategy</th>
+                  <th className="px-3 py-2">Trader</th>
+                  <th className="px-3 py-2">Event</th>
+                  <th className="px-3 py-2">Side</th>
+                  <th className="px-3 py-2">Qty</th>
+                  <th className="px-3 py-2">Entry</th>
+                  <th className="px-3 py-2">Trigger</th>
+                  <th className="px-3 py-2">Target</th>
+                  <th className="px-3 py-2">Stop loss</th>
+                  <th className="px-3 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcomingEvents.map((e) => (
+                  <tr key={e.key} className="border-t border-white/[0.05] bg-black/20">
+                    <td className="px-3 py-2">{e.strategyName} · {e.symbol}</td>
+                    <td className="px-3 py-2 text-slate-400">{e.userLabel}</td>
+                    <td className="px-3 py-2">
+                      {e.eventType === "D1_EXIT" ? "D1 target/stop watch" : `D2 Step ${e.step}`}
+                    </td>
+                    <td className="px-3 py-2">{e.side}</td>
+                    <td className="px-3 py-2 tabular-nums">{e.quantity}</td>
+                    <td className="px-3 py-2 tabular-nums">{formatExitPx(e.entryPrice)}</td>
+                    <td className="px-3 py-2 tabular-nums">{formatExitPx(e.triggerPrice)}</td>
+                    <td className="px-3 py-2 tabular-nums">{formatExitPx(e.targetPrice)}</td>
+                    <td className="px-3 py-2 tabular-nums">{formatExitPx(e.stopLossPrice)}</td>
+                    <td className="px-3 py-2 capitalize text-slate-300">{e.status.replaceAll("_", " ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       {closeToast ? (
         <div className="fixed right-4 bottom-4 z-50 w-[min(92vw,460px)] rounded-xl border border-white/15 bg-black/85 px-4 py-3 text-xs shadow-2xl backdrop-blur">
           <p className="font-semibold text-slate-100">

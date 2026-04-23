@@ -231,6 +231,21 @@ function d2StepRearmAwayDistance(params: {
   return Math.max(floor, targetFrac, triggerFrac);
 }
 
+function estimateStepLiveQtyForExit(params: {
+  stateQty: number;
+  d2OpenQtyTracked: number;
+  d2NetQtyAbs: number;
+}): number {
+  const stateQty = Math.max(0, Math.floor(params.stateQty));
+  const trackedOpen = Math.max(0, params.d2OpenQtyTracked);
+  const netAbs = Math.max(0, params.d2NetQtyAbs);
+  // Approximate how much of current exchange net can belong to this step.
+  const expectedOpenWithoutStep = Math.max(0, trackedOpen - stateQty);
+  const stepShareOnExchange = Math.max(0, netAbs - expectedOpenWithoutStep);
+  const bounded = Math.min(stateQty, stepShareOnExchange > 0 ? stepShareOnExchange : stateQty);
+  return Math.max(0, Math.floor(bounded));
+}
+
 function resolveLinkedTargetPrice(params: {
   d1EntryPrice: number;
   /** Used when `d1EntryPrice` is missing/invalid so linked steps never resolve to NaN. */
@@ -259,6 +274,14 @@ function resolveLinkedTargetPrice(params: {
     return { price: Number(lastEntry), linkedStep: stepNum, fallbackUsed: false };
   }
   return { price: anchor, linkedStep: stepNum, fallbackUsed: true };
+}
+
+function parseLinkedStepFromTargetType(
+  targetLinkType: "D1_ENTRY" | "STEP_1_ENTRY" | "STEP_2_ENTRY" | "STEP_3_ENTRY" | "STEP_4_ENTRY",
+): number | null {
+  if (targetLinkType === "D1_ENTRY") return null;
+  const stepNum = Number(targetLinkType.replace("STEP_", "").replace("_ENTRY", ""));
+  return Number.isFinite(stepNum) && stepNum >= 1 ? stepNum : null;
 }
 
 async function resolveLiveMark(symbol: string, fallback: number | null): Promise<number | null> {
@@ -1215,7 +1238,12 @@ export async function processTrendProfitLockTick(): Promise<void> {
         state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
       if (hitTarget || hitStop) {
         const exitSide = state.side === "LONG" ? "sell" : "buy";
-        const exitQty = Math.max(1, Math.floor(Math.abs(state.qty)));
+        const exitQtyEstimated = estimateStepLiveQtyForExit({
+          stateQty: state.qty,
+          d2OpenQtyTracked,
+          d2NetQtyAbs,
+        });
+        const exitQty = Math.max(1, exitQtyEstimated);
         const exitCorrelationId = `tpl_d2_exit_step_${state.step}_${run.runId}_${Date.now()}`;
         let exitDispatch: StrategySignalIntakeResponse;
         try {
@@ -1254,6 +1282,10 @@ export async function processTrendProfitLockTick(): Promise<void> {
           stoplossPrice: state.stoplossPrice,
           hitTarget,
           hitStop,
+          d2NetQtyAbs,
+          d2OpenQtyTracked,
+          stateQtyConfigured: state.qty,
+          exitQtyEstimated,
           exitQty,
           correlationId: exitCorrelationId,
           dispatchOk: exitDispatch.ok,
@@ -1382,7 +1414,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         });
       }
       triggered.delete(state.step);
-      const shouldLockAfterVenueExit = state.closeReason === "stoploss" || state.closeReason === "unknown";
+      const shouldLockAfterVenueExit = state.closeReason === "stoploss";
       if (shouldLockAfterVenueExit) {
         state.slHitLock = true;
         state.rearmTriggerPrice = state.triggerPrice;
@@ -1407,6 +1439,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           symbol,
           step: state.step,
           closeReason: state.closeReason,
+          source: "venue_automated_exit_non_stoploss",
         });
       }
     }
@@ -1628,6 +1661,31 @@ export async function processTrendProfitLockTick(): Promise<void> {
         continue;
       }
       const d2Side = oppositeSide(d1Side);
+      const requiredLinkedStep = parseLinkedStepFromTargetType(step.targetLinkType);
+      if (requiredLinkedStep != null) {
+        const liveLinked = d2States[String(requiredLinkedStep)];
+        const linkedFromLive =
+          !!liveLinked &&
+          Number.isFinite(liveLinked.entryMarkPrice) &&
+          liveLinked.entryMarkPrice > 0;
+        const linkedFromHistory =
+          Number.isFinite(d2StepLastEntries[String(requiredLinkedStep)]) &&
+          Number(d2StepLastEntries[String(requiredLinkedStep)]) > 0;
+        if (!linkedFromLive && !linkedFromHistory) {
+          tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
+            event: "tpl_d2_dispatch_blocked_debug",
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            step: step.step,
+            blockedReason: "missing_linked_step_entry",
+            targetLinkType: step.targetLinkType,
+            requiredLinkedStep,
+          });
+          continue;
+        }
+      }
       const linkedTarget = resolveLinkedTargetPrice({
         d1EntryPrice: entryPx,
         markPrice: mark,
