@@ -100,6 +100,12 @@ const trendProfitLockRuntimeSchema = z.object({
         stopLossOrderExternalId: z.string().optional(),
         stopLossOrderClientId: z.string().optional(),
         stopLossPlacedAt: z.string().optional(),
+        /** SL loop guard: block same-step immediate reload after SL exits. */
+        slHitLock: z.boolean().optional(),
+        /** Price level that must be revisited after moving away before reload is allowed. */
+        rearmTriggerPrice: z.number().finite().optional(),
+        /** Set once mark moves significantly away from trigger in opposite direction. */
+        rearmSeenAway: z.boolean().optional(),
       }),
     )
     .optional(),

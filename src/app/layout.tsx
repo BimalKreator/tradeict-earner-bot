@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Sans, Outfit } from "next/font/google";
 
 import "./globals.css";
@@ -24,6 +24,11 @@ export const metadata: Metadata = {
   },
   description:
     "Multi-user trading bot platform for Delta Exchange India — strategies, billing, and revenue sharing.",
+  manifest: "/manifest.json",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#111827",
 };
 
 export default function RootLayout({

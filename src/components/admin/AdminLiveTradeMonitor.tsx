@@ -302,8 +302,111 @@ export function AdminLiveTradeMonitor({
       </div>
 
       {rows.length > 0 ? (
-        <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
-          <table className="min-w-[1220px] w-full text-left text-xs text-slate-200">
+        <>
+          <div className="space-y-2 md:hidden">
+            {rows.map((row) => (
+              <div
+                key={`mobile-${row.key}`}
+                className="rounded-xl border border-white/[0.08] bg-black/25 px-3 py-3 text-xs text-slate-200"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-white/[0.08] pb-2">
+                  <div>
+                    <p className="font-semibold text-[var(--text-primary)]">
+                      {accountLabel(row)} · {row.symbol}
+                    </p>
+                    <p className="text-[10px] text-slate-400">{row.strategyName}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="capitalize">{sideFromNetQty(row.side, row.netQty)}</p>
+                    <p className="tabular-nums text-slate-300">
+                      {qtyDisplay(row.displayNetQty, row.qtyPctOfCapital)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                  <p className="text-slate-400">Entry</p>
+                  <p className="text-right tabular-nums text-slate-300">
+                    {row.displayAvgEntryPrice != null ? row.displayAvgEntryPrice.toFixed(2) : "—"}
+                  </p>
+                  <p className="text-slate-400">Current</p>
+                  <p className="text-right tabular-nums text-slate-300">
+                    {row.markPrice != null ? row.markPrice.toFixed(2) : "—"}
+                  </p>
+                  <p className="text-slate-400">Target</p>
+                  <p className="text-right tabular-nums text-slate-300">{formatExitPx(row.targetPrice)}</p>
+                  <p className="text-slate-400">Stop loss</p>
+                  <p className="text-right tabular-nums text-slate-300">{formatExitPx(row.stopLossPrice)}</p>
+                </div>
+
+                <div className="mt-3 flex items-center justify-between border-t border-white/[0.08] pt-2">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500">Live PnL</p>
+                    <p
+                      className={`tabular-nums text-sm font-semibold ${row.unrealizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100/90"}`}
+                    >
+                      {signedUsdText(row.unrealizedPnlUsd)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] uppercase tracking-wide text-slate-500">Realized</p>
+                    <p
+                      className={`tabular-nums text-[11px] font-medium ${row.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100/90"}`}
+                    >
+                      {signedUsdText(row.realizedPnlUsd)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <p className="line-clamp-2 text-[10px] leading-snug text-slate-500">
+                    {row.participatingUsers}
+                  </p>
+                  {(row.mode === "virtual" && row.virtualRunId) || (row.mode === "real" && row.runId) ? (
+                    <button
+                      type="button"
+                      disabled={closingKey === row.key}
+                      onClick={() => {
+                        const runId = row.mode === "virtual" ? row.virtualRunId : row.runId;
+                        if (!runId) return;
+                        setClosingKey(row.key);
+                        void closeRunAndRefresh({
+                          runId,
+                          mode: row.mode,
+                          refresh: pull,
+                        })
+                          .then((result) => {
+                            if (!result.requestId) return;
+                            setCloseToast({
+                              requestId: result.requestId,
+                              status: row.mode === "real" ? "pending" : "success",
+                              message:
+                                row.mode === "real"
+                                  ? "Close requested. Waiting for worker confirmation..."
+                                  : "Virtual close completed.",
+                            });
+                            if (row.mode === "real") {
+                              void pollManualCloseStatus(result.requestId);
+                            }
+                          })
+                          .catch((e) => {
+                            const msg = e instanceof Error ? e.message : String(e);
+                            setError(msg);
+                          })
+                          .finally(() => setClosingKey(null));
+                      }}
+                      className="rounded-md border border-red-500/60 bg-red-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-200 hover:bg-red-500/25 disabled:opacity-60"
+                    >
+                      {closingKey === row.key ? "Closing..." : "Close Position"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto rounded-xl border border-white/[0.06] md:block">
+            <table className="min-w-[1220px] w-full text-left text-xs text-slate-200">
             <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-3 py-2">Strategy</th>
@@ -411,7 +514,8 @@ export function AdminLiveTradeMonitor({
               ))}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       ) : statusRows.length > 0 ? (
         <div className="space-y-2">
           <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
