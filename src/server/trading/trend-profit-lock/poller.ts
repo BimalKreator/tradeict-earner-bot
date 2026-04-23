@@ -1255,20 +1255,20 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const secondaryAdapter = run.secondaryExchangeConnectionId
       ? await resolveRunExchangeAdapter(run.secondaryExchangeConnectionId)
       : { ok: false as const, error: "missing_secondary_exchange" };
-    const d2OpenQtyTracked = Object.values(d2States)
-      .filter((s) => s.status === "open")
-      .reduce((sum, s) => sum + s.qty, 0);
     for (const state of Object.values(d2States)) {
-      if (state.status !== "open") continue;
+      if (state.status !== "open" && state.status !== "submitting") continue;
+      const d2OpenQtyTrackedCurrent = Object.values(d2States)
+        .filter((s) => s.status === "open" || s.status === "submitting")
+        .reduce((sum, s) => sum + s.qty, 0);
       const hitTarget =
         state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
       const hitStop =
         state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
-      if (hitTarget || hitStop) {
+      if (state.status === "open" && (hitTarget || hitStop)) {
         const exitSide = state.side === "LONG" ? "sell" : "buy";
         const exitQtyEstimated = estimateStepLiveQtyForExit({
           stateQty: state.qty,
-          d2OpenQtyTracked,
+          d2OpenQtyTracked: d2OpenQtyTrackedCurrent,
           d2NetQtyAbs,
         });
         const exitQty = Math.max(1, exitQtyEstimated);
@@ -1311,7 +1311,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           hitTarget,
           hitStop,
           d2NetQtyAbs,
-          d2OpenQtyTracked,
+          d2OpenQtyTracked: d2OpenQtyTrackedCurrent,
           stateQtyConfigured: state.qty,
           exitQtyEstimated,
           exitQty,
@@ -1321,6 +1321,10 @@ export async function processTrendProfitLockTick(): Promise<void> {
           dispatchError: exitDispatch.ok ? null : exitDispatch.error,
         });
         if (exitDispatch.ok && exitLiveJobs > 0) {
+          // Do not mark step closed on enqueue. Wait for exchange-sync confirmation.
+          state.status = "submitting";
+          state.closeReason = hitTarget ? "target" : "stoploss";
+          d2States[String(state.step)] = state;
           if (secondaryAdapter.ok && secondaryAdapter.adapter.cancelOrdersByPriceMatch) {
             const surgical = await secondaryAdapter.adapter.cancelOrdersByPriceMatch({
               symbol,
@@ -1344,53 +1348,19 @@ export async function processTrendProfitLockTick(): Promise<void> {
               raw: surgical.raw ?? null,
             });
           }
-          state.status = "closed";
-          state.closeReason = hitTarget ? "target" : "stoploss";
-          state.closedAt = new Date().toISOString();
-          const stepReason = hitTarget ? "d2_step_target_hit" : "d2_step_stoploss_hit";
-          logTplTradeExited({
-            reason: stepReason,
+          tradingLog("info", "tpl_d2_exit_enqueued_waiting_sync", {
             runId: run.runId,
-            userId: run.userId,
             strategyId: run.strategyId,
+            userId: run.userId,
             symbol,
-            leg: `d2_step_${state.step}`,
-            extra: { step: state.step, closeReason: state.closeReason },
+            step: state.step,
+            reason: state.closeReason,
+            correlationId: exitCorrelationId,
           });
-          await persistTplTradeExitUiHint(run.runId, {
-            reason: stepReason,
-            at: state.closedAt,
-            leg: `d2_step_${state.step}`,
-          });
-          triggered.delete(state.step);
-          if (state.closeReason === "stoploss") {
-            state.slHitLock = true;
-            state.rearmTriggerPrice = state.triggerPrice;
-            state.rearmSeenAway = false;
-            d2States[String(state.step)] = state;
-            tradingLog("warn", "tpl_d2_step_sl_lock_engaged", {
-              runId: run.runId,
-              strategyId: run.strategyId,
-              userId: run.userId,
-              symbol,
-              step: state.step,
-              triggerPrice: state.triggerPrice,
-            });
-          } else {
-            delete d2States[String(state.step)];
-            tradingLog("info", "tpl_d2_step_reentry_reset_ready", {
-              runId: run.runId,
-              strategyId: run.strategyId,
-              userId: run.userId,
-              symbol,
-              step: state.step,
-              closeReason: state.closeReason,
-            });
-          }
           continue;
         }
       }
-      const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTracked - state.qty);
+      const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTrackedCurrent - state.qty);
       const stepLooksClosedOnExchange = d2NetQtyAbs <= expectedOpenWithoutStep + 1e-8;
       if (!stepLooksClosedOnExchange) continue;
       const hitTargetOnSync =
@@ -1695,31 +1665,6 @@ export async function processTrendProfitLockTick(): Promise<void> {
         continue;
       }
       const d2Side = oppositeSide(d1Side);
-      const requiredLinkedStep = parseLinkedStepFromTargetType(step.targetLinkType);
-      if (requiredLinkedStep != null) {
-        const liveLinked = d2States[String(requiredLinkedStep)];
-        const linkedFromLive =
-          !!liveLinked &&
-          Number.isFinite(liveLinked.entryMarkPrice) &&
-          liveLinked.entryMarkPrice > 0;
-        const linkedFromHistory =
-          Number.isFinite(d2StepLastEntries[String(requiredLinkedStep)]) &&
-          Number(d2StepLastEntries[String(requiredLinkedStep)]) > 0;
-        if (!linkedFromLive && !linkedFromHistory) {
-          tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
-            event: "tpl_d2_dispatch_blocked_debug",
-            runId: run.runId,
-            strategyId: run.strategyId,
-            userId: run.userId,
-            symbol,
-            step: step.step,
-            blockedReason: "missing_linked_step_entry",
-            targetLinkType: step.targetLinkType,
-            requiredLinkedStep,
-          });
-          continue;
-        }
-      }
       const linkedTarget = resolveLinkedTargetPrice({
         d1EntryPrice: entryPx,
         markPrice: mark,
