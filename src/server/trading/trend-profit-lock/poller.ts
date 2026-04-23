@@ -413,28 +413,38 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const lookbackSec = computeChartLookbackSeconds(resSec, TA_CHART_TARGET_CLOSED_BARS);
     await ensureHedgeScalpingLiveFeed({ baseUrl: DELTA_BASE_URL, symbol, resolution, lookbackSec });
     const snapshot = getHedgeScalpingLiveSnapshot({ symbol, resolution });
-    if (!snapshot || snapshot.candles.length < 40) continue;
+    if (!snapshot) continue;
+    const hasPendingMockFlip =
+      runtime.mockNextFlipDirection === "UP" || runtime.mockNextFlipDirection === "DOWN";
+    if (snapshot.candles.length < 40 && !hasPendingMockFlip) continue;
 
     /**
      * HalfTrend must not read the feed's tail bar: it is still updating (repaint). Match TradingView by
      * computing on all bars except the last snapshot bucket, then compare latest vs second-latest closed HT.
      */
     const seriesAll = mapSnapshotCandlesToHalfTrendSeries(snapshot.candles);
-    if (seriesAll.length < 31) continue;
+    if (seriesAll.length < 31 && !hasPendingMockFlip) continue;
     const closedCandles: HalfTrendCandle[] = seriesAll.slice(0, -1);
-    if (closedCandles.length < 30) continue;
+    if (closedCandles.length < 30 && !hasPendingMockFlip) continue;
 
     const amp = cfg.halftrendAmplitude;
-    const htLatestClosed = calculateHalfTrendSignal(closedCandles, amp);
+    const htLatestClosed =
+      closedCandles.length >= 1 ? calculateHalfTrendSignal(closedCandles, amp) : null;
     const htPreviousClosed =
       closedCandles.length >= 2
         ? calculateHalfTrendSignal(closedCandles.slice(0, -1), amp)
         : null;
 
-    const latestClosedBarTime = closedCandles[closedCandles.length - 1]!.time;
+    const latestClosedBarTime =
+      closedCandles.length > 0
+        ? closedCandles[closedCandles.length - 1]!.time
+        : Math.floor(Date.now() / Math.max(1, resSec)) * Math.max(1, resSec);
     const halfTrendFreshFlipOnLatestClosed =
-      htPreviousClosed != null && htLatestClosed.trend !== htPreviousClosed.trend;
-    const htLatestClosedTrend = halfTrendTrendToUpDown(htLatestClosed.trend);
+      htPreviousClosed != null &&
+      htLatestClosed != null &&
+      htLatestClosed.trend !== htPreviousClosed.trend;
+    const htLatestClosedTrend: "UP" | "DOWN" =
+      htLatestClosed != null ? halfTrendTrendToUpDown(htLatestClosed.trend) : "UP";
     let isFlip = halfTrendFreshFlipOnLatestClosed;
     let flipDirection: "UP" | "DOWN" = htLatestClosedTrend;
     let isForcedMockFlip = false;
@@ -483,7 +493,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
       }
     }
 
-    if (htPreviousClosed != null) {
+    if (htPreviousClosed != null && htLatestClosed != null) {
       const syncKey = tplHalftrendSyncKey(run.runId, symbol, resolution);
       const prev = tplHalftrendSyncState.get(syncKey) ?? {
         lastLoggedClosedTime: null,
@@ -769,7 +779,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           lastFlipCandleTime: runtime.lastFlipCandleTime ?? null,
           d1EntrySide,
           lastCompletedD1FlipDirection: runtime.lastCompletedD1FlipDirection ?? null,
-          halftrendTrendLatestClosed: htLatestClosed.trend,
+          halftrendTrendLatestClosed: htLatestClosed?.trend ?? null,
           halftrendTrendPreviousClosed: htPreviousClosed?.trend ?? null,
           isForcedMockFlip,
           prospectiveD1TargetPx,

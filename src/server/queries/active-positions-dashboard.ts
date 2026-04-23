@@ -33,6 +33,14 @@ import {
 
 const QTY_EPS = 1e-8;
 
+/** Prefer `bot_positions.average_entry_price` (fills-based) for live PnL when set. */
+function livePositionAvgOverride(raw: string | null | undefined): number | undefined {
+  if (raw == null) return undefined;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
 export type ActivePositionLeg = {
   key: string;
   mode: "virtual" | "real";
@@ -1234,6 +1242,7 @@ export async function getUserRealActivePositionGroups(
       exchangeConnectionId: botPositions.exchangeConnectionId,
       symbol: botPositions.symbol,
       netQty: botPositions.netQuantity,
+      positionAvgEntry: botPositions.averageEntryPrice,
       runId: userStrategyRuns.id,
       primaryEx: userStrategyRuns.primaryExchangeConnectionId,
       secondaryEx: userStrategyRuns.secondaryExchangeConnectionId,
@@ -1287,6 +1296,7 @@ export async function getUserRealActivePositionGroups(
     leverage: number;
     runSettingsJson: unknown;
     positionNetQty: number;
+    positionAvgForOverride: number | undefined;
   };
 
   const contexts: RealCtx[] = realRows.map((row) => ({
@@ -1304,6 +1314,7 @@ export async function getUserRealActivePositionGroups(
     leverage: Math.max(1, Number(row.leverage ?? "1")),
     runSettingsJson: row.runSettingsJson,
     positionNetQty: Number(row.netQty ?? "0"),
+    positionAvgForOverride: livePositionAvgOverride(row.positionAvgEntry ?? undefined),
   }));
 
   const markBySymbol = await fetchMarksForSymbols(contexts.map((c) => c.symbol));
@@ -1353,6 +1364,7 @@ export async function getUserRealActivePositionGroups(
       leverage: r.leverage,
       symbolHint: r.symbol,
       overrideOpenNetQty: r.positionNetQty,
+      overrideAvgEntryPrice: r.positionAvgForOverride,
       qtyPctOfCapital:
         isHs && r.hedgeSettings
           ? account === "D2"
@@ -1536,6 +1548,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       exchangeConnectionId: botPositions.exchangeConnectionId,
       symbol: botPositions.symbol,
       netQty: botPositions.netQuantity,
+      positionAvgEntry: botPositions.averageEntryPrice,
       runId: userStrategyRuns.id,
       primaryEx: userStrategyRuns.primaryExchangeConnectionId,
       secondaryEx: userStrategyRuns.secondaryExchangeConnectionId,
@@ -1578,6 +1591,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     leverage: number;
     runSettingsJson: unknown;
     positionNetQty: number;
+    positionAvgForOverride: number | undefined;
   };
   const rctx: RCtx[] = [];
 
@@ -1598,6 +1612,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       leverage: Math.max(1, Number(row.leverage ?? "1")),
       runSettingsJson: row.runSettingsJson,
       positionNetQty: Number(row.netQty ?? "0"),
+      positionAvgForOverride: livePositionAvgOverride(row.positionAvgEntry ?? undefined),
     });
   }
 
@@ -1704,6 +1719,7 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
       leverage: r.leverage,
       symbolHint: r.symbol,
       overrideOpenNetQty: r.positionNetQty,
+      overrideAvgEntryPrice: r.positionAvgForOverride,
       qtyPctOfCapital:
         isHs && r.hedgeSettings
           ? account === "D2"

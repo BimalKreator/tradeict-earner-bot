@@ -120,16 +120,18 @@ export function AdminLiveTradeMonitor({
   }
 
   async function triggerMockFlip(params: {
-    runId: string;
+    runId?: string;
     direction: "UP" | "DOWN";
   }): Promise<void> {
+    const payload: { direction: "UP" | "DOWN"; runId?: string } = {
+      direction: params.direction,
+    };
+    const trimmedRunId = params.runId?.trim();
+    if (trimmedRunId) payload.runId = trimmedRunId;
     const res = await fetch("/api/trading/mock-tpl-flip", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        runId: params.runId,
-        direction: params.direction,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     if (!res.ok) {
@@ -251,21 +253,13 @@ export function AdminLiveTradeMonitor({
                 ))}
               </select>
             ) : null}
-            <input
-              type="text"
-              value={selectedMockRunId}
-              onChange={(e) => setSelectedMockRunId(e.target.value)}
-              placeholder="Paste TPL runId"
-              className="min-w-[210px] rounded-md border border-white/15 bg-black/50 px-2 py-1 text-[10px] text-slate-200 placeholder:text-slate-500"
-            />
             <button
               type="button"
-              disabled={!selectedMockRunId || mockDirectionPending !== null}
+              disabled={mockDirectionPending !== null}
               onClick={() => {
-                if (!selectedMockRunId) return;
                 setMockDirectionPending("UP");
                 void triggerMockFlip({
-                  runId: selectedMockRunId.trim(),
+                  runId: selectedMockRunId || undefined,
                   direction: "UP",
                 })
                   .then(() => showAppToast("Mock Flip UP triggered!", "success"))
@@ -281,12 +275,11 @@ export function AdminLiveTradeMonitor({
             </button>
             <button
               type="button"
-              disabled={!selectedMockRunId || mockDirectionPending !== null}
+              disabled={mockDirectionPending !== null}
               onClick={() => {
-                if (!selectedMockRunId) return;
                 setMockDirectionPending("DOWN");
                 void triggerMockFlip({
-                  runId: selectedMockRunId.trim(),
+                  runId: selectedMockRunId || undefined,
                   direction: "DOWN",
                 })
                   .then(() => showAppToast("Mock Flip DOWN triggered!", "success"))

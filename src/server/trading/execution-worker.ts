@@ -237,6 +237,7 @@ async function runPostSubmitSync(
           exchangeConnectionId: eligRow.exchangeConnectionId,
           symbol: p.symbol,
           deltaQty: signed,
+          fillPrice: sync.fillPrice != null ? String(sync.fillPrice) : null,
         });
         if (p.signalAction === "exit") {
           await maybeLogAndPersistTplExitFromFilledExitOrder({
@@ -260,6 +261,7 @@ async function runPostSubmitSync(
           exchangeConnectionId: eligRow.exchangeConnectionId,
           symbol: p.symbol,
           deltaQty: signed,
+          fillPrice: sync.fillPrice != null ? String(sync.fillPrice) : null,
         });
         if (p.signalAction === "exit") {
           await maybeLogAndPersistTplExitFromFilledExitOrder({

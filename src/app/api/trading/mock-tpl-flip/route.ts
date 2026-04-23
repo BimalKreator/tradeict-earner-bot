@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { z } from "zod";
 
@@ -7,12 +7,13 @@ import { parseUserStrategyRunSettingsJson } from "@/lib/user-strategy-run-settin
 import { verifySessionToken } from "@/lib/session";
 import { adminActiveRecordExists } from "@/server/auth/verify-admin-record";
 import { db } from "@/server/db";
-import { userStrategyRuns, userStrategySubscriptions } from "@/server/db/schema";
+import { strategies, userStrategyRuns, userStrategySubscriptions } from "@/server/db/schema";
+import { tradingLog } from "@/server/trading/trading-log";
 
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
-  runId: z.string().uuid(),
+  runId: z.string().uuid().optional(),
   direction: z.enum(["UP", "DOWN"]),
 });
 
@@ -43,39 +44,109 @@ export async function POST(req: Request) {
     );
   }
 
-  const { runId, direction } = parsed.data;
+  const { runId: requestedRunId, direction } = parsed.data;
 
+  const runSelect = {
+    runId: userStrategyRuns.id,
+    runSettingsJson: userStrategyRuns.runSettingsJson,
+  };
+  const isTplSlug = sql`lower(${strategies.slug}) like ${"%trend-profit-lock-scalping%"}`;
   const [run] =
     session.role === "admin"
-      ? await db
-          .select({
-            runId: userStrategyRuns.id,
-            runSettingsJson: userStrategyRuns.runSettingsJson,
-          })
-          .from(userStrategyRuns)
-          .where(eq(userStrategyRuns.id, runId))
-          .limit(1)
-      : await db
-          .select({
-            runId: userStrategyRuns.id,
-            runSettingsJson: userStrategyRuns.runSettingsJson,
-          })
-          .from(userStrategyRuns)
-          .innerJoin(
-            userStrategySubscriptions,
-            eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
-          )
-          .where(
-            and(
-              eq(userStrategyRuns.id, runId),
-              eq(userStrategySubscriptions.userId, session.userId),
-            ),
-          )
-          .limit(1);
+      ? requestedRunId
+        ? await db
+            .select(runSelect)
+            .from(userStrategyRuns)
+            .innerJoin(
+              userStrategySubscriptions,
+              eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+            )
+            .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
+            .where(
+              and(
+                eq(userStrategyRuns.id, requestedRunId),
+                eq(userStrategyRuns.status, "active"),
+                eq(userStrategySubscriptions.status, "active"),
+                isNull(userStrategySubscriptions.deletedAt),
+                isNull(strategies.deletedAt),
+                isTplSlug,
+              ),
+            )
+            .limit(1)
+        : await db
+            .select(runSelect)
+            .from(userStrategyRuns)
+            .innerJoin(
+              userStrategySubscriptions,
+              eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+            )
+            .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
+            .where(
+              and(
+                eq(userStrategyRuns.status, "active"),
+                eq(userStrategySubscriptions.status, "active"),
+                isNull(userStrategySubscriptions.deletedAt),
+                isNull(strategies.deletedAt),
+                isTplSlug,
+              ),
+            )
+            .orderBy(desc(userStrategyRuns.updatedAt))
+            .limit(1)
+      : requestedRunId
+        ? await db
+            .select(runSelect)
+            .from(userStrategyRuns)
+            .innerJoin(
+              userStrategySubscriptions,
+              eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+            )
+            .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
+            .where(
+              and(
+                eq(userStrategyRuns.id, requestedRunId),
+                eq(userStrategySubscriptions.userId, session.userId),
+                eq(userStrategyRuns.status, "active"),
+                eq(userStrategySubscriptions.status, "active"),
+                isNull(userStrategySubscriptions.deletedAt),
+                isNull(strategies.deletedAt),
+                isTplSlug,
+              ),
+            )
+            .limit(1)
+        : await db
+            .select(runSelect)
+            .from(userStrategyRuns)
+            .innerJoin(
+              userStrategySubscriptions,
+              eq(userStrategyRuns.subscriptionId, userStrategySubscriptions.id),
+            )
+            .innerJoin(strategies, eq(userStrategySubscriptions.strategyId, strategies.id))
+            .where(
+              and(
+                eq(userStrategySubscriptions.userId, session.userId),
+                eq(userStrategyRuns.status, "active"),
+                eq(userStrategySubscriptions.status, "active"),
+                isNull(userStrategySubscriptions.deletedAt),
+                isNull(strategies.deletedAt),
+                isTplSlug,
+              ),
+            )
+            .orderBy(desc(userStrategyRuns.updatedAt))
+            .limit(1);
 
   if (!run) {
-    return Response.json({ error: "run_not_found_or_forbidden" }, { status: 404 });
+    return Response.json(
+      { error: "no_active_tpl_run_found_for_mock_flip" },
+      { status: 404 },
+    );
   }
+  tradingLog("info", "tpl_mock_api_received", {
+    requestedRunId: requestedRunId ?? null,
+    resolvedRunId: run.runId,
+    direction,
+    role: session.role,
+    userId: session.userId,
+  });
 
   const parsedSettings = parseUserStrategyRunSettingsJson(run.runSettingsJson);
   const nextRunSettings = {
@@ -94,5 +165,5 @@ export async function POST(req: Request) {
     })
     .where(eq(userStrategyRuns.id, run.runId));
 
-  return Response.json({ ok: true, runId, direction });
+  return Response.json({ ok: true, runId: run.runId, direction });
 }
