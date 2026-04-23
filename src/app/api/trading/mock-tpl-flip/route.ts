@@ -33,6 +33,21 @@ function buildRunSettingsWithMockDirection(
   } as Record<string, unknown>;
 }
 
+function runHasOpenD1(existingRunSettingsJson: unknown): boolean {
+  const parsed = parseUserStrategyRunSettingsJson(existingRunSettingsJson);
+  const runtime = parsed.trendProfitLockRuntime;
+  if (!runtime || typeof runtime !== "object") return false;
+
+  const runtimeObj = runtime as Record<string, unknown>;
+  if (runtimeObj.hasOpenD1 === true) return true;
+
+  const d1Raw = runtimeObj.d1;
+  if (!d1Raw || typeof d1Raw !== "object") return false;
+  const d1 = d1Raw as Record<string, unknown>;
+  // If runtime still carries a live D1 leg payload, treat it as open.
+  return d1.side === "LONG" || d1.side === "SHORT";
+}
+
 function activeTplRunsWhere(exclusiveUserId: string | undefined) {
   const base = and(
     eq(userStrategyRuns.status, "active"),
@@ -167,9 +182,40 @@ export async function POST(req: Request) {
     );
   }
 
+  const eligibleRuns: typeof runs = [];
+  const skippedRuns: typeof runs = [];
+  for (const r of runs) {
+    if (runHasOpenD1(r.runSettingsJson)) skippedRuns.push(r);
+    else eligibleRuns.push(r);
+  }
+
+  if (eligibleRuns.length === 0) {
+    const skippedCount = skippedRuns.length;
+    const message = `No mock update applied: skipped ${skippedCount} active run${skippedCount === 1 ? "" : "s"} with existing open positions.`;
+    tradingLog("info", "tpl_mock_api_broadcast_skipped_open_d1", {
+      requestedRunId: null,
+      skippedRunIds: skippedRuns.map((r) => r.runId),
+      skippedCount,
+      updatedCount: 0,
+      direction,
+      role: session.role,
+      userId: session.userId,
+    });
+    return Response.json({
+      ok: true,
+      runId: null,
+      runIds: [],
+      updatedCount: 0,
+      skippedCount,
+      skippedRunIds: skippedRuns.map((r) => r.runId),
+      direction,
+      message,
+    });
+  }
+
   const now = new Date();
   await db.transaction(async (tx) => {
-    for (const r of runs) {
+    for (const r of eligibleRuns) {
       const nextRunSettings = buildRunSettingsWithMockDirection(r.runSettingsJson, direction);
       await tx
         .update(userStrategyRuns)
@@ -181,14 +227,21 @@ export async function POST(req: Request) {
     }
   });
 
-  const runIds = runs.map((r) => r.runId);
+  const runIds = eligibleRuns.map((r) => r.runId);
   const updatedCount = runIds.length;
-  const message = `Mock signal broadcast to ${updatedCount} active run${updatedCount === 1 ? "" : "s"}.`;
+  const skippedCount = skippedRuns.length;
+  const skippedRunIds = skippedRuns.map((r) => r.runId);
+  const message =
+    skippedCount > 0
+      ? `Mock signal broadcasted to ${updatedCount} active run${updatedCount === 1 ? "" : "s"} (skipped ${skippedCount} run${skippedCount === 1 ? "" : "s"} with existing open positions).`
+      : `Mock signal broadcasted to ${updatedCount} active run${updatedCount === 1 ? "" : "s"}.`;
 
   tradingLog("info", "tpl_mock_api_broadcast", {
     requestedRunId: null,
     runIds,
     updatedCount,
+    skippedCount,
+    skippedRunIds,
     direction,
     role: session.role,
     userId: session.userId,
@@ -199,6 +252,8 @@ export async function POST(req: Request) {
     runId: runIds[0] ?? null,
     runIds,
     updatedCount,
+    skippedCount,
+    skippedRunIds,
     direction,
     message,
   });
