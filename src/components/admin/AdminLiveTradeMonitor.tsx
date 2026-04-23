@@ -219,10 +219,14 @@ export function AdminLiveTradeMonitor({
     );
 
   useEffect(() => {
-    if (tplLiveRuns.length === 0) return;
+    if (tplLiveRuns.length === 0) {
+      if (selectedMockRunId !== "") setSelectedMockRunId("");
+      return;
+    }
+    if (selectedMockRunId === "") return;
     const stillPresent = tplLiveRuns.some((r) => r.runId === selectedMockRunId);
     if (!stillPresent) {
-      setSelectedMockRunId(tplLiveRuns[0]!.runId);
+      setSelectedMockRunId("");
     }
   }, [tplLiveRuns, selectedMockRunId]);
 
@@ -246,6 +250,9 @@ export function AdminLiveTradeMonitor({
                 onChange={(e) => setSelectedMockRunId(e.target.value)}
                 className="rounded-md border border-white/15 bg-black/50 px-2 py-1 text-[10px] text-slate-200"
               >
+                <option value="">
+                  Broadcast to All (Auto-Target)
+                </option>
                 {tplLiveRuns.map((r) => (
                   <option key={r.runId} value={r.runId}>
                     {r.strategyName} · {r.runId.slice(0, 8)}
