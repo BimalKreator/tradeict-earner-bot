@@ -78,6 +78,8 @@ const trendProfitLockRuntimeSchema = z.object({
     })
     .optional(),
   d2TriggeredSteps: z.array(z.number().int()).optional(),
+  /** Keeps last known entry mark per D2 step for target-link resolution across step closes. */
+  d2StepLastEntries: z.record(z.string(), z.number().finite()).optional(),
   d2StepsState: z
     .record(
       z.string(),

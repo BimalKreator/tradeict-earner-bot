@@ -116,6 +116,8 @@ type TplRuntimeState = {
     takeProfitPlacedAt?: string;
   };
   d2TriggeredSteps?: number[];
+  /** Last known entry mark per D2 step (retained after close for link targets). */
+  d2StepLastEntries?: Record<string, number>;
   d2StepsState?: Record<
     string,
     {
@@ -235,6 +237,7 @@ function resolveLinkedTargetPrice(params: {
   markPrice: number;
   targetLinkType: "D1_ENTRY" | "STEP_1_ENTRY" | "STEP_2_ENTRY" | "STEP_3_ENTRY" | "STEP_4_ENTRY";
   d2States: TplRuntimeState["d2StepsState"];
+  d2StepLastEntries?: Record<string, number>;
 }): { price: number; linkedStep: number | null; fallbackUsed: boolean } {
   const d1Ok = Number.isFinite(params.d1EntryPrice) && params.d1EntryPrice > 0;
   const markOk = Number.isFinite(params.markPrice) && params.markPrice > 0;
@@ -250,6 +253,10 @@ function resolveLinkedTargetPrice(params: {
   const linked = params.d2States?.[String(stepNum)];
   if (linked && Number.isFinite(linked.entryMarkPrice) && linked.entryMarkPrice > 0) {
     return { price: linked.entryMarkPrice, linkedStep: stepNum, fallbackUsed: false };
+  }
+  const lastEntry = params.d2StepLastEntries?.[String(stepNum)];
+  if (Number.isFinite(lastEntry) && Number(lastEntry) > 0) {
+    return { price: Number(lastEntry), linkedStep: stepNum, fallbackUsed: false };
   }
   return { price: anchor, linkedStep: stepNum, fallbackUsed: true };
 }
@@ -616,6 +623,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         staleD2StateKeys: Object.keys(runtime.d2StepsState ?? {}),
       });
       runtime.d2TriggeredSteps = [];
+      runtime.d2StepLastEntries = {};
       runtime.d2StepsState = {};
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
@@ -744,6 +752,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
       runtime.d1 = undefined;
       runtime.d1BaseQtyInt = undefined;
       runtime.d2TriggeredSteps = [];
+      runtime.d2StepLastEntries = {};
       runtime.d2StepsState = {};
       await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     }
@@ -1005,6 +1014,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
               breakevenTriggerPct: cfg.d1BreakevenTriggerPct,
             };
             runtime.d1BaseQtyInt = Math.max(1, Math.floor(Math.abs(qty)));
+            runtime.d2StepLastEntries = {};
             runtime.lastFlipCandleTime = latestClosedBarTime;
             await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
           } else {
@@ -1189,6 +1199,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     const d2States = runtime.d2StepsState ?? {};
+    const d2StepLastEntries: Record<string, number> = { ...(runtime.d2StepLastEntries ?? {}) };
     const triggered = new Set(runtime.d2TriggeredSteps ?? []);
     const secondaryAdapter = run.secondaryExchangeConnectionId
       ? await resolveRunExchangeAdapter(run.secondaryExchangeConnectionId)
@@ -1622,6 +1633,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         markPrice: mark,
         targetLinkType: step.targetLinkType,
         d2States,
+        d2StepLastEntries,
       });
       if (!Number.isFinite(linkedTarget.price) || !(linkedTarget.price > 0)) {
         tradingLog("warn", "tpl_d2_skipped_invalid_linked_target", {
@@ -1760,6 +1772,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         correlationId,
         status: "open",
       };
+      d2StepLastEntries[String(step.step)] = mark;
       await tryRecordExecutionLogByCorrelation({
         correlationId,
         runId: run.runId,
@@ -1779,6 +1792,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     runtime.d2TriggeredSteps = [...triggered].sort((a, b) => a - b);
+    runtime.d2StepLastEntries = d2StepLastEntries;
     runtime.d2StepsState = d2States;
     await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);
     } catch (e) {
