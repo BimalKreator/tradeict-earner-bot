@@ -246,11 +246,27 @@ function estimateStepLiveQtyForExit(params: {
   return Math.max(0, Math.floor(bounded));
 }
 
+function theoreticalStepEntryPrice(params: {
+  d1EntryPrice: number;
+  d1Side: "LONG" | "SHORT";
+  d1TargetDistance: number;
+  stepTriggerPct: number;
+}): number {
+  const dist = Math.max(0, params.d1TargetDistance) * (Math.max(0, params.stepTriggerPct) / 100);
+  return params.d1Side === "LONG" ? params.d1EntryPrice + dist : params.d1EntryPrice - dist;
+}
+
 function resolveLinkedTargetPrice(params: {
   d1EntryPrice: number;
   /** Used when `d1EntryPrice` is missing/invalid so linked steps never resolve to NaN. */
   markPrice: number;
+  d1Side: "LONG" | "SHORT";
+  d1TargetDistance: number;
   targetLinkType: "D1_ENTRY" | "STEP_1_ENTRY" | "STEP_2_ENTRY" | "STEP_3_ENTRY" | "STEP_4_ENTRY";
+  d2ConfigSteps: {
+    step: number;
+    stepTriggerPct: number;
+  }[];
   d2States: TplRuntimeState["d2StepsState"];
   d2StepLastEntries?: Record<string, number>;
 }): { price: number; linkedStep: number | null; fallbackUsed: boolean } {
@@ -272,6 +288,18 @@ function resolveLinkedTargetPrice(params: {
   const lastEntry = params.d2StepLastEntries?.[String(stepNum)];
   if (Number.isFinite(lastEntry) && Number(lastEntry) > 0) {
     return { price: Number(lastEntry), linkedStep: stepNum, fallbackUsed: false };
+  }
+  const linkedCfg = params.d2ConfigSteps.find((s) => s.step === stepNum);
+  if (linkedCfg && d1Ok) {
+    const theoretical = theoreticalStepEntryPrice({
+      d1EntryPrice: params.d1EntryPrice,
+      d1Side: params.d1Side,
+      d1TargetDistance: params.d1TargetDistance,
+      stepTriggerPct: linkedCfg.stepTriggerPct,
+    });
+    if (Number.isFinite(theoretical) && theoretical > 0) {
+      return { price: theoretical, linkedStep: stepNum, fallbackUsed: true };
+    }
   }
   return { price: anchor, linkedStep: stepNum, fallbackUsed: true };
 }
@@ -1476,6 +1504,12 @@ export async function processTrendProfitLockTick(): Promise<void> {
         d1TargetPct: cfg.d1TargetPct,
       });
     }
+    const highestReachedStep = cfg.d2Steps.reduce((maxStep, stepCfg) => {
+      const stepJourneyDistance = d1TargetDistance * (stepCfg.stepTriggerPct / 100);
+      const triggerPx = d1Side === "LONG" ? entryPx + stepJourneyDistance : entryPx - stepJourneyDistance;
+      const reached = d1Side === "LONG" ? mark >= triggerPx : mark <= triggerPx;
+      return reached ? Math.max(maxStep, stepCfg.step) : maxStep;
+    }, 0);
     for (const step of cfg.d2Steps) {
       const existingState = d2States[String(step.step)];
       const stepJourneyDistance = d1TargetDistance * (step.stepTriggerPct / 100);
@@ -1563,9 +1597,8 @@ export async function processTrendProfitLockTick(): Promise<void> {
         });
         continue;
       }
-      // D2 trigger is % of the D1 target journey, not a flat % move from entry.
-      const reached = d1Side === "LONG" ? mark >= triggerPx : mark <= triggerPx;
-      if (!reached) {
+      // Catch-up dispatch: once market has reached step N, evaluate all steps <= N.
+      if (!(highestReachedStep > 0 && step.step <= highestReachedStep)) {
         tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
           event: "tpl_d2_dispatch_blocked_debug",
           runId: run.runId,
@@ -1578,6 +1611,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
           triggerPrice: triggerPx,
           markPrice: mark,
           d1Side,
+          highestReachedStep,
         });
         continue;
       }
@@ -1689,7 +1723,10 @@ export async function processTrendProfitLockTick(): Promise<void> {
       const linkedTarget = resolveLinkedTargetPrice({
         d1EntryPrice: entryPx,
         markPrice: mark,
+        d1Side,
+        d1TargetDistance,
         targetLinkType: step.targetLinkType,
+        d2ConfigSteps: cfg.d2Steps.map((s) => ({ step: s.step, stepTriggerPct: s.stepTriggerPct })),
         d2States,
         d2StepLastEntries,
       });
@@ -1717,7 +1754,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         continue;
       }
       if (linkedTarget.fallbackUsed) {
-        tradingLog("warn", "tpl_d2_target_link_missing_fallback_to_d1_entry", {
+        tradingLog("warn", "tpl_d2_target_link_missing_used_theoretical_fallback", {
           runId: run.runId,
           strategyId: run.strategyId,
           userId: run.userId,

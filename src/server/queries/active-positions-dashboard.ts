@@ -149,6 +149,8 @@ export type AdminUpcomingEventRow = {
   strategyName: string;
   userLabel: string;
   symbol: string;
+  accountLabel: string;
+  stageLabel: string;
   eventType: "D1_EXIT" | "D2_STEP";
   step: number | null;
   side: "LONG" | "SHORT";
@@ -157,7 +159,9 @@ export type AdminUpcomingEventRow = {
   triggerPrice: number | null;
   targetPrice: number | null;
   stopLossPrice: number | null;
-  status: "completed" | "waiting_entry" | "entry_submitting" | "waiting_exit";
+  entryStatus: "completed" | "waiting" | "submitting";
+  targetStatus: "completed" | "waiting";
+  stopLossStatus: "completed" | "waiting";
 };
 
 function userDisplayName(email: string, name: string | null): string {
@@ -1851,7 +1855,7 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
     if (!isTrendProfitLockScalpingStrategySlug(r.strategySlug)) continue;
     const parsed = parseUserStrategyRunSettingsJson(r.runSettingsJson);
     const runtime = parsed.trendProfitLockRuntime;
-    if (!runtime?.d1 || !r.primaryExchangeConnectionId) continue;
+    if (!r.primaryExchangeConnectionId) continue;
     const cfg = resolveTrendProfitLockConfigForUi({
       strategySettingsJson: r.strategySettingsJson,
       runSettingsTrendProfitLock: parsed.trendProfitLock ?? null,
@@ -1878,17 +1882,19 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
     const entry =
       Number(d1Pos?.avgEntry ?? "0") > 0
         ? Number(d1Pos?.avgEntry ?? "0")
-        : runtime.d1.entryPrice;
+        : (runtime?.d1?.entryPrice ?? 0);
     if (!(entry > 0)) continue;
-    const d1Target = runtime.d1.targetPrice ?? tplTargetPrice(entry, side, cfg.d1TargetPct);
-    const d1Stop = runtime.d1.stoplossPrice ?? tplStoplossPrice(entry, side, cfg.d1StoplossPct);
-    const baseQty = Math.max(1, Math.floor(Math.abs(Number(runtime.d1BaseQtyInt ?? d1Net))));
+    const d1Target = runtime?.d1?.targetPrice ?? tplTargetPrice(entry, side, cfg.d1TargetPct);
+    const d1Stop = runtime?.d1?.stoplossPrice ?? tplStoplossPrice(entry, side, cfg.d1StoplossPct);
+    const baseQty = Math.max(1, Math.floor(Math.abs(Number(runtime?.d1BaseQtyInt ?? d1Net))));
     out.push({
       key: `upcoming:${r.runId}:d1_exit`,
       runId: r.runId,
       strategyName: r.strategyName,
       userLabel: userDisplayName(r.userEmail, r.userName),
       symbol,
+      accountLabel: "D1",
+      stageLabel: `${r.strategyName} · ${userDisplayName(r.userEmail, r.userName)} · Base trade`,
       eventType: "D1_EXIT",
       step: null,
       side,
@@ -1897,11 +1903,13 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
       triggerPrice: null,
       targetPrice: d1Target,
       stopLossPrice: d1Stop,
-      status: "waiting_exit",
+      entryStatus: "completed",
+      targetStatus: "waiting",
+      stopLossStatus: "waiting",
     });
     const d1TargetDistance = Math.abs(d1Target - entry);
-    const d2States = runtime.d2StepsState ?? {};
-    const lastEntries = runtime.d2StepLastEntries ?? {};
+    const d2States = runtime?.d2StepsState ?? {};
+    const lastEntries = runtime?.d2StepLastEntries ?? {};
     for (const stepCfg of cfg.d2Steps) {
       const triggerDist = d1TargetDistance * (Math.max(0, stepCfg.stepTriggerPct) / 100);
       const triggerPrice = side === "LONG" ? entry + triggerDist : entry - triggerDist;
@@ -1912,12 +1920,17 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
         stepCfg.targetLinkType === "D1_ENTRY"
           ? null
           : Number(stepCfg.targetLinkType.replace("STEP_", "").replace("_ENTRY", ""));
+      const linkedCfg = linkStep != null ? cfg.d2Steps.find((s) => s.step === linkStep) : null;
       const linkedEntry =
         linkStep == null
           ? entry
           : Number.isFinite(lastEntries[String(linkStep)])
             ? Number(lastEntries[String(linkStep)])
-            : null;
+            : linkedCfg
+              ? side === "LONG"
+                ? entry + d1TargetDistance * (Math.max(0, linkedCfg.stepTriggerPct) / 100)
+                : entry - d1TargetDistance * (Math.max(0, linkedCfg.stepTriggerPct) / 100)
+              : null;
       const targetPrice = state?.targetPrice ?? (linkedEntry && linkedEntry > 0 ? linkedEntry : null);
       const stopLossPrice =
         state?.stoplossPrice ??
@@ -1927,20 +1940,24 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
           d1TargetDistance,
           stepStoplossPct: stepCfg.stepStoplossPct,
         });
-      const status: AdminUpcomingEventRow["status"] =
+      const entryStatus: AdminUpcomingEventRow["entryStatus"] =
         state?.status === "open"
-          ? "waiting_exit"
+          ? "completed"
           : state?.status === "submitting" || state?.status === "drafting"
-            ? "entry_submitting"
-            : state?.status === "closed"
-              ? "completed"
-              : "waiting_entry";
+            ? "submitting"
+            : "waiting";
+      const targetStatus: AdminUpcomingEventRow["targetStatus"] =
+        state?.status === "open" ? "waiting" : "waiting";
+      const stopLossStatus: AdminUpcomingEventRow["stopLossStatus"] =
+        state?.status === "open" ? "waiting" : "waiting";
       out.push({
         key: `upcoming:${r.runId}:d2:${stepCfg.step}`,
         runId: r.runId,
         strategyName: r.strategyName,
         userLabel: userDisplayName(r.userEmail, r.userName),
         symbol,
+        accountLabel: `D${stepCfg.step + 1}`,
+        stageLabel: `${r.strategyName} · ${userDisplayName(r.userEmail, r.userName)} · Step ${stepCfg.step}`,
         eventType: "D2_STEP",
         step: stepCfg.step,
         side: d2Side,
@@ -1949,7 +1966,9 @@ async function getAdminTplUpcomingEvents(): Promise<AdminUpcomingEventRow[]> {
         triggerPrice,
         targetPrice,
         stopLossPrice,
-        status,
+        entryStatus,
+        targetStatus,
+        stopLossStatus,
       });
     }
   }

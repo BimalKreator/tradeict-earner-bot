@@ -23,6 +23,12 @@ function formatExitPx(v: number | null | undefined): string {
   return v.toFixed(2);
 }
 
+function eventStatusBadge(status: "completed" | "waiting" | "submitting"): string {
+  if (status === "completed") return "text-emerald-200";
+  if (status === "submitting") return "text-sky-200";
+  return "text-amber-200";
+}
+
 function sideFromNetQty(side: "long" | "short", netQty: number): "long" | "short" {
   if (Number.isFinite(netQty) && Math.abs(netQty) > 1e-10) {
     return netQty > 0 ? "long" : "short";
@@ -569,14 +575,14 @@ export function AdminLiveTradeMonitor({
             <table className="min-w-[1180px] w-full text-left text-xs text-slate-200">
               <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-3 py-2">Strategy</th>
-                  <th className="px-3 py-2">Trader</th>
-                  <th className="px-3 py-2">Event</th>
+                  <th className="px-3 py-2">Accounts</th>
+                  <th className="px-3 py-2">Stages</th>
                   <th className="px-3 py-2">Side</th>
-                  <th className="px-3 py-2">Qty</th>
                   <th className="px-3 py-2">Entry</th>
-                  <th className="px-3 py-2">Trigger</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Qty</th>
                   <th className="px-3 py-2">Target</th>
+                  <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Stop loss</th>
                   <th className="px-3 py-2">Status</th>
                 </tr>
@@ -584,18 +590,27 @@ export function AdminLiveTradeMonitor({
               <tbody>
                 {upcomingEvents.map((e) => (
                   <tr key={e.key} className="border-t border-white/[0.05] bg-black/20">
-                    <td className="px-3 py-2">{e.strategyName} · {e.symbol}</td>
-                    <td className="px-3 py-2 text-slate-400">{e.userLabel}</td>
                     <td className="px-3 py-2">
-                      {e.eventType === "D1_EXIT" ? "D1 target/stop watch" : `D2 Step ${e.step}`}
+                      <p>{e.accountLabel}</p>
+                      <p className="text-[10px] text-slate-500">{e.symbol}</p>
                     </td>
+                    <td className="px-3 py-2 text-slate-300">{e.stageLabel}</td>
                     <td className="px-3 py-2">{e.side}</td>
+                    <td className="px-3 py-2 tabular-nums">
+                      {e.eventType === "D2_STEP" ? formatExitPx(e.triggerPrice) : formatExitPx(e.entryPrice)}
+                    </td>
+                    <td className={`px-3 py-2 ${eventStatusBadge(e.entryStatus)}`}>
+                      {e.entryStatus === "submitting" ? "Submitting" : e.entryStatus === "completed" ? "Completed" : "Waiting"}
+                    </td>
                     <td className="px-3 py-2 tabular-nums">{e.quantity}</td>
-                    <td className="px-3 py-2 tabular-nums">{formatExitPx(e.entryPrice)}</td>
-                    <td className="px-3 py-2 tabular-nums">{formatExitPx(e.triggerPrice)}</td>
                     <td className="px-3 py-2 tabular-nums">{formatExitPx(e.targetPrice)}</td>
+                    <td className={`px-3 py-2 ${eventStatusBadge(e.targetStatus)}`}>
+                      {e.targetStatus === "completed" ? "Completed" : "Waiting"}
+                    </td>
                     <td className="px-3 py-2 tabular-nums">{formatExitPx(e.stopLossPrice)}</td>
-                    <td className="px-3 py-2 capitalize text-slate-300">{e.status.replaceAll("_", " ")}</td>
+                    <td className={`px-3 py-2 ${eventStatusBadge(e.stopLossStatus)}`}>
+                      {e.stopLossStatus === "completed" ? "Completed" : "Waiting"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
