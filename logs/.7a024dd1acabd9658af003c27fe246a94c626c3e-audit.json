@@ -1,0 +1,55 @@
+{
+    "keep": {
+        "days": false,
+        "amount": 48
+    },
+    "auditLog": "/root/tradeict-earner-bot/logs/.7a024dd1acabd9658af003c27fe246a94c626c3e-audit.json",
+    "files": [
+        {
+            "date": 1776967647340,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-23-23.log",
+            "hash": "cac80cd71fd40cc9d251e74d6694334389aeaba3a16255411ba09f659ffc6018"
+        },
+        {
+            "date": 1776969178260,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-00.log",
+            "hash": "fbf225912778a3beb1a267eab1bfec68486dc72d910ca72552a19648c7e0bb5f"
+        },
+        {
+            "date": 1776972780591,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-01.log",
+            "hash": "56f31a52859b9556b4757f3f417bf46c2d0461c661afff9fe0c027980c3c6a9f"
+        },
+        {
+            "date": 1776976383282,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-02.log",
+            "hash": "6795acaa7d3c6e84c2583e14db3be7e69d665215a29b0684a2b01d3674b940fd"
+        },
+        {
+            "date": 1776979985759,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-03.log",
+            "hash": "99235ffea9e7472f558d4df6aa16ce95c221849425f384656ce7d51f5c84b9b0"
+        },
+        {
+            "date": 1776983588771,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-04.log",
+            "hash": "6b7b3016bbfeeadb053a7df95d3632caf93630a49ae692c157a8a34735c11156"
+        },
+        {
+            "date": 1776987192501,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-05.log",
+            "hash": "4a8923d352739a5e0054927a46e50af031837873a36cef4698282d284e2ed80c"
+        },
+        {
+            "date": 1776990796321,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-06.log",
+            "hash": "a51765ff0d3993e55f1d9808d444818f4075cec51592ff2f7013b33fb58bf3d9"
+        },
+        {
+            "date": 1776994400099,
+            "name": "/root/tradeict-earner-bot/logs/trading-2026-04-24-07.log",
+            "hash": "ab64334877ca1e95c4ef77b7f33ee01f4bd8915329bf093f374f210e0e517380"
+        }
+    ],
+    "hashType": "sha256"
+}

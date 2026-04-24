@@ -63,6 +63,15 @@ function formatLivePnlWithPct(leg: UserActivePositionGroup["legs"][number]): str
   return `${dollar} (${pctInner})`;
 }
 
+function MobileField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-sm text-slate-100">{value}</p>
+    </div>
+  );
+}
+
 function legLabel(
   leg: UserActivePositionGroup["legs"][number],
   g: Pick<UserActivePositionGroup, "isHedgeScalping">,
@@ -377,7 +386,45 @@ export function UserActivePositionsSection({
                   </div>
                 </div>
 
-                <div className="mt-5 overflow-x-auto rounded-xl border border-white/[0.07]">
+                <div className="mt-5 rounded-xl border border-white/[0.07] md:hidden">
+                  {openLegs.length > 0 ? (
+                    <div className="space-y-3 p-3">
+                      {openLegs.map((leg) => (
+                        <div key={leg.key} className="rounded-xl border border-white/[0.08] bg-black/30 p-3">
+                          <div className="mb-3 flex items-start justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-semibold text-sky-200">{legLabel(leg, g)}</p>
+                              <p className="text-xs text-slate-400">{leg.symbol}</p>
+                            </div>
+                            <p
+                              className={`text-sm font-semibold tabular-nums ${leg.unrealizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
+                            >
+                              {formatLivePnlWithPct(leg)}
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <MobileField label="Side" value={sideFromNetQty(leg.side, leg.netQty)} />
+                            <MobileField label="Qty" value={qtyDisplay(leg.displayNetQty, leg.qtyPctOfCapital)} />
+                            <MobileField
+                              label="Entry"
+                              value={leg.displayAvgEntryPrice != null ? leg.displayAvgEntryPrice.toFixed(2) : "—"}
+                            />
+                            <MobileField label="Current" value={leg.markPrice != null ? leg.markPrice.toFixed(2) : "—"} />
+                            <MobileField label="Target" value={formatExitPx(leg.targetPrice)} />
+                            <MobileField label="Stop loss" value={formatExitPx(leg.stopLossPrice)} />
+                          </div>
+                          <p className="mt-3 text-xs tabular-nums text-slate-400">
+                            Opened: {formatEntryOpenedAt(leg.openedAt)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-4 py-4 text-sm text-slate-400">No currently open legs for this run.</div>
+                  )}
+                </div>
+
+                <div className="mt-5 hidden overflow-x-auto rounded-xl border border-white/[0.07] md:block">
                   <table className="min-w-full text-left text-sm text-slate-200">
                     <thead className="bg-black/50 text-[10px] uppercase tracking-wide text-slate-500">
                       <tr>
@@ -460,7 +507,33 @@ export function UserActivePositionsSection({
                   {historyOpen ? (
                     g.closedLegs.length > 0 ? (
                       <>
-                        <div className="overflow-x-auto border-t border-white/[0.07]">
+                        <div className="border-t border-white/[0.07] md:hidden">
+                          <div className="space-y-2 p-3">
+                            {paginatedClosedLegs.map((leg) => (
+                              <div key={leg.key} className="rounded-lg border border-white/10 bg-black/25 p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-sm font-semibold text-sky-200">{closedLegLabel(leg, g)}</p>
+                                  <p
+                                    className={`text-sm font-semibold tabular-nums ${leg.realizedPnlUsd < 0 ? "text-red-300" : "text-emerald-100"}`}
+                                  >
+                                    {signedUsdText(leg.realizedPnlUsd)}
+                                  </p>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-300">
+                                  <p>Symbol: {leg.symbol}</p>
+                                  <p className="capitalize">Side: {leg.side}</p>
+                                  <p>Qty: {qtyDisplay(leg.quantity, leg.qtyPctOfCapital)}</p>
+                                  <p>Exit: {leg.fillPrice != null ? leg.fillPrice.toFixed(2) : "—"}</p>
+                                </div>
+                                <p className="mt-2 text-xs text-slate-400">
+                                  Closed: {new Date(leg.closedAt).toLocaleString()}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="hidden overflow-x-auto border-t border-white/[0.07] md:block">
                           <table className="min-w-full text-left text-sm text-slate-200">
                             <thead className="bg-black/40 text-[10px] uppercase tracking-wide text-slate-500">
                               <tr>
