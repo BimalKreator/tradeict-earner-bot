@@ -50,6 +50,7 @@ import {
 const LOG = "[TPL-POLLER]";
 const DELTA_BASE_URL = process.env.HS_WORKER_DELTA_BASE_URL?.trim() || "https://api.india.delta.exchange";
 const TPL_D2_SUBMITTING_TIMEOUT_MS = 30_000;
+const TPL_D2_ENQUEUE_COOLDOWN_MS = 5_000;
 
 /** Throttle `tpl_halftrend_state_sync` to at most once per wall minute unless a new closed bucket appears. */
 const TPL_HALFTREND_SYNC_MIN_INTERVAL_MS = 60_000;
@@ -117,6 +118,10 @@ type TplRuntimeState = {
     takeProfitPlacedAt?: string;
   };
   d2TriggeredSteps?: number[];
+  /**
+   * Per-step enqueue cooldown (epoch ms) to block duplicate dispatches across tight ticks.
+   */
+  d2StepEnqueueCooldownUntilMs?: Record<string, number>;
   /** Last known entry mark per D2 step (retained after close for link targets). */
   d2StepLastEntries?: Record<string, number>;
   d2StepsState?: Record<
@@ -255,6 +260,37 @@ function theoreticalStepEntryPrice(params: {
 }): number {
   const dist = Math.max(0, params.d1TargetDistance) * (Math.max(0, params.stepTriggerPct) / 100);
   return params.d1Side === "LONG" ? params.d1EntryPrice + dist : params.d1EntryPrice - dist;
+}
+
+async function cancelTrackedD2StepConditionals(params: {
+  runId: string;
+  strategyId: string;
+  userId: string;
+  symbol: string;
+  stepState: TplRuntimeState["d2StepsState"] extends Record<string, infer V> ? V : never;
+  secondaryAdapter:
+    | { ok: true; adapter: NonNullable<Awaited<ReturnType<typeof resolveRunExchangeAdapter>>["adapter"]> }
+    | { ok: false; error: string };
+  source: string;
+}): Promise<void> {
+  if (!params.secondaryAdapter.ok) return;
+  await cancelAllTplLingeringOrders({
+    runtime: {
+      d2StepsState: {
+        [String(params.stepState.step)]: params.stepState,
+      },
+    },
+    primaryAdapter: null,
+    secondaryAdapter: params.secondaryAdapter.adapter,
+    log: {
+      runId: params.runId,
+      strategyId: params.strategyId,
+      userId: params.userId,
+      symbol: params.symbol,
+      step: params.stepState.step,
+      source: params.source,
+    },
+  });
 }
 
 function resolveLinkedTargetPrice(params: {
@@ -1251,6 +1287,20 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     const d2States = runtime.d2StepsState ?? {};
+    const d2CooldownUntilRaw = runtime.d2StepEnqueueCooldownUntilMs;
+    const d2StepEnqueueCooldownUntilMs: Record<string, number> =
+      d2CooldownUntilRaw && typeof d2CooldownUntilRaw === "object" && !Array.isArray(d2CooldownUntilRaw)
+        ? { ...(d2CooldownUntilRaw as Record<string, number>) }
+        : {};
+    {
+      const now = Date.now();
+      for (const [k, v] of Object.entries(d2StepEnqueueCooldownUntilMs)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= now) {
+          delete d2StepEnqueueCooldownUntilMs[k];
+        }
+      }
+    }
     const d2StepLastEntries: Record<string, number> = { ...(runtime.d2StepLastEntries ?? {}) };
     const triggered = new Set(runtime.d2TriggeredSteps ?? []);
     const secondaryAdapter = run.secondaryExchangeConnectionId
@@ -1279,6 +1329,36 @@ export async function processTrendProfitLockTick(): Promise<void> {
         if (!row.correlationId) continue;
         submitStatusByCorrelation.set(row.correlationId, row.status);
       }
+    }
+    const activeD2EntryStatuses: (typeof botOrders.$inferSelect)["status"][] = [
+      "draft",
+      "queued",
+      "submitting",
+      "open",
+      "partial_fill",
+    ];
+    const activeD2EntryRows = await db
+      .select({
+        correlationId: botOrders.correlationId,
+        status: botOrders.status,
+      })
+      .from(botOrders)
+      .where(
+        and(
+          eq(botOrders.runId, run.runId),
+          eq(botOrders.symbol, symbol),
+          inArray(botOrders.status, activeD2EntryStatuses),
+          sql`${botOrders.correlationId} like ${`tpl_d2_step_%_${run.runId}_%`}`,
+        ),
+      )
+      .limit(200);
+    const activeD2EntrySteps = new Set<number>();
+    for (const row of activeD2EntryRows) {
+      const c = row.correlationId ?? "";
+      const m = /^tpl_d2_step_(\d+)_/i.exec(c);
+      if (!m) continue;
+      const stepNo = Number(m[1]);
+      if (Number.isFinite(stepNo) && stepNo > 0) activeD2EntrySteps.add(stepNo);
     }
 
     for (const state of Object.values(d2States)) {
@@ -1492,6 +1572,15 @@ export async function processTrendProfitLockTick(): Promise<void> {
           state.status = "submitting";
           state.closeReason = hitTarget ? "target" : "stoploss";
           d2States[String(state.step)] = state;
+          await cancelTrackedD2StepConditionals({
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            stepState: state,
+            secondaryAdapter,
+            source: "tpl_d2_exit_enqueued",
+          });
           if (secondaryAdapter.ok && secondaryAdapter.adapter.cancelOrdersByPriceMatch) {
             const surgical = await secondaryAdapter.adapter.cancelOrdersByPriceMatch({
               symbol,
@@ -1535,6 +1624,15 @@ export async function processTrendProfitLockTick(): Promise<void> {
       state.status = "closed";
       state.closeReason = hitTargetOnSync ? "target" : hitStopOnSync ? "stoploss" : "unknown";
       state.closedAt = new Date().toISOString();
+      await cancelTrackedD2StepConditionals({
+        runId: run.runId,
+        strategyId: run.strategyId,
+        userId: run.userId,
+        symbol,
+        stepState: state,
+        secondaryAdapter,
+        source: "tpl_d2_exchange_sync_closed",
+      });
       if (secondaryAdapter.ok && secondaryAdapter.adapter.cancelOrdersByPriceMatch) {
         const surgical = await secondaryAdapter.adapter.cancelOrdersByPriceMatch({
           symbol,
@@ -1690,6 +1788,35 @@ export async function processTrendProfitLockTick(): Promise<void> {
           existingStateStatus: existingState?.status ?? null,
         });
         continue;
+      }
+      if (activeD2EntrySteps.has(step.step)) {
+        tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
+          blockedReason: "db_active_step_order_exists",
+        });
+        continue;
+      }
+      {
+        const cooldownUntil = Number(d2StepEnqueueCooldownUntilMs[String(step.step)] ?? 0);
+        if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
+          tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
+            event: "tpl_d2_dispatch_blocked_debug",
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            step: step.step,
+            blockedReason: "step_enqueue_cooldown_active",
+            cooldownUntilMs: cooldownUntil,
+            cooldownRemainingMs: Math.max(0, cooldownUntil - Date.now()),
+          });
+          continue;
+        }
       }
       if (!d2JourneyUsable) {
         tradingLog("warn", "tpl_d2_dispatch_blocked_debug", {
@@ -1955,6 +2082,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         status: "submitting",
       };
       d2StepLastEntries[String(step.step)] = mark;
+      d2StepEnqueueCooldownUntilMs[String(step.step)] = Date.now() + TPL_D2_ENQUEUE_COOLDOWN_MS;
       await tryRecordExecutionLogByCorrelation({
         correlationId,
         runId: run.runId,
@@ -1974,6 +2102,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
     }
 
     runtime.d2TriggeredSteps = [...triggered].sort((a, b) => a - b);
+    runtime.d2StepEnqueueCooldownUntilMs = d2StepEnqueueCooldownUntilMs;
     runtime.d2StepLastEntries = d2StepLastEntries;
     runtime.d2StepsState = d2States;
     await persistRuntime(run.runId, parsedRun as Record<string, unknown>, runtime);

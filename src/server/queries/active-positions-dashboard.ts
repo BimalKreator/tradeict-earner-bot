@@ -1335,7 +1335,10 @@ export async function getUserRealActivePositionGroups(
     .where(
       and(
         eq(botPositions.userId, userId),
-        eq(userStrategyRuns.status, "active"),
+        inArray(userStrategyRuns.status, [
+          "active",
+          "paused_insufficient_funds",
+        ]),
         eq(userStrategySubscriptions.status, "active"),
         gt(userStrategySubscriptions.accessValidUntil, now),
         isNull(userStrategySubscriptions.deletedAt),
@@ -1633,7 +1636,10 @@ export async function getAdminLiveTradeMonitorRows(): Promise<AdminLivePositionR
     .innerJoin(users, eq(botPositions.userId, users.id))
     .where(
       and(
-        eq(userStrategyRuns.status, "active"),
+        inArray(userStrategyRuns.status, [
+          "active",
+          "paused_insufficient_funds",
+        ]),
         isNull(strategies.deletedAt),
         isNull(users.deletedAt),
         sql`abs(cast(${botPositions.netQuantity} as numeric)) > 0.00000001`,

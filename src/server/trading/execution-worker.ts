@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/server/db";
-import { botOrders, exchangeConnections, userStrategyRuns } from "@/server/db/schema";
+import { botOrders, botPositions, exchangeConnections, userStrategyRuns } from "@/server/db/schema";
 
 import type {
   ExchangeTradingAdapter,
@@ -293,6 +293,62 @@ async function runPostSubmitSync(
       message: `sync_failed: ${sync.error}`,
     });
   }
+}
+
+const POSITION_QTY_EPS = 1e-8;
+
+async function runImmediateConditionalCleanupOnFlat(params: {
+  adapter: ExchangeTradingAdapter;
+  exchangeConnectionId: string;
+  symbol: string;
+  runId: string;
+  strategyId: string;
+  userId: string;
+  source: string;
+}): Promise<void> {
+  if (!db) return;
+  const symbol = params.symbol.trim().toUpperCase();
+  if (!symbol) return;
+  const [anyOpen] = await db
+    .select({ id: botPositions.id })
+    .from(botPositions)
+    .where(
+      and(
+        eq(botPositions.exchangeConnectionId, params.exchangeConnectionId),
+        eq(botPositions.symbol, symbol),
+        sql`abs(cast(${botPositions.netQuantity} as numeric)) > ${POSITION_QTY_EPS}`,
+      ),
+    )
+    .limit(1);
+  if (anyOpen) return;
+
+  if (!params.adapter.cancelAllConditionalOrdersForSymbol) {
+    tradingLog("warn", "on_flat_conditional_cleanup_skipped_adapter", {
+      runId: params.runId,
+      strategyId: params.strategyId,
+      userId: params.userId,
+      exchangeConnectionId: params.exchangeConnectionId,
+      symbol,
+      source: params.source,
+      error: "cancelAllConditionalOrdersForSymbol_not_supported",
+    });
+    return;
+  }
+
+  const out = await params.adapter.cancelAllConditionalOrdersForSymbol(symbol);
+  tradingLog(out.ok ? "info" : "warn", "on_flat_conditional_cleanup", {
+    runId: params.runId,
+    strategyId: params.strategyId,
+    userId: params.userId,
+    exchangeConnectionId: params.exchangeConnectionId,
+    symbol,
+    source: params.source,
+    ok: out.ok,
+    cancelledCount: out.ok ? out.cancelledCount : 0,
+    attemptedCount: out.ok ? out.attemptedCount : 0,
+    error: out.ok ? null : out.error,
+    raw: out.raw ?? null,
+  });
 }
 
 /**
@@ -630,6 +686,17 @@ export async function processOneTradingJob(
         p,
         row,
       );
+      if (signalAction === "exit") {
+        await runImmediateConditionalCleanupOnFlat({
+          adapter: adapterRes.adapter,
+          exchangeConnectionId: row.exchangeConnectionId,
+          symbol: p.symbol,
+          runId: row.runId,
+          strategyId: row.strategyId,
+          userId: row.userId,
+          source: "execution_worker_reconcile_existing_external",
+        });
+      }
       await completeTradingJob(job.id);
       tradingLog("info", "job_completed_reconcile_external", {
         jobId: job.id,
@@ -822,12 +889,26 @@ export async function processOneTradingJob(
           hint: "possible_sequence_or_margin_contention_between_parallel_legs",
         },
       });
-      await pauseRunForInsufficientFunds(row.runId, place.error);
-      tradingLog("warn", "run_paused_insufficient_funds", {
-        runId: row.runId,
-        botOrderId,
-        jobId: job.id,
-      });
+      // Do not auto-pause on D2 step entries; these are opportunistic adds and
+      // transient margin checks should not hide an otherwise live run.
+      const shouldPauseRunForFunds =
+        signalAction === "entry" && !tplD2.isTplD2;
+      if (shouldPauseRunForFunds) {
+        await pauseRunForInsufficientFunds(row.runId, place.error);
+        tradingLog("warn", "run_paused_insufficient_funds", {
+          runId: row.runId,
+          botOrderId,
+          jobId: job.id,
+        });
+      } else {
+        tradingLog("warn", "run_pause_skipped_insufficient_funds_non_anchor", {
+          runId: row.runId,
+          botOrderId,
+          jobId: job.id,
+          signalAction,
+          isTplD2: tplD2.isTplD2,
+        });
+      }
     }
     const nonRetryable = isNonRetryableDeltaExecutionError(place.error);
     if (nonRetryable) {
@@ -870,6 +951,17 @@ export async function processOneTradingJob(
     payloadForExecution,
     row,
   );
+  if (signalAction === "exit") {
+    await runImmediateConditionalCleanupOnFlat({
+      adapter: adapterRes.adapter,
+      exchangeConnectionId: row.exchangeConnectionId,
+      symbol: payloadForExecution.symbol,
+      runId: row.runId,
+      strategyId: row.strategyId,
+      userId: row.userId,
+      source: "execution_worker_post_submit_sync",
+    });
+  }
 
   await completeTradingJob(job.id);
   tradingLog("info", "job_completed", {
