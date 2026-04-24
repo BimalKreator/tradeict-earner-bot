@@ -27,6 +27,7 @@ import {
 } from "@/server/trading/execution-preferences";
 import { calculateHalfTrendSignal, type HalfTrendCandle } from "@/server/trading/indicators/halftrend";
 import { resolveExchangeTradingAdapter } from "@/server/trading/adapters/resolve-exchange-adapter";
+import type { ExchangeTradingAdapter } from "@/server/trading/adapters/exchange-adapter-types";
 import { dispatchStrategyExecutionSignal } from "@/server/trading/strategy-signal-dispatcher";
 import type { StrategySignalIntakeResponse } from "@/server/trading/signals/types";
 import {
@@ -267,9 +268,9 @@ async function cancelTrackedD2StepConditionals(params: {
   strategyId: string;
   userId: string;
   symbol: string;
-  stepState: TplRuntimeState["d2StepsState"] extends Record<string, infer V> ? V : never;
+  stepState: NonNullable<TplRuntimeState["d2StepsState"]>[string];
   secondaryAdapter:
-    | { ok: true; adapter: NonNullable<Awaited<ReturnType<typeof resolveRunExchangeAdapter>>["adapter"]> }
+    | { ok: true; adapter: ExchangeTradingAdapter }
     | { ok: false; error: string };
   source: string;
 }): Promise<void> {
