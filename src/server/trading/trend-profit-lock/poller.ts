@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { resolveTrendProfitLockConfigForUi } from "@/lib/trend-profit-lock-form";
 import {
@@ -49,6 +49,7 @@ import {
 
 const LOG = "[TPL-POLLER]";
 const DELTA_BASE_URL = process.env.HS_WORKER_DELTA_BASE_URL?.trim() || "https://api.india.delta.exchange";
+const TPL_D2_SUBMITTING_TIMEOUT_MS = 30_000;
 
 /** Throttle `tpl_halftrend_state_sync` to at most once per wall minute unless a new closed bucket appears. */
 const TPL_HALFTREND_SYNC_MIN_INTERVAL_MS = 60_000;
@@ -1255,11 +1256,177 @@ export async function processTrendProfitLockTick(): Promise<void> {
     const secondaryAdapter = run.secondaryExchangeConnectionId
       ? await resolveRunExchangeAdapter(run.secondaryExchangeConnectionId)
       : { ok: false as const, error: "missing_secondary_exchange" };
+    const d2SubmitResetBlockedSteps = new Set<number>();
+    const submittingStates = Object.values(d2States).filter(
+      (s) => s.status === "submitting" && typeof s.correlationId === "string" && s.correlationId.length > 0,
+    );
+    const submittingCorrelationIds = [...new Set(submittingStates.map((s) => s.correlationId))];
+    const submitStatusByCorrelation = new Map<string, string>();
+    if (submittingCorrelationIds.length > 0) {
+      const rows = await db
+        .select({
+          correlationId: botOrders.correlationId,
+          status: botOrders.status,
+        })
+        .from(botOrders)
+        .where(
+          and(
+            eq(botOrders.runId, run.runId),
+            inArray(botOrders.correlationId, submittingCorrelationIds),
+          ),
+        );
+      for (const row of rows) {
+        if (!row.correlationId) continue;
+        submitStatusByCorrelation.set(row.correlationId, row.status);
+      }
+    }
+
     for (const state of Object.values(d2States)) {
       if (state.status !== "open" && state.status !== "submitting") continue;
       const d2OpenQtyTrackedCurrent = Object.values(d2States)
         .filter((s) => s.status === "open" || s.status === "submitting")
         .reduce((sum, s) => sum + s.qty, 0);
+      if (state.status === "submitting") {
+        const isExitInFlight = Boolean(state.closeReason);
+        if (isExitInFlight) {
+          // Exit leg is already enqueued; do not re-open from entry correlation status.
+          // Wait for exchange net-qty sync path below to mark this step closed.
+          const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTrackedCurrent - state.qty);
+          const stepLooksClosedOnExchange = d2NetQtyAbs <= expectedOpenWithoutStep + 1e-8;
+          if (stepLooksClosedOnExchange) {
+            const hitTargetOnSync =
+              state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
+            const hitStopOnSync =
+              state.side === "LONG" ? mark <= state.stoplossPrice : mark >= state.stoplossPrice;
+            state.status = "closed";
+            state.closeReason = hitTargetOnSync ? "target" : hitStopOnSync ? "stoploss" : "unknown";
+            state.closedAt = new Date().toISOString();
+            if (secondaryAdapter.ok && secondaryAdapter.adapter.cancelOrdersByPriceMatch) {
+              const surgical = await secondaryAdapter.adapter.cancelOrdersByPriceMatch({
+                symbol,
+                targetPrices: [state.targetPrice],
+                stopPrices: [state.stoplossPrice],
+                toleranceBps: 1,
+              });
+              tradingLog(surgical.ok ? "info" : "warn", "tpl_d2_surgical_price_match_cancel", {
+                runId: run.runId,
+                strategyId: run.strategyId,
+                userId: run.userId,
+                symbol,
+                step: state.step,
+                targetPrice: state.targetPrice,
+                stoplossPrice: state.stoplossPrice,
+                toleranceBps: 1,
+                source: "exchange_sync_step_flat",
+                ok: surgical.ok,
+                cancelledCount: surgical.ok ? surgical.cancelledCount : 0,
+                attemptedCount: surgical.ok ? surgical.attemptedCount : 0,
+                error: surgical.ok ? null : surgical.error,
+                raw: surgical.raw ?? null,
+              });
+            }
+            {
+              const stepReason = hitTargetOnSync ? "d2_step_target_hit" : "d2_step_stoploss_hit";
+              logTplTradeExited({
+                reason: stepReason,
+                runId: run.runId,
+                userId: run.userId,
+                strategyId: run.strategyId,
+                symbol,
+                leg: `d2_step_${state.step}`,
+                extra: { step: state.step, closeReason: state.closeReason },
+              });
+              await persistTplTradeExitUiHint(run.runId, {
+                reason: stepReason,
+                at: state.closedAt,
+                leg: `d2_step_${state.step}`,
+              });
+            }
+            triggered.delete(state.step);
+            const shouldLockAfterVenueExit = false;
+            if (shouldLockAfterVenueExit) {
+              state.slHitLock = true;
+              state.rearmTriggerPrice = state.triggerPrice;
+              state.rearmSeenAway = false;
+              d2States[String(state.step)] = state;
+              tradingLog("warn", "tpl_d2_step_sl_lock_engaged", {
+                runId: run.runId,
+                strategyId: run.strategyId,
+                userId: run.userId,
+                symbol,
+                step: state.step,
+                closeReason: state.closeReason,
+                triggerPrice: state.triggerPrice,
+                source: "venue_automated_exit",
+              });
+            } else {
+              delete d2States[String(state.step)];
+              tradingLog("info", "tpl_d2_step_reentry_reset_ready", {
+                runId: run.runId,
+                strategyId: run.strategyId,
+                userId: run.userId,
+                symbol,
+                step: state.step,
+                closeReason: state.closeReason,
+                source: "venue_automated_exit_non_stoploss",
+              });
+            }
+          }
+          continue;
+        }
+        const corr = state.correlationId;
+        const submitStatus = corr ? submitStatusByCorrelation.get(corr) : undefined;
+        if (submitStatus === "open" || submitStatus === "filled" || submitStatus === "partial_fill") {
+          state.status = "open";
+          d2States[String(state.step)] = state;
+          tradingLog("info", "tpl_d2_step_promoted_open_from_exchange_sync", {
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            step: state.step,
+            correlationId: corr,
+            botOrderStatus: submitStatus,
+          });
+          continue;
+        }
+        if (submitStatus === "failed" || submitStatus === "rejected" || submitStatus === "cancelled") {
+          delete d2States[String(state.step)];
+          triggered.delete(state.step);
+          d2SubmitResetBlockedSteps.add(state.step);
+          tradingLog("warn", "tpl_d2_submitting_reset_on_terminal_exchange_status", {
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            step: state.step,
+            correlationId: corr,
+            botOrderStatus: submitStatus,
+          });
+          continue;
+        }
+        const executedAtMs = Date.parse(state.executedAt);
+        const ageMs = Number.isFinite(executedAtMs) ? Date.now() - executedAtMs : null;
+        if (ageMs != null && ageMs >= TPL_D2_SUBMITTING_TIMEOUT_MS) {
+          delete d2States[String(state.step)];
+          triggered.delete(state.step);
+          d2SubmitResetBlockedSteps.add(state.step);
+          tradingLog("warn", "tpl_d2_submitting_timeout_reset_to_waiting", {
+            runId: run.runId,
+            strategyId: run.strategyId,
+            userId: run.userId,
+            symbol,
+            step: state.step,
+            correlationId: corr,
+            timeoutMs: TPL_D2_SUBMITTING_TIMEOUT_MS,
+            ageMs,
+            botOrderStatus: submitStatus ?? null,
+          });
+        }
+        continue;
+      }
+      const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTrackedCurrent - state.qty);
+      const stepLooksClosedOnExchange = d2NetQtyAbs <= expectedOpenWithoutStep + 1e-8;
       const hitTarget =
         state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
       const hitStop =
@@ -1360,8 +1527,6 @@ export async function processTrendProfitLockTick(): Promise<void> {
           continue;
         }
       }
-      const expectedOpenWithoutStep = Math.max(0, d2OpenQtyTrackedCurrent - state.qty);
-      const stepLooksClosedOnExchange = d2NetQtyAbs <= expectedOpenWithoutStep + 1e-8;
       if (!stepLooksClosedOnExchange) continue;
       const hitTargetOnSync =
         state.side === "LONG" ? mark >= state.targetPrice : mark <= state.targetPrice;
@@ -1412,7 +1577,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         });
       }
       triggered.delete(state.step);
-      const shouldLockAfterVenueExit = state.closeReason === "stoploss";
+      const shouldLockAfterVenueExit = false;
       if (shouldLockAfterVenueExit) {
         state.slHitLock = true;
         state.rearmTriggerPrice = state.triggerPrice;
@@ -1481,57 +1646,31 @@ export async function processTrendProfitLockTick(): Promise<void> {
       return reached ? Math.max(maxStep, stepCfg.step) : maxStep;
     }, 0);
     for (const step of cfg.d2Steps) {
-      const existingState = d2States[String(step.step)];
-      const stepJourneyDistance = d1TargetDistance * (step.stepTriggerPct / 100);
-      const triggerPx = d1Side === "LONG" ? entryPx + stepJourneyDistance : entryPx - stepJourneyDistance;
-      if (existingState?.status === "closed" && existingState.slHitLock) {
-        const lockTriggerPx = existingState.rearmTriggerPrice ?? triggerPx;
-        const awayDist = d2StepRearmAwayDistance({
-          entryPx,
-          triggerPx: lockTriggerPx,
-          d1TargetDistance,
-        });
-        const movedAway = d1Side === "LONG" ? mark >= lockTriggerPx + awayDist : mark <= lockTriggerPx - awayDist;
-        if (movedAway && !existingState.rearmSeenAway) {
-          existingState.rearmSeenAway = true;
-          d2States[String(step.step)] = existingState;
-          tradingLog("info", "tpl_d2_step_sl_lock_away_seen", {
-            runId: run.runId,
-            strategyId: run.strategyId,
-            userId: run.userId,
-            symbol,
-            step: step.step,
-            lockTriggerPx,
-            awayDistance: awayDist,
-            markPrice: mark,
-          });
-        }
-        const reCrossed = d1Side === "LONG" ? mark <= lockTriggerPx : mark >= lockTriggerPx;
-        if (!(existingState.rearmSeenAway && reCrossed)) {
-          tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
-            event: "tpl_d2_dispatch_blocked_debug",
-            runId: run.runId,
-            strategyId: run.strategyId,
-            userId: run.userId,
-            symbol,
-            step: step.step,
-            blockedReason: "sl_lock_active",
-            lockTriggerPx,
-            awayDistance: awayDist,
-            markPrice: mark,
-            rearmSeenAway: existingState.rearmSeenAway ?? false,
-          });
-          continue;
-        }
-        // Unlock this step only after away-and-back cycle.
-        delete d2States[String(step.step)];
-        tradingLog("info", "tpl_d2_step_sl_lock_cleared", {
+      if (d2SubmitResetBlockedSteps.has(step.step)) {
+        tradingLog("info", "tpl_d2_dispatch_blocked_debug", {
+          event: "tpl_d2_dispatch_blocked_debug",
           runId: run.runId,
           strategyId: run.strategyId,
           userId: run.userId,
           symbol,
           step: step.step,
-          lockTriggerPx,
+          blockedReason: "awaiting_next_tick_after_submit_reset",
+        });
+        continue;
+      }
+      const existingState = d2States[String(step.step)];
+      const stepJourneyDistance = d1TargetDistance * (step.stepTriggerPct / 100);
+      const triggerPx = d1Side === "LONG" ? entryPx + stepJourneyDistance : entryPx - stepJourneyDistance;
+      if (existingState?.status === "closed" && existingState.slHitLock) {
+        // Immediate re-entry policy: do not keep SL-based rearm locks.
+        delete d2States[String(step.step)];
+        triggered.delete(step.step);
+        tradingLog("info", "tpl_d2_step_sl_lock_cleared_immediate_reentry_policy", {
+          runId: run.runId,
+          strategyId: run.strategyId,
+          userId: run.userId,
+          symbol,
+          step: step.step,
           markPrice: mark,
         });
       }
@@ -1795,6 +1934,9 @@ export async function processTrendProfitLockTick(): Promise<void> {
         });
         continue;
       }
+      // Keep step in submitting until exchange/worker confirms order status.
+      // Marking open here can cause false close inference and re-entry loops
+      // if bot_positions lags for a tick.
       d2States[String(step.step)] = {
         step: step.step,
         triggerPrice: triggerPx,
@@ -1810,7 +1952,7 @@ export async function processTrendProfitLockTick(): Promise<void> {
         }),
         executedAt: new Date().toISOString(),
         correlationId,
-        status: "open",
+        status: "submitting",
       };
       d2StepLastEntries[String(step.step)] = mark;
       await tryRecordExecutionLogByCorrelation({
